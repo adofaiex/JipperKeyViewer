@@ -2008,27 +2008,28 @@ namespace JipperKeyViewer.KeyViewer
                 float delta = v - first.X;
                 foreach (FmNode n in editorSelection) n.X += delta;
                 EditorPropertyChanged();
-            });
+            }, "fm_help_pos_x");
             DrawEditorFloatField(I18n.Tr("fm_pos_y"), "fme_y_" + first.Id, n => n.Y, v =>
             {
                 float delta = v - first.Y;
                 foreach (FmNode n in editorSelection) n.Y += delta;
                 EditorPropertyChanged();
-            });
+            }, "fm_help_pos_y");
             DrawEditorFloatField(I18n.Tr("fm_width"), "fme_w_" + first.Id, n => n.Width, v =>
             {
                 foreach (FmNode n in editorSelection) n.Width = Mathf.Max(10f, v);
                 EditorPropertyChanged();
-            });
+            }, "fm_help_width");
             DrawEditorFloatField(I18n.Tr("fm_height"), "fme_h_" + first.Id, n => n.Height, v =>
             {
                 foreach (FmNode n in editorSelection) n.Height = Mathf.Max(10f, v);
                 EditorPropertyChanged();
-            });
+            }, "fm_help_height");
 
             int depth = first.Depth;
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("fm_depth"), GUILayout.Width(96f));
+            DrawEditorHelpMarker("fm_help_depth");
             int newDepth = Mathf.RoundToInt(GUILayout.HorizontalSlider(depth, 0, 60));
             // Mixed depths show "—" (never parses → no accidental mass-apply); a deliberate
             // slider drag or typed number still applies to all. / 深度不一致时显示"—"（永不解析
@@ -2041,6 +2042,7 @@ namespace JipperKeyViewer.KeyViewer
             // 剥掉混合标记，直接在"—"后输入也能解析（见 DrawEditorFloatField）。
             if (int.TryParse(depthText.Replace("—", "").Trim(), out int parsedDepth)) newDepth = Mathf.Clamp(parsedDepth, 0, 60);
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox("fm_help_depth");
             // A slider drag is deliberate intent on its own — it must NOT require the text box to
             // parse first (mixed "—" used to block dragging until the dash was deleted). Untouched
             // mixed selections stay safe: the slider sits at the active node's value → equal → no
@@ -2064,14 +2066,14 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     foreach (FmNode n in editorSelection) n.CustomText = v;
                     EditorPropertyChanged();
-                });
+                }, "fm_help_custom_text");
                 DrawEditorTextField(I18n.Tr("fm_pressed_text"), "fme_pt_" + first.Id, first.PressedText, v =>
                 {
                     foreach (FmNode n in editorSelection) n.PressedText = v;
                     EditorPropertyChanged();
-                });
-                DrawEditorToggle(I18n.Tr("fm_count_in_total"), first.CountInTotal, v => { foreach (FmNode n in editorSelection) n.CountInTotal = v; });
-                DrawEditorToggle(I18n.Tr("fm_per_key_kps"), first.PerKeyKps, v => { foreach (FmNode n in editorSelection) n.PerKeyKps = v; });
+                }, "fm_help_pressed_text");
+                DrawEditorToggle(I18n.Tr("fm_count_in_total"), first.CountInTotal, v => { foreach (FmNode n in editorSelection) n.CountInTotal = v; }, "fm_help_count_in_total");
+                DrawEditorToggle(I18n.Tr("fm_per_key_kps"), first.PerKeyKps, v => { foreach (FmNode n in editorSelection) n.PerKeyKps = v; }, "fm_help_per_key_kps");
             }
             if (first.NodeType == 3)
             {
@@ -2079,12 +2081,12 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     foreach (FmNode n in editorSelection) n.ImagePath = v;
                     EditorPropertyChanged();
-                });
+                }, "fm_help_image_path");
                 DrawEditorTextField(I18n.Tr("fm_pressed_image"), "fme_imgp_" + first.Id, first.ImagePathPressed, v =>
                 {
                     foreach (FmNode n in editorSelection) n.ImagePathPressed = v;
                     EditorPropertyChanged();
-                });
+                }, "fm_help_pressed_image");
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(I18n.Tr("fm_import"), GUILayout.MinWidth(90f))) EditorImportImages();
                 if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f))) OpenCustomImagesDir();
@@ -2093,7 +2095,7 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     foreach (FmNode n in editorSelection) n.Opacity = Mathf.Clamp01(v);
                     EditorPropertyChanged();
-                });
+                }, "fm_help_opacity");
                 if (!single)
                     GUILayout.Label(I18n.Tr("fm_bind_image_hint"));
             }
@@ -2120,7 +2122,11 @@ namespace JipperKeyViewer.KeyViewer
                         n.UseCustomStatLayout = true;
                     }
                 }
+                GUILayout.BeginHorizontal();
                 bool newCentered = GUILayout.Toggle(effCentered, I18n.Tr("fk_kps_total_centered"));
+                DrawEditorHelpMarker("fm_help_stat_layout");
+                GUILayout.EndHorizontal();
+                DrawEditorHelpBox("fm_help_stat_layout");
                 if (newCentered != effCentered)
                 {
                     EnableOverride();
@@ -2162,34 +2168,34 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.BeginHorizontal();
                 string[] rainRowNames = { I18n.Tr("rain_row1"), I18n.Tr("rain_row2"), I18n.Tr("rain_row3") };
                 int rainRow = GUILayout.SelectionGrid(Mathf.Clamp(first.RainRow, 0, 2), rainRowNames, 3, GUILayout.Height(20f));
+                DrawEditorHelpMarker("fm_help_rain_row");
                 GUILayout.EndHorizontal();
+                DrawEditorHelpBox("fm_help_rain_row");
                 if (rainRow >= 0 && rainRow <= 2 && rainRow != first.RainRow)
                 {
                     foreach (FmNode n in editorSelection) n.RainRow = rainRow;
                     EditorPropertyChanged();
                 }
-                DrawEditorToggle(I18n.Tr("fm_rain"), first.RainEnabled, v => { foreach (FmNode n in editorSelection) n.RainEnabled = v; });
+                DrawEditorToggle(I18n.Tr("fm_rain"), first.RainEnabled, v => { foreach (FmNode n in editorSelection) n.RainEnabled = v; }, "fm_help_rain_enable");
                 DrawEditorFloatField(I18n.Tr("rain_width"), "fme_rw_" + first.Id, n => n.RainWidth, v =>
                 {
                     foreach (FmNode n in editorSelection) n.RainWidth = Mathf.Max(0f, v);
                     EditorPropertyChanged();
-                });
+                }, "fm_help_rain_params");
                 DrawEditorFloatField(I18n.Tr("rain_height"), "fme_rh_" + first.Id, n => n.RainHeight, v =>
                 {
                     foreach (FmNode n in editorSelection) n.RainHeight = Mathf.Max(0f, v);
                     EditorPropertyChanged();
-                });
+                }, "fm_help_rain_params");
                 DrawEditorFloatField(I18n.Tr("rain_speed"), "fme_rs_" + first.Id, n => n.RainSpeed, v =>
                 {
                     foreach (FmNode n in editorSelection) n.RainSpeed = Mathf.Max(0f, v);
                     EditorPropertyChanged();
-                });
-                bool useRainColor = GUILayout.Toggle(first.UseCustomRainColor, I18n.Tr("fm_use_custom_rain_color"));
-                if (useRainColor != first.UseCustomRainColor)
+                }, "fm_help_rain_params");
+                DrawEditorToggle(I18n.Tr("fm_use_custom_rain_color"), first.UseCustomRainColor, v =>
                 {
-                    foreach (FmNode n in editorSelection) n.UseCustomRainColor = useRainColor;
-                    EditorPropertyChanged();
-                }
+                    foreach (FmNode n in editorSelection) n.UseCustomRainColor = v;
+                }, "fm_help_rain_color");
                 if (first.UseCustomRainColor)
                 {
                     // Two-color rain: separate top/bottom ends. /
@@ -2202,24 +2208,22 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     foreach (FmNode n in editorSelection) n.RainOffsetX = Mathf.Clamp(v, -2000f, 2000f);
                     EditorPropertyChanged();
-                });
+                }, "fm_help_rain_params");
                 DrawEditorFloatField(I18n.Tr("fm_rain_offset_y"), "fme_roy_" + first.Id, n => n.RainOffsetY, v =>
                 {
                     foreach (FmNode n in editorSelection) n.RainOffsetY = Mathf.Clamp(v, -2000f, 2000f);
                     EditorPropertyChanged();
-                });
+                }, "fm_help_rain_params");
                 // Per-node trail-top fade + release fade (the Rain tab's 顶部渐隐/松开淡出 sunk
                 // to the node). / 节点级顶部渐隐与松开淡出（雨线页对应设置下沉到节点）。
-                bool useRainFade = GUILayout.Toggle(first.UseCustomRainFade, I18n.Tr("fm_rain_fade_custom"));
-                if (useRainFade != first.UseCustomRainFade)
+                DrawEditorToggle(I18n.Tr("fm_rain_fade_custom"), first.UseCustomRainFade, v =>
                 {
                     foreach (FmNode n in editorSelection)
                     {
-                        n.UseCustomRainFade = useRainFade;
-                        if (useRainFade) SeedRainFadeFromGlobals(n);
+                        n.UseCustomRainFade = v;
+                        if (v) SeedRainFadeFromGlobals(n);
                     }
-                    EditorPropertyChanged();
-                }
+                }, "fm_help_rain_fade");
                 if (first.UseCustomRainFade)
                 {
                     DrawEditorToggle(I18n.Tr("rain_gradient"), first.TrailFadeEnabled, v => { foreach (FmNode n in editorSelection) n.TrailFadeEnabled = v; });
@@ -2238,21 +2242,19 @@ namespace JipperKeyViewer.KeyViewer
                 // Per-node shadow/outline overrides (the Rain tab's shadow/outline rows sunk to
                 // the node; off → follow the selected row). / 节点级阴影/描边覆盖（雨线页的
                 // 阴影/描边设置下沉到节点；关闭 → 跟随所选排）。
-                bool useRainShadow = GUILayout.Toggle(first.UseCustomRainShadow, I18n.Tr("fm_rain_shadow_custom"));
-                if (useRainShadow != first.UseCustomRainShadow)
+                DrawEditorToggle(I18n.Tr("fm_rain_shadow_custom"), first.UseCustomRainShadow, v =>
                 {
                     foreach (FmNode n in editorSelection)
                     {
-                        n.UseCustomRainShadow = useRainShadow;
+                        n.UseCustomRainShadow = v;
                         // Seed from the node's row so enabling takes over the CURRENT look — the
                         // unseeded state mixed node-default enable/offsets with row colors, which
                         // read as "the shadow ignores the per-node setting". / 从节点所在排做种子，
                         // 开启即接管当前外观——未做种子时节点默认开关/偏移与排颜色混搭，看起来
                         // 就是"阴影无视节点设置"。
-                        if (useRainShadow) SeedRainShadowFromRow(n);
+                        if (v) SeedRainShadowFromRow(n);
                     }
-                    EditorPropertyChanged();
-                }
+                }, "fm_help_rain_shadow");
                 if (first.UseCustomRainShadow)
                 {
                     DrawEditorToggle(I18n.Tr("rain_shadow"), first.RainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.RainShadowEnabled = v; });
@@ -2268,16 +2270,14 @@ namespace JipperKeyViewer.KeyViewer
                         EditorPropertyChanged();
                     });
                 }
-                bool useRainOutline = GUILayout.Toggle(first.UseCustomRainOutline, I18n.Tr("fm_rain_outline_custom"));
-                if (useRainOutline != first.UseCustomRainOutline)
+                DrawEditorToggle(I18n.Tr("fm_rain_outline_custom"), first.UseCustomRainOutline, v =>
                 {
                     foreach (FmNode n in editorSelection)
                     {
-                        n.UseCustomRainOutline = useRainOutline;
-                        if (useRainOutline) SeedRainOutlineFromRow(n);
+                        n.UseCustomRainOutline = v;
+                        if (v) SeedRainOutlineFromRow(n);
                     }
-                    EditorPropertyChanged();
-                }
+                }, "fm_help_rain_outline");
                 if (first.UseCustomRainOutline)
                 {
                     DrawEditorToggle(I18n.Tr("rain_outline"), first.RainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.RainOutlineEnabled = v; });
@@ -2292,16 +2292,14 @@ namespace JipperKeyViewer.KeyViewer
                 // 节点级鬼雨阴影/描边——仅在绑定了鬼键时有意义。
                 if (!string.IsNullOrWhiteSpace(first.GhostKey))
                 {
-                    bool useGhostParams = GUILayout.Toggle(first.UseCustomGhostRainParams, I18n.Tr("fm_ghost_rain_params_custom"));
-                    if (useGhostParams != first.UseCustomGhostRainParams)
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_params_custom"), first.UseCustomGhostRainParams, v =>
                     {
                         foreach (FmNode n in editorSelection)
                         {
-                            n.UseCustomGhostRainParams = useGhostParams;
-                            if (useGhostParams) SeedGhostRainParams(n);
+                            n.UseCustomGhostRainParams = v;
+                            if (v) SeedGhostRainParams(n);
                         }
-                        EditorPropertyChanged();
-                    }
+                    }, "fm_help_ghost_rain");
                     if (first.UseCustomGhostRainParams)
                     {
                         DrawEditorFloatField(I18n.Tr("rain_width"), "fme_grw_" + first.Id, n => n.GhostRainWidth, v =>
@@ -2330,16 +2328,14 @@ namespace JipperKeyViewer.KeyViewer
                             EditorPropertyChanged();
                         });
                     }
-                    bool useGhostShadow = GUILayout.Toggle(first.UseCustomGhostRainShadow, I18n.Tr("fm_ghost_rain_shadow_custom"));
-                    if (useGhostShadow != first.UseCustomGhostRainShadow)
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_shadow_custom"), first.UseCustomGhostRainShadow, v =>
                     {
                         foreach (FmNode n in editorSelection)
                         {
-                            n.UseCustomGhostRainShadow = useGhostShadow;
-                            if (useGhostShadow) SeedGhostRainShadowFromRow(n);
+                            n.UseCustomGhostRainShadow = v;
+                            if (v) SeedGhostRainShadowFromRow(n);
                         }
-                        EditorPropertyChanged();
-                    }
+                    }, "fm_help_ghost_rain");
                     if (first.UseCustomGhostRainShadow)
                     {
                         DrawEditorToggle(I18n.Tr("rain_shadow"), first.GhostRainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainShadowEnabled = v; });
@@ -2355,16 +2351,14 @@ namespace JipperKeyViewer.KeyViewer
                             EditorPropertyChanged();
                         });
                     }
-                    bool useGhostOutline = GUILayout.Toggle(first.UseCustomGhostRainOutline, I18n.Tr("fm_ghost_rain_outline_custom"));
-                    if (useGhostOutline != first.UseCustomGhostRainOutline)
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_outline_custom"), first.UseCustomGhostRainOutline, v =>
                     {
                         foreach (FmNode n in editorSelection)
                         {
-                            n.UseCustomGhostRainOutline = useGhostOutline;
-                            if (useGhostOutline) SeedGhostRainOutlineFromRow(n);
+                            n.UseCustomGhostRainOutline = v;
+                            if (v) SeedGhostRainOutlineFromRow(n);
                         }
-                        EditorPropertyChanged();
-                    }
+                    }, "fm_help_ghost_rain");
                     if (first.UseCustomGhostRainOutline)
                     {
                         DrawEditorToggle(I18n.Tr("rain_outline"), first.GhostRainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainOutlineEnabled = v; });
@@ -2378,20 +2372,16 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 // Per-node press scale (the Display tab's press animation per key). /
                 // 节点级按压缩放（显示页的按压缩放，按按键配置）。
-                bool pressAnim = GUILayout.Toggle(first.PressAnimEnabled, I18n.Tr("fm_press_anim"));
-                if (pressAnim != first.PressAnimEnabled)
+                DrawEditorToggle(I18n.Tr("fm_press_anim"), first.PressAnimEnabled, v =>
                 {
-                    foreach (FmNode n in editorSelection) n.PressAnimEnabled = pressAnim;
-                    EditorPropertyChanged();
-                }
+                    foreach (FmNode n in editorSelection) n.PressAnimEnabled = v;
+                }, "fm_help_press_anim");
                 if (first.PressAnimEnabled)
                 {
-                    bool customPressScale = GUILayout.Toggle(first.UseCustomPressAnim, I18n.Tr("fm_press_anim_custom"));
-                    if (customPressScale != first.UseCustomPressAnim)
+                    DrawEditorToggle(I18n.Tr("fm_press_anim_custom"), first.UseCustomPressAnim, v =>
                     {
-                        foreach (FmNode n in editorSelection) n.UseCustomPressAnim = customPressScale;
-                        EditorPropertyChanged();
-                    }
+                        foreach (FmNode n in editorSelection) n.UseCustomPressAnim = v;
+                    }, "fm_help_press_anim");
                     if (first.UseCustomPressAnim)
                         DrawEditorFloatField(I18n.Tr("fm_press_anim_scale"), "fme_pas_" + first.Id, n => n.PressAnimScale, v =>
                         {
@@ -2400,12 +2390,10 @@ namespace JipperKeyViewer.KeyViewer
                         });
                 }
                 // Counter bounce . / 计数器弹跳（计数器弹跳动画）。
-                bool counterAnim = GUILayout.Toggle(first.CounterAnimEnabled, I18n.Tr("fm_counter_anim"));
-                if (counterAnim != first.CounterAnimEnabled)
+                DrawEditorToggle(I18n.Tr("fm_counter_anim"), first.CounterAnimEnabled, v =>
                 {
-                    foreach (FmNode n in editorSelection) n.CounterAnimEnabled = counterAnim;
-                    EditorPropertyChanged();
-                }
+                    foreach (FmNode n in editorSelection) n.CounterAnimEnabled = v;
+                }, "fm_help_counter_anim");
                 if (first.CounterAnimEnabled)
                 {
                     DrawEditorFloatField(I18n.Tr("fm_anim_scale"), "fme_ascale_" + first.Id, n => n.CounterAnimScale, v =>
@@ -2454,12 +2442,10 @@ namespace JipperKeyViewer.KeyViewer
                 Color fbBg = isKps ? Settings.Data.KpsBackground : isTotal ? Settings.Data.TotalBackground : Settings.Data.Background;
                 Color fbOl = isKps ? Settings.Data.KpsOutline : isTotal ? Settings.Data.TotalOutline : Settings.Data.Outline;
                 GUILayout.Space(4f);
-                bool useCustom = GUILayout.Toggle(first.UseCustomColor, I18n.Tr("fm_custom_colors"));
-                if (useCustom != first.UseCustomColor)
+                DrawEditorToggle(I18n.Tr("fm_custom_colors"), first.UseCustomColor, v =>
                 {
-                    foreach (FmNode n in editorSelection) n.UseCustomColor = useCustom;
-                    EditorPropertyChanged();
-                }
+                    foreach (FmNode n in editorSelection) n.UseCustomColor = v;
+                }, "fm_help_custom_colors");
                 if (first.UseCustomColor)
                 {
                     if (!isImage)
@@ -2476,12 +2462,94 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
 
-            if (single && first.NodeType == 0 && GUILayout.Button(I18n.Tr("fm_reset_count"), GUILayout.MinWidth(140f)))
+            // Count reset zeroes ONLY the selected counting nodes — strictly per key, nothing
+            // else. A counted key's presses also live in the global TotalCount accumulator
+            // (mirrored by the ungrouped Total panel; group panels sum member Counts), so the
+            // reset subtracts exactly THIS key's contribution on the way down — otherwise the
+            // Total keeps counting presses the key no longer shows. Total/KPS panels display
+            // derived values and own no count, so they are out of scope again.
+            // 计数重置只清「选中的」计数节点——严格逐键，不碰任何其它东西。计入按键的按压同时记在
+            // 全局 TotalCount 累计器里（未分组 Total 面板镜像它；分组面板汇总成员 Count），故清零时
+            // 只扣回该键自己的贡献——否则 Total 会一直算着该键已不显示的按压。Total/KPS 面板显示
+            // 派生值、自身不计数，重新移出重置范围。
+            bool anyCountable = false;
+            foreach (FmNode n in editorSelection)
             {
-                first.Count = 0;
-                if (first.RuntimeKey != null) first.RuntimeKey.LastShownKps = int.MinValue;
-                RefreshAllCountDisplay();
-                SaveSettingsFromGui();
+                if (n != null && (n.NodeType == 0
+                    || (n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind))))
+                {
+                    anyCountable = true;
+                    break;
+                }
+            }
+            if (anyCountable)
+            {
+                // Manual count entry: set the selected counting nodes' Count to ANY value, not
+                // just zero. The global TotalCount follows by each node's exact delta so the
+                // Total panels stay truthful; unselected keys are never touched.
+                // 手动输入计数：把选中计数节点的 Count 设为任意值，而非只能清零。全局
+                // TotalCount 按各节点的增减差额同步，Total 面板保持真实；未选中的按键绝不受影响。
+                int seedCount = 0;
+                bool hasSeed = false, countMixed = false;
+                foreach (FmNode n in editorSelection)
+                {
+                    if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
+                    if (!hasSeed) { seedCount = n.Count; hasSeed = true; }
+                    else if (n.Count != seedCount) countMixed = true;
+                }
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(I18n.Tr("fm_count_value"), GUILayout.Width(96f));
+                DrawEditorHelpMarker("fm_help_count_value");
+                string countText = TextInputField("fme_cnt_" + first.Id,
+                    countMixed ? "—" : seedCount.ToString(), GUILayout.Width(110f));
+                if (int.TryParse(countText.Replace("—", "").Trim(), out int typedCount) && typedCount >= 0
+                    && (countMixed || typedCount != seedCount))
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
+                        if (n.CountInTotal) Settings.Data.TotalCount += typedCount - n.Count;
+                        n.Count = typedCount;
+                    }
+                    if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
+                    RefreshAllCountDisplay();
+                    SaveSettingsFromGui();
+                }
+                GUILayout.EndHorizontal();
+                DrawEditorHelpBox("fm_help_count_value");
+
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button(I18n.Tr("fm_reset_count"), GUILayout.MinWidth(140f)))
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
+                        // A CountInTotal key contributed exactly n.Count presses to the global
+                        // TotalCount — take only those back, never other keys' share. The clamp
+                        // guards profiles where the two counters drifted apart (hand edits).
+                        // CountInTotal 的按键恰好向全局 TotalCount 贡献了 n.Count 次——只扣回这部分，
+                        // 绝不动其它按键的份额。钳制防两个计数器失配的手改配置。
+                        if (n.CountInTotal)
+                        {
+                            Settings.Data.TotalCount -= n.Count;
+                            if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
+                        }
+                        n.Count = 0;
+                        if (n.RuntimeKey != null)
+                        {
+                            // The visible per-key KPS comes from KpsLog, not Count — clearing only
+                            // Count left the old rate on screen. / 屏上的每键 KPS 来自 KpsLog 而非
+                            // Count——只清 Count 会让旧速率留在屏上。
+                            n.RuntimeKey.KpsLog.Clear();
+                            n.RuntimeKey.LastShownKps = int.MinValue;
+                        }
+                    }
+                    RefreshAllCountDisplay();
+                    SaveSettingsFromGui();
+                }
+                DrawEditorHelpMarker("fm_help_reset_count");
+                GUILayout.EndHorizontal();
+                DrawEditorHelpBox("fm_help_reset_count");
             }
 
             // Group manager lives at the panel bottom REGARDLESS of selection — it used to show
@@ -2496,9 +2564,11 @@ namespace JipperKeyViewer.KeyViewer
             string[] names = { I18n.Tr("fm_add_key"), I18n.Tr("fm_add_kps"), I18n.Tr("fm_add_total"), I18n.Tr("fm_add_image") };
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("fm_node_type"), GUILayout.Width(96f));
+            DrawEditorHelpMarker("fm_help_node_type");
             int type = node.NodeType;
             int newType = GUILayout.SelectionGrid(type, names, 4, GUILayout.Height(20f));
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox("fm_help_node_type");
             if (newType == type || newType < 0 || newType > 3) return;
             if ((newType == 1 && GroupHasStat(node.GroupId, 1))
                 || (newType == 2 && GroupHasStat(node.GroupId, 2)))
@@ -2527,7 +2597,9 @@ namespace JipperKeyViewer.KeyViewer
                 fmCaptureGhostNode = null;
                 EditorPropertyChanged();
             }
+            DrawEditorHelpMarker("fm_help_ghost_key");
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox("fm_help_ghost_key");
             if (capturing)
             {
                 GUILayout.Label(I18n.Tr("fm_press_hint"));
@@ -2567,7 +2639,9 @@ namespace JipperKeyViewer.KeyViewer
                 fmCaptureNode = null;
                 EditorPropertyChanged();
             }
+            DrawEditorHelpMarker("fm_help_keybind");
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox("fm_help_keybind");
             if (capturing)
             {
                 GUILayout.Label(I18n.Tr("fm_press_hint"));
@@ -2598,6 +2672,7 @@ namespace JipperKeyViewer.KeyViewer
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("key_font_size"), GUILayout.Width(96f));
+            DrawEditorHelpMarker("fm_help_font_size");
             int size = Mathf.RoundToInt(GUILayout.HorizontalSlider(first.FontSize, 0f, 72f));
             // Mixed sizes show "—" (never parses → no accidental mass-apply); deliberate input
             // still applies to all. / 字号不一致时显示"—"（永不解析→不会意外群发）；有意输入
@@ -2609,6 +2684,7 @@ namespace JipperKeyViewer.KeyViewer
             if (int.TryParse(text.Replace("—", "").Trim(), out int parsed)) size = Mathf.Clamp(parsed, 0, 72);
             GUILayout.Label(size <= 0 ? I18n.Tr("fm_font_global") : size + "px", GUILayout.Width(48f));
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox("fm_help_font_size");
             // Same as depth: a slider drag applies on its own; untouched mixed selections keep the
             // slider at the active node's value → no accidental apply. / 与深度同理：拖滑杆即应
             // 用；未触碰的混合选区滑杆停在活动节点值上——不会误应用。
@@ -2619,20 +2695,80 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        private void DrawEditorToggle(string label, bool value, Action<bool> apply)
+        // ---- Inline "?" help markers on editor property rows / 编辑器属性行的行内「?」帮助 ----
+        // Click the small self-drawn "?" to toggle a word-wrapped HelpBox under that row.
+        // Pure IMGUI — no image assets, identical in both loader variants. The open-state set
+        // is keyed by help key, so sibling rows sharing one key (e.g. rain width/height/speed)
+        // share one explanation. / 点击行内自绘小「?」，在该行下方展开/收起自动换行的说明框。
+        // 纯 IMGUI 自绘，无图片资源，双加载器变体一致。展开状态按帮助键记录——共用同一键的
+        // 兄弟行（如雨滴宽/高/速度）共享同一段说明。
+        private readonly HashSet<string> fmOpenHelpKeys = new HashSet<string>();
+        private static GUIStyle fmHelpButtonStyle;
+        private static GUIStyle fmHelpLabelStyle;
+        private static GUIStyle fmHelpBoxStyle;
+
+        /// <summary>The "?" toggle itself — call INSIDE the row's horizontal. /
+        /// 「?」开关按钮本体——须在该行的 horizontal 内调用。</summary>
+        private void DrawEditorHelpMarker(string helpKey)
         {
+            if (string.IsNullOrEmpty(helpKey)) return;
+            if (fmHelpButtonStyle == null)
+            {
+                fmHelpButtonStyle = new GUIStyle(GUI.skin.button)
+                {
+                    fontSize = 11,
+                    alignment = TextAnchor.MiddleCenter,
+                    margin = new RectOffset(1, 1, 1, 1),
+                    padding = new RectOffset(0, 0, 0, 0)
+                };
+            }
+            if (GUILayout.Button("?", fmHelpButtonStyle, GUILayout.Width(18f), GUILayout.Height(18f)))
+            {
+                if (!fmOpenHelpKeys.Remove(helpKey)) fmOpenHelpKeys.Add(helpKey);
+            }
+        }
+
+        /// <summary>The expanded explanation — call AFTER the row's horizontal ends. /
+        /// 展开的说明文本——须在该行 horizontal 结束后调用。</summary>
+        private void DrawEditorHelpBox(string helpKey)
+        {
+            if (string.IsNullOrEmpty(helpKey) || !fmOpenHelpKeys.Contains(helpKey)) return;
+            if (fmHelpLabelStyle == null)
+                fmHelpLabelStyle = new GUIStyle(GUI.skin.label) { wordWrap = true, fontSize = 11 };
+            // Derive from GUI.skin.box, NOT the named "HelpBox" — that style exists only in
+            // Unity's EDITOR skin; the game's runtime GameSkin doesn't carry it, and the
+            // by-name lookup spammed "Unable to find style 'HelpBox'" every IMGUI event.
+            // / 从 GUI.skin.box 派生而非按名字取 "HelpBox"——后者只存在于 Unity 编辑器皮肤，
+            // 游戏运行时的 GameSkin 没有，按名查找会在每个 IMGUI 事件刷找不到样式的错误。
+            if (fmHelpBoxStyle == null)
+                fmHelpBoxStyle = new GUIStyle(GUI.skin.box) { padding = new RectOffset(6, 6, 4, 4) };
+            GUILayout.BeginHorizontal();
+            GUILayout.BeginVertical(fmHelpBoxStyle);
+            GUILayout.Label(I18n.Tr(helpKey), fmHelpLabelStyle);
+            GUILayout.EndVertical();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawEditorToggle(string label, bool value, Action<bool> apply, string helpKey = null)
+        {
+            GUILayout.BeginHorizontal();
             bool newValue = GUILayout.Toggle(value, label);
+            DrawEditorHelpMarker(helpKey);
+            GUILayout.EndHorizontal();
+            DrawEditorHelpBox(helpKey);
             if (newValue == value) return;
             apply(newValue);
             EditorPropertyChanged();
         }
 
-        private void DrawEditorTextField(string label, string ctrl, string value, Action<string> apply)
+        private void DrawEditorTextField(string label, string ctrl, string value, Action<string> apply, string helpKey = null)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, GUILayout.Width(96f));
+            DrawEditorHelpMarker(helpKey);
             string text = TextInputField(ctrl, value ?? "", GUILayout.MinWidth(120f));
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox(helpKey);
             if (!string.Equals(text, value ?? "", StringComparison.Ordinal)) apply(text ?? "");
         }
 
@@ -2643,10 +2779,11 @@ namespace JipperKeyViewer.KeyViewer
         /// / 多选感知浮点字段。选区在该值上不一致时显示"—"——活动节点的值不再冒充组值、也不会
         /// 被一次意外提交群体覆盖；"—"永不解析，输入数字即应用到全部。一致时行为与从前相同。
         /// </summary>
-        private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply)
+        private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply, string helpKey = null)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, GUILayout.Width(96f));
+            DrawEditorHelpMarker(helpKey);
             float v0 = get(editorSelection[0]);
             bool mixed = false;
             for (int i = 1; i < editorSelection.Count; i++)
@@ -2666,6 +2803,7 @@ namespace JipperKeyViewer.KeyViewer
             if (float.TryParse(text.Replace("—", "").Trim(), out float parsed) && IsFiniteFloat(parsed) && (mixed || Math.Abs(parsed - v0) > 0.001f))
                 apply(parsed);
             GUILayout.EndHorizontal();
+            DrawEditorHelpBox(helpKey);
         }
 
         private void DrawEditorColorField(string label, float[] arr, Color fallback, Action<float[]> apply)

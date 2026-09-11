@@ -1066,6 +1066,23 @@ namespace JipperKeyViewer.KeyViewer
             if (lastPerKeyKps != null)
                 for (int i = 0; i < lastPerKeyKps.Length; i++)
                     lastPerKeyKps[i] = 0;
+            // Custom nodes keep their own per-key KPS log on the Key, and nothing else ever
+            // drained it on reset — the fixed layouts' keyPressTimes above are a different
+            // container, so custom Per-Key KPS counters kept showing the old rate for up to a
+            // second after "Reset Counts". Clear them here too and force a rewrite.
+            // 自定义节点把每键 KPS 队列挂在 Key 上，重置时此前无人清理——上面的 keyPressTimes
+            // 是另一套容器，故自定义 Per-Key KPS 计数在点「重置计数」后仍会显示旧速率最多一秒。
+            // 在此一并清空并强制重写。
+            if (Keys != null)
+            {
+                for (int i = 0; i < Keys.Length; i++)
+                {
+                    Key k = Keys[i];
+                    if (k == null || k.CustomNode == null) continue;
+                    k.KpsLog.Clear();
+                    k.LastShownKps = int.MinValue;
+                }
+            }
             lastKps = -1;
             _hasKeyPressActivity = false;
         }
