@@ -381,3 +381,6 @@ codeagent.json
 
 # Local serialization debugging harness (contains local DLL copies and profile backups) / 本地序列化调试工具（含本地 DLL 副本与配置备份）
 Harness/
+
+# 内嵌默认资源的 DEFLATE 打包产物（tools/Pack-EmbeddedAssets.ps1 生成，不入库）
+JipperKeyViewer/embedded/

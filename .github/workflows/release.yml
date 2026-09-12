@@ -76,57 +76,40 @@ jobs:
         shell: pwsh
         run: ./tools/SetVersion.ps1 -Version "${{ steps.ver.outputs.version }}"
 
-      # ========== Build All (6 projects) ==========
+      # ========== Build (single variant) ==========
 
-      - name: Build core (AssetBundle)
+      # 内嵌默认资源是 gitignored 的构建输入——编译前从 assets\ 原始文件生成。 /
+      # The embedded default assets are gitignored build inputs — regenerate them from the
+      # tracked originals in assets\ before building.
+      - name: Pack embedded assets
+        shell: pwsh
+        run: ./tools/Pack-EmbeddedAssets.ps1
+
+      - name: Build core
         run: msbuild JipperKeyViewer\JipperKeyViewer.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      - name: Build Loader.UMM (AssetBundle)
+      - name: Build Loader.UMM
         run: msbuild JipperKeyViewer.Loader.UMM\JipperKeyViewer.Loader.UMM.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      - name: Build Loader.Melon (AssetBundle)
+      - name: Build Loader.Melon
         run: msbuild JipperKeyViewer.Loader.Melon\JipperKeyViewer.Loader.Melon.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      - name: Build core (FileBased)
-        run: msbuild JipperKeyViewer-FileBased\JipperKeyViewer-FileBased.csproj /p:Configuration=Release /p:Platform="AnyCPU"
+      # 无需随包分发资源文件——默认资源已内嵌 DLL，首次运行自动释放到 assets\。 /
+      # No asset files ship with the package — defaults are embedded in the DLL and
+      # self-extract to assets\ on first run.
 
-      - name: Build Loader.UMM (FileBased)
-        run: msbuild JipperKeyViewer-FileBased.Loader.UMM\JipperKeyViewer-FileBased.Loader.UMM.csproj /p:Configuration=Release /p:Platform="AnyCPU"
-
-      - name: Build Loader.Melon (FileBased)
-        run: msbuild JipperKeyViewer-FileBased.Loader.Melon\JipperKeyViewer-FileBased.Loader.Melon.csproj /p:Configuration=Release /p:Platform="AnyCPU"
-
-      # ========== Package AssetBundle (UMM + MelonLoader) ==========
-
-      - name: Package JipperKeyViewer (AssetBundle)
+      - name: Package JipperKeyViewer
         shell: pwsh
         run: |
           $dist = "dist\JipperKeyViewer"
-          New-Item -ItemType Directory -Force -Path $dist\assets | Out-Null
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item JipperKeyViewer\bin\Release\JipperKeyViewer.dll $dist\
           Copy-Item JipperKeyViewer.Loader.UMM\bin\Release\JipperKeyViewer.Loader.UMM.dll $dist\
           Copy-Item JipperKeyViewer.Loader.Melon\bin\Release\JipperKeyViewer.Loader.Melon.dll $dist\
-          Copy-Item Info.json $dist\
+          Copy-Item JipperKeyViewer\Info.json $dist\
           $info = Get-Content $dist\Info.json -Raw | ConvertFrom-Json
           $info.Version = '${{ steps.ver.outputs.version }}'
           $info | ConvertTo-Json | Set-Content $dist\Info.json -Encoding utf8
-          Copy-Item JipperKeyViewer\assets\keyviewer_resources $dist\assets\
-
-      # ========== Package FileBased (UMM + MelonLoader) ==========
-
-      - name: Package JipperKeyViewer-FileBased
-        shell: pwsh
-        run: |
-          $dist = "dist\JipperKeyViewer-FileBased"
-          New-Item -ItemType Directory -Force -Path $dist\assets | Out-Null
-          Copy-Item JipperKeyViewer-FileBased\bin\Release\JipperKeyViewer-FileBased.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased.Loader.UMM\bin\Release\JipperKeyViewer-FileBased.Loader.UMM.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased.Loader.Melon\bin\Release\JipperKeyViewer-FileBased.Loader.Melon.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased\Info.json $dist\
-          $info = Get-Content $dist\Info.json -Raw | ConvertFrom-Json
-          $info.Version = '${{ steps.ver.outputs.version }}'
-          $info | ConvertTo-Json | Set-Content $dist\Info.json -Encoding utf8
-          Copy-Item JipperKeyViewer-FileBased\assets\* $dist\assets\
 
       - name: Prepare release body
         id: body
@@ -144,13 +127,9 @@ jobs:
             "has_body=0" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           }
 
-      - name: Zip JipperKeyViewer (AssetBundle)
+      - name: Zip JipperKeyViewer
         shell: pwsh
-        run: Compress-Archive -Path dist\JipperKeyViewer\* -DestinationPath dist\JipperKeyViewer-AssetBundle.zip
-
-      - name: Zip JipperKeyViewer-FileBased
-        shell: pwsh
-        run: Compress-Archive -Path dist\JipperKeyViewer-FileBased\* -DestinationPath dist\JipperKeyViewer-FileBased.zip
+        run: Compress-Archive -Path dist\JipperKeyViewer\* -DestinationPath dist\JipperKeyViewer.zip
 
       - name: Create GitHub Release (manual dispatch)
         if: steps.body.outputs.has_body == '1'
@@ -160,8 +139,7 @@ jobs:
           body_path: dist/release-body.md
           prerelease: ${{ steps.pre.outputs.is_prerelease == 'true' }}
           files: |
-            dist/JipperKeyViewer-AssetBundle.zip
-            dist/JipperKeyViewer-FileBased.zip
+            dist/JipperKeyViewer.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -177,7 +155,6 @@ jobs:
             **Build Date**: ${{ steps.body.outputs.date }}
           append_body: true
           files: |
-            dist/JipperKeyViewer-AssetBundle.zip
-            dist/JipperKeyViewer-FileBased.zip
+            dist/JipperKeyViewer.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

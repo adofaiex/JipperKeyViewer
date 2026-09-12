@@ -1,10 +1,9 @@
-// Shared runtime PNG loader (reflection on ImageConversion.LoadImage) used by both the
-// AssetBundle and FileBased variants: key sprites with a fixed 9-slice border, and FreeMake
-// image nodes without one. Allocation-free failure paths — every exit either returns a valid
-// sprite/texture or destroys the scratch texture before returning null.
-// 共享运行时 PNG 加载器（反射调用 ImageConversion.LoadImage），bundle 与 FileBased 两个变体
-// 共用：带固定九宫格边框的按键贴图，以及不带边框的 FreeMake 图片节点。所有失败路径都会先
-// 释放占位纹理再返回 null，绝不泄漏。
+// Shared runtime PNG loader (reflection on ImageConversion.LoadImage): key sprites with a
+// fixed 9-slice border, and FreeMake image nodes without one. Allocation-free failure
+// paths — every exit either returns a valid sprite/texture or destroys the scratch
+// texture before returning null.
+// 共享运行时 PNG 加载器（反射调用 ImageConversion.LoadImage）：带固定九宫格边框的按键贴图，
+// 以及不带边框的 FreeMake 图片节点。所有失败路径都会先释放占位纹理再返回 null，绝不泄漏。
 
 using System;
 using System.IO;

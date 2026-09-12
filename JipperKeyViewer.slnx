@@ -1,9 +1,6 @@
 <Solution>
-  <Project Path="JipperKeyViewer/JipperKeyViewer.csproj" Id="cdc7b262-d8a5-4aa8-ad51-4433c471b6dc" />
-  <Project Path="JipperKeyViewer-FileBased/JipperKeyViewer-FileBased.csproj" Id="8F6E4D2C-1A3B-5C7D-9E0F-2468ACE02468" />
-  <Project Path="JipperKeyViewer.Loader.UMM/JipperKeyViewer.Loader.UMM.csproj" Id="3D7E48A1-C2B4-4F9A-8E5D-12A9B345C678" />
-  <Project Path="JipperKeyViewer.Loader.Melon/JipperKeyViewer.Loader.Melon.csproj" Id="4D8A52B1-E4B5-5F8A-9E6D-13B0C456D789" />
-  <Project Path="JipperKeyViewer-FileBased.Loader.UMM/JipperKeyViewer-FileBased.Loader.UMM.csproj" Id="5E8F63B2-D6C5-6F9A-0E7D-24C1D567E890" />
-  <Project Path="JipperKeyViewer-FileBased.Loader.Melon/JipperKeyViewer-FileBased.Loader.Melon.csproj" Id="6F9E73C3-E7D6-4F9A-1E8E-35D2E678F901" />
+  <Project Path="JipperKeyViewer/JipperKeyViewer.csproj" Id="8F6E4D2C-1A3B-5C7D-9E0F-2468ACE02468" />
+  <Project Path="JipperKeyViewer.Loader.UMM/JipperKeyViewer.Loader.UMM.csproj" Id="5E8F63B2-D6C5-6F9A-0E7D-24C1D567E890" />
+  <Project Path="JipperKeyViewer.Loader.Melon/JipperKeyViewer.Loader.Melon.csproj" Id="6F9E73C3-E7D6-4F9A-1E8E-35D2E678F901" />
   <Project Path="TgtCompat/KeyViewer.csproj" Id="7A1F84D4-F8E7-4A9B-2F7F-46E3F789A012" />
 </Solution>

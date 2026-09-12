@@ -1,23 +1,96 @@
-// AssetBundle and font management / AssetBundle 和字体管理
-// Loads built-in sprites, game fonts, custom font files, and sets up shadow materials and fallback chains / 加载内置精灵、游戏字体、自定义字体文件，设置阴影材质和后备链
+// Resource and font management (unified single-variant build) / 统一单变体构建的资源与字体管理
+// Default sprites/fonts ship DEFLATED inside the DLL and are extracted to ModPath\assets\ on
+// first run — only where the file is MISSING, so user-replaced assets always win. Sprites load
+// from PNG, fonts from OTF/TTF at runtime (no AssetBundle → immune to game Unity-version bumps),
+// plus game-font scanning, custom fonts, shadow materials and fallback chains.
+// 默认贴图/字体以 DEFLATE 压缩内嵌于 DLL，首次运行释放到 ModPath\assets\——仅在该文件缺失时
+// 写入，用户替换过的资源永远优先。贴图从 PNG 运行时加载、字体从 OTF/TTF 运行时构建（不再依赖
+// AssetBundle，对游戏 Unity 版本升级免疫），另含游戏字体扫描、自定义字体、阴影材质与后备链。
 
 using System;
+using JipperKeyViewer.KeyViewer.Settings;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
+using System.IO.Compression;
 using System.Reflection;
 using TMPro;
 using UnityEngine;
-
-using JipperKeyViewer.KeyViewer.Settings;
+using JipperKeyViewer.KeyViewer.Util;
 
 namespace JipperKeyViewer.KeyViewer
 {
     /// <summary>
-    /// Resource loading: AssetBundle sprites, font scanning, shadow material creation / 资源加载：AssetBundle 精灵、字体扫描、阴影材质创建
+    /// Resource loading: file-based sprites, font scanning, shadow material creation / 资源加载：基于文件的精灵、字体扫描、阴影材质创建
     /// </summary>
     public partial class KeyViewer : MonoBehaviour
     {
+        /// <summary>
+        /// Default assets embedded in the DLL (deflated): resource name → on-disk file name.
+        /// / 内嵌于 DLL 的默认资源（deflate 压缩）：资源名 → 落盘文件名。
+        /// </summary>
+        private static readonly (string resource, string file)[] BundledAssets =
+        {
+            ("JipperKeyViewer.Assets.KeyBackground.png", "KeyBackground.png"),
+            ("JipperKeyViewer.Assets.KeyOutline.png", "KeyOutline.png"),
+            ("JipperKeyViewer.Assets.GhostRain.png", "GhostRain.png"),
+            ("JipperKeyViewer.Assets.MAPLESTORY_OTF_BOLD.OTF", "MAPLESTORY_OTF_BOLD.OTF"),
+            ("JipperKeyViewer.Assets.cjkFonts-regular-normalized.otf", "cjkFonts-regular-normalized.otf"),
+        };
+
+        /// <summary>
+        /// Extract embedded default assets into assetsDir — ONLY files that don't exist yet.
+        /// Written via a .tmp + move so a crash mid-write never leaves a half font on disk
+        /// (a truncated OTF would poison every later load). / 把内嵌默认资源释放到 assetsDir
+        /// ——只写尚不存在的文件。经 .tmp + 移动落盘，中途崩溃不会留下残缺字体（截断的 OTF
+        /// 会毒化之后每次加载）。
+        /// </summary>
+        private static void EnsureBundledAssets(string assetsDir)
+        {
+            try
+            {
+                Directory.CreateDirectory(assetsDir);
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: cannot create assets directory {assetsDir}: {e.Message}");
+                return;
+            }
+            Assembly asm = typeof(KeyViewer).Assembly;
+            int extracted = 0;
+            foreach ((string resource, string file) in BundledAssets)
+            {
+                string path = Path.Combine(assetsDir, file);
+                if (File.Exists(path)) continue; // user's own file wins / 用户文件优先
+                try
+                {
+                    using (Stream rs = asm.GetManifestResourceStream(resource))
+                    {
+                        if (rs == null)
+                        {
+                            // A missing embedded resource is a BUILD problem (Pack-EmbeddedAssets
+                            // not run), not a user problem — name it outright.
+                            // 内嵌资源缺失是构建问题（没跑 Pack-EmbeddedAssets），不是用户问题——直接点名。
+                            Loader.Error($"KeyViewer: embedded resource missing: {resource}");
+                            continue;
+                        }
+                        string tmp = path + ".tmp";
+                        using (Stream ds = new DeflateStream(rs, CompressionMode.Decompress))
+                        using (Stream fs = File.Create(tmp))
+                            ds.CopyTo(fs);
+                        if (File.Exists(path)) File.Delete(tmp); // raced another extract / 并发释放已写好
+                        else File.Move(tmp, path);
+                        extracted++;
+                    }
+                }
+                catch (Exception e)
+                {
+                    Loader.Error($"KeyViewer: failed to extract bundled asset '{file}': {e.Message}");
+                }
+            }
+            if (extracted > 0)
+                Loader.Log($"KeyViewer: extracted {extracted} bundled default asset(s) to {assetsDir}");
+        }
+
         /// <summary>
         /// Scan for traditional Unity Font objects in the scene and convert them to TMP_FontAsset / 扫描场景中的传统 Unity Font 对象并转换为 TMP_FontAsset
         /// This allows the mod to use any font the game itself uses / 这使 Mod 可以使用游戏本身使用的任何字体
@@ -51,8 +124,7 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>
-        /// Load AssetBundle, game fonts, and custom fonts / 加载 AssetBundle、游戏字体和自定义字体
-        /// Returns false if the AssetBundle cannot be loaded / 如果无法加载 AssetBundle 则返回 false
+        /// Extract bundled defaults, then load sprites from PNG files, fonts from OTF/TTF files, and custom fonts / 释放内嵌默认资源，然后从 PNG 加载精灵、从 OTF/TTF 加载字体以及自定义字体
         /// </summary>
         private bool TryLoadResources()
         {
@@ -60,9 +132,9 @@ namespace JipperKeyViewer.KeyViewer
 
             // Destroy the previous dynamically-created assets before dropping the references —
             // TMP_FontAssets carry atlas textures/materials; without this, every loader-level
-            // toggle (UMM off→on) or failed-bundle retry leaked the whole set.
+            // toggle (UMM off→on) leaked the whole set.
             // 清空前先销毁旧的动态创建资产——TMP_FontAsset 持有图集纹理/材质;否则每次加载器级
-            // 开关(UMM 关→开)或 bundle 失败重试都会泄漏一整套。
+            // 开关(UMM 关→开)都会泄漏一整套。
             foreach (var e in fontList)
                 if (e.font != null) Destroy(e.font);
             fontList.Clear();
@@ -73,81 +145,29 @@ namespace JipperKeyViewer.KeyViewer
             string modPath = Loader.ModPath;
             string assetsDir = Path.Combine(modPath, "assets");
 
-            string bundlePath = Path.Combine(assetsDir, "keyviewer_resources");
-
-            var bundle = AssetBundle.LoadFromFile(bundlePath);
+            // Self-install: fresh installs get the embedded defaults on disk; existing files
+            // (including user-replaced ones) are never touched. / 自安装:全新安装把内嵌默认
+            // 资源落到磁盘;已存在的文件(含用户替换的)绝不动。
+            EnsureBundledAssets(assetsDir);
 
             ScanGameFonts();
 
-            if (bundle != null)
-            {
-                keyBackgroundSprite = bundle.LoadAsset<Sprite>("KeyBackground");
-                keyOutlineSprite = bundle.LoadAsset<Sprite>("KeyOutline");
+            keyBackgroundSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "KeyBackground.png"));
+            keyOutlineSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "KeyOutline.png"));
+            ghostRainSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "GhostRain.png"));
 
-                Font mapleOTF = bundle.LoadAsset<Font>("MAPLESTORY_OTF_BOLD");
-                if (mapleOTF != null)
-                {
-                    mapleFont = TMP_FontAsset.CreateFontAsset(mapleOTF);
-                    // CreateFontAsset can return null (unreadable/unsupported font) — a null entry
-                    // here would render as an empty row in the font list. ScanCustomFonts already
-                    // null-checks; these two paths now match it.
-                    // CreateFontAsset 可能返回 null(不可读/不支持的字体)——null 条目会在字体列表
-                    // 中渲染成空行。ScanCustomFonts 已判空;这两处现在对齐。
-                    if (mapleFont != null)
-                    {
-                        var entry = new FontEntry("MapleStory", mapleFont);
-                        entry.sourceFontName = "MAPLESTORY_OTF_BOLD";
-                        fontList.Add(entry);
-                    }
-                    else
-                    {
-                        Loader.Error("KeyViewer: TMP_FontAsset.CreateFontAsset failed for MAPLESTORY_OTF_BOLD");
-                    }
-                }
-                else
-                {
-                    Loader.Error("KeyViewer: MAPLESTORY_OTF_BOLD not found in AB");
-                }
+            LoadFontFromFile(assetsDir, "MAPLESTORY_OTF_BOLD.OTF", "MapleStory", ref mapleFont, fontList);
+            LoadCJKFontFromFile(assetsDir, "cjkFonts-regular-normalized.otf", "CJK (Default)", fontList);
 
-                Font cjkOTF = bundle.LoadAsset<Font>("cjkFonts-regular-normalized");
-                if (cjkOTF != null)
-                {
-                    var cjkFont = TMP_FontAsset.CreateFontAsset(cjkOTF);
-                    // Null CJK font breaks the whole fallback chain (CJK labels render as boxes);
-                    // don't insert the entry when creation failed — insert(0) would occupy the
-                    // default slot with a dead font.
-                    // CJK 字体为 null 会破坏整条后备链(中文渲染成方块);创建失败时不要插入条目
-                    // ——Insert(0) 会把默认槽位让给死字体。
-                    if (cjkFont != null)
-                    {
-                        var entry = new FontEntry("CJK (Default)", cjkFont);
-                        entry.sourceFontName = "cjkFonts-regular-normalized";
-                        fontList.Insert(0, entry);
-                    }
-                    else
-                    {
-                        Loader.Error("KeyViewer: TMP_FontAsset.CreateFontAsset failed for cjkFonts-regular-normalized (CJK labels render as boxes)");
-                    }
-                }
-                else
-                {
-                    Loader.Error("KeyViewer: cjkFonts-regular-normalized not found in AB");
-                }
-                if (keyBackgroundSprite == null)
-                    Loader.Error("KeyViewer: KeyBackground not found in AssetBundle");
-                if (keyOutlineSprite == null)
-                    Loader.Error("KeyViewer: KeyOutline not found in AssetBundle");
-
-                ghostRainSprite = bundle.LoadAsset<Sprite>("GhostRain");
-                if (ghostRainSprite == null)
-                    Loader.Warning("KeyViewer: GhostRain not found in AssetBundle");
-
-                bundle.Unload(false);
-            }
-            else
-            {
-                Loader.Error($"KeyViewer: Cannot load AssetBundle at {bundlePath}");
-            }
+            if (keyBackgroundSprite == null)
+                Loader.Warning("KeyViewer: KeyBackground.png not found in assets/");
+            if (keyOutlineSprite == null)
+                Loader.Warning("KeyViewer: KeyOutline.png not found in assets/");
+            // Without the sprite, ghost rain silently degrades to ghost-color solid columns —
+            // log it so the change isn't mysterious. / 缺贴图时鬼雨静默退化为鬼雨色纯色柱——
+            // 记日志避免莫名其妙。
+            if (ghostRainSprite == null)
+                Loader.Warning("KeyViewer: GhostRain.png not found in assets/ (ghost rain falls back to solid columns)");
 
             ScanCustomFonts();
             LinkFallbackFonts();
@@ -159,7 +179,94 @@ namespace JipperKeyViewer.KeyViewer
             for (int i = 0; i < fontList.Count; i++)
                 fontNameIndex[fontList[i].name] = i;
 
-            return bundle != null;
+            return true;
+        }
+
+        /// <summary>
+        /// Load a PNG file as a Sprite with 9-slice border / 加载 PNG 文件为带九宫格边框的 Sprite
+        /// Border values (11px) match the original Unity import settings / 边框值（11px）与原始 Unity 导入设置一致
+        /// Uses ImageConversion.LoadImage via reflection since the module isn't referenced at compile time / 通过反射调用 ImageConversion.LoadImage
+        /// </summary>
+        private static Sprite LoadSpriteFromFile(string path)
+        {
+            // Delegates to the shared loader (FreeMake image nodes use it too, without the
+            // 9-slice border). / 委托给共享加载器（FreeMake 图片节点同样使用它，无九宫格边框）。
+            return KvImageLoader.LoadSprite(path, new Vector4(11, 11, 11, 11));
+        }
+
+        /// <summary>
+        /// Load an OTF/TTF font file and add it to the font list / 加载 OTF/TTF 字体文件并添加到字体列表
+        /// </summary>
+        private static void LoadFontFromFile(string assetsDir, string fileName, string entryName, ref TMP_FontAsset target, List<FontEntry> fontList)
+        {
+            string path = Path.Combine(assetsDir, fileName);
+            // Without logging here the entry simply never appears in the font list with no hint
+            // why. / 不打日志则字体列表里永远不出现该条目且无任何线索。
+            if (!File.Exists(path)) { Loader.Error($"KeyViewer: font file not found: {path}"); return; }
+            try
+            {
+                Font font = new Font(path);
+                if (font != null)
+                {
+                    target = TMP_FontAsset.CreateFontAsset(font);
+                    // CreateFontAsset can return null (unreadable font) — a null entry would render
+                    // as an empty row in the font list; skip it like ScanCustomFonts does.
+                    // CreateFontAsset 可能返回 null(不可读字体)——null 条目会在字体列表中渲染成
+                    // 空行;与 ScanCustomFonts 一致地跳过。
+                    if (target != null)
+                    {
+                        var entry = new FontEntry(entryName, target);
+                        entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
+                        fontList.Add(entry);
+                    }
+                    else
+                    {
+                        Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for '{fileName}'");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: Failed to load font '{fileName}': {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Load CJK font and insert it at the front of the font list / 加载 CJK 字体并插入到字体列表最前面
+        /// </summary>
+        private static void LoadCJKFontFromFile(string assetsDir, string fileName, string entryName, List<FontEntry> fontList)
+        {
+            string path = Path.Combine(assetsDir, fileName);
+            // Losing the CJK font also breaks the fallback chain LinkFallbackFonts wires into every
+            // other font — CJK key labels would render as boxes with zero log hints. / CJK 字体缺失
+            // 还会破坏 LinkFallbackFonts 接到其他所有字体上的后备链——中文键位会渲染成方块且无任何日志线索。
+            if (!File.Exists(path)) { Loader.Error($"KeyViewer: CJK font file not found: {path} (CJK labels render as boxes)"); return; }
+            try
+            {
+                Font font = new Font(path);
+                if (font != null)
+                {
+                    var cjkFont = TMP_FontAsset.CreateFontAsset(font);
+                    // Null CJK font breaks the whole fallback chain; don't insert the entry when
+                    // creation failed — Insert(0) would occupy the default slot with a dead font.
+                    // CJK 字体为 null 会破坏整条后备链;创建失败时不要插入条目——Insert(0) 会把
+                    // 默认槽位让给死字体。
+                    if (cjkFont != null)
+                    {
+                        var entry = new FontEntry(entryName, cjkFont);
+                        entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
+                        fontList.Insert(0, entry);
+                    }
+                    else
+                    {
+                        Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for CJK font '{fileName}' (CJK labels render as boxes)");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: Failed to load CJK font '{fileName}': {e.Message}");
+            }
         }
 
         /// <summary>
@@ -172,7 +279,7 @@ namespace JipperKeyViewer.KeyViewer
 
         /// <summary>
         /// Update the font on all key text elements / 更新所有按键文本元素的字体
-        /// Called when the user changes font selection / 用户更改字体选择时调用
+        /// Called when the user changes font selection / 用户更改字体时调用
         /// </summary>
         private void UpdateAllFonts()
         {

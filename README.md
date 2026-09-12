@@ -12,7 +12,7 @@
 
 本仓库是一个 C# Mod 工程，包含：A C# mod project containing:
 
-- 双变体 Mod（AssetBundle / FileBased），支持 UnityModManager 与 MelonLoader 双加载器 / dual variants, UnityModManager & MelonLoader
+- 单一变体 Mod（默认资源 DEFLATE 内嵌 DLL，首启自释放），支持 UnityModManager 与 MelonLoader 双加载器 / single variant with DLL-embedded default assets, UnityModManager & MelonLoader
 - 固定布局按键显示（8K–24K / 108 键全键盘 / 脚键 2K–16K）/ fixed layouts (8K–24K, 108-key, foot keys 2K–16K)
 - FreeMake 自定义布局编辑器（节点式、IMGUI 独立弹窗、内置预设、图层组）/ FreeMake node editor (IMGUI window, presets, layer groups)
 - 合并网格渲染的按键框与雨滴系统（对象池、热路径零 GC）/ merged-mesh rendering with pooling, zero hot-path GC
@@ -33,7 +33,6 @@
 
 - **.NET SDK** — 目标框架引用程序集由 csproj 自动还原，无需装 4.8.1 Developer Pack / reference assemblies auto-restored, no Developer Pack needed
 - `libs/` 目录下的引用 DLL（游戏程序集 + Newtonsoft + 加载器 API）/ reference DLLs under `libs/`
-- （仅 AssetBundle 变体）Unity Editor 6.0.x——`.meta` 固定精灵边框与 ppu，勿丢失 / (AssetBundle variant) Unity 6.0.x — `.meta` files pin sprite borders & ppu
 - Git
 
 ## 3. 快速开始 / Quick Start
@@ -42,18 +41,20 @@
 git clone https://github.com/adofaiex/JipperKeyViewer.git
 cd JipperKeyViewer
 
-# Build both mod variants / 构建两变体
+# 生成内嵌默认资源（gitignored 构建输入，全新克隆必跑一次） / generate embedded assets (gitignored build input — run once per fresh clone)
+./tools/Pack-EmbeddedAssets.ps1
+
+# 构建 / build
 dotnet build JipperKeyViewer/JipperKeyViewer.csproj -c Release
-dotnet build JipperKeyViewer-FileBased/JipperKeyViewer-FileBased.csproj -c Release
 ```
 
-将 `bin/Release` 产物连同 Loader 入口、`Info.json`、`assets/` 拷入游戏的 `Mods/JipperKeyViewer/`（见 §9）/ Copy outputs + loader entries + `Info.json` + `assets/` into the game's `Mods/` folder (see §9).
+将 `bin/Release` 产物连同 Loader 入口、`Info.json` 拷入游戏的 `Mods/`（见 §9）——无需任何资源文件，首次启动自动释放到 `assets/` / Copy outputs + loader entries + `Info.json` into the game's `Mods/` folder (see §9) — no asset files needed, they self-extract to `assets/` on first launch.
 
 ## 4. 目录结构 / Repository Layout
 
 ```text
 JipperKeyViewer/
-├─ JipperKeyViewer/                    # AssetBundle variant / AssetBundle 变体（主工程）
+├─ JipperKeyViewer/                    # 共享核心源码树（由主工程链接编译） / shared core source tree (linked into the mod project)
 │  └─ KeyViewer/
 │     ├─ Core/                         # Runtime core / 运行时核心
 │     │  ├─ KeyViewer.cs               # Lifecycle, config/profile management, migrations / 生命周期、配置管理、版本迁移
@@ -78,21 +79,20 @@ JipperKeyViewer/
 │     │  └─ RawRain.cs                 # Per-drop data record & kinematics / 单滴数据与运动学
 │     ├─ Loader/                       # Loading glue / 加载胶合
 │     │  ├─ ModLoader.cs               # Loader glue & logging / 加载器胶合与日志
-│     │  └─ KeyViewerResources.cs      # AssetBundle resource loading / 资源包加载
+│     │  └─ KeyViewerResources.cs      # Unified resource loading + embedded-asset self-extract / 统一资源加载与内嵌资源自释放
 │     └─ Util/                         # Shared utilities / 共享工具
 │        ├─ I18n.cs                    # EN/ZH/KO strings / 三语词条
 │        └─ KvImageLoader.cs           # Reflection PNG loader (shared) / 反射 PNG 加载器
-├─ JipperKeyViewer-FileBased/          # File-based variant (shared sources) / 文件变体
-├─ JipperKeyViewer-Loader.UMM/         # UMM loader entry / UMM 加载入口
+├─ JipperKeyViewer/                    # 主工程（源码树 + 内嵌默认资源 + Info.json） / the mod project
+├─ JipperKeyViewer.Loader.UMM/         # UMM loader entry / UMM 加载入口
 ├─ JipperKeyViewer.Loader.Melon/       # Melon loader entry / Melon 加载入口
-├─ JipperKeyViewer-Unity/              # AssetBundle build project / 资源包构建工程
 ├─ libs/                               # Reference DLLs / 引用 DLL
 └─ CHANGELOG.md / 更新日志.md
 ```
 
 ## 5. 包与依赖 / Dependencies
 
-- **游戏程序集 / Game assemblies**: `UnityEngine.*` (CoreModule/UIModule/IMGUIModule/InputLegacyModule/AssetBundleModule…), `Assembly-CSharp`, `Unity.TextMeshPro`
+- **游戏程序集 / Game assemblies**: `UnityEngine.*` (CoreModule/UIModule/IMGUIModule/InputLegacyModule…), `Assembly-CSharp`, `Unity.TextMeshPro`; `System.IO.Compression`（内嵌资源解压，Unity Mono 自带 / embedded-asset decompression, shipped by Unity Mono）
 - **序列化 / Serialization**: `Newtonsoft.Json` — resolved from the game's Managed dir at runtime; `libs/` copy for compile time
 - **加载器 API / Loader APIs**: `UnityModManager`, `MelonLoader`, `0Harmony` (loader entries only — the core project does not depend on Harmony / 仅加载器入口引用，主工程不依赖 Harmony)
 - 无 NuGet 运行时依赖；`Microsoft.NETFramework.ReferenceAssemblies` 自动还原 / no NuGet runtime deps; reference assemblies auto-restored
@@ -222,25 +222,25 @@ flowchart LR
 
 ## 9. 安装布局 / Installation Layouts
 
-### UnityModManager（AssetBundle 变体）
+### UnityModManager
 
 ```text
 UMMMods/JipperKeyViewer/
 ├── JipperKeyViewer.dll
-├── JipperKeyViewer.Loader.UMM.dll      # Info.json 引用的入口 / entry referenced by Info.json
-├── Info.json
-└── assets/keyviewer_resources
+├── JipperKeyViewer.Loader.UMM.dll             # Info.json 引用的入口 / entry referenced by Info.json
+└── Info.json
 ```
 
-### MelonLoader（FileBased 变体）
+### MelonLoader
 
 ```text
-Mods/JipperKeyViewer-FileBased/
-├── JipperKeyViewer-FileBased.dll
-├── JipperKeyViewer-FileBased.Loader.Melon.dll
-├── Info.json
-└── assets/
+Mods/JipperKeyViewer/
+├── JipperKeyViewer.dll
+├── JipperKeyViewer.Loader.Melon.dll
+└── Info.json
 ```
+
+不再随包分发资源文件：默认贴图/字体 DEFLATE 内嵌于主 DLL，首次启动自动释放到 `assets/`（已存在的文件——包括用户替换过的——永不覆盖）。 / No asset files ship with the package: default sprites/fonts are deflated inside the main DLL and self-extract to `assets/` on first launch (existing files — including user replacements — are never overwritten).
 
 首次启动后创建 `config/`（`settings.json` + `profiles/` 每配置一个 JSON，游戏内切换）；`CustomFont/` 放字体，`CustomImages/` 放 FreeMake 图片。/ First launch creates `config/` (meta + one JSON per profile, switchable in-game); fonts in `CustomFont/`, FreeMake images in `CustomImages/`.
 

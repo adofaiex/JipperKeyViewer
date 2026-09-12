@@ -1,9 +1,0 @@
-ManifestFileVersion: 0
-UnityVersion: 6000.3.7f1
-CRC: 2674789585
-HashAppended: 0
-AssetBundleManifest:
-  AssetBundleInfos:
-    Info_0:
-      Name: keyviewer_resources_6000
-      Dependencies: {}

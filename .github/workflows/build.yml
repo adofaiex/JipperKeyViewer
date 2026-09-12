@@ -36,62 +36,38 @@ jobs:
       - name: Restore NuGet packages
         run: dotnet restore JipperKeyViewer.slnx
 
-      # ========== AssetBundle Variant ==========
+      # 内嵌默认资源是 gitignored 的构建输入——编译前从 assets\ 原始文件生成。 /
+      # The embedded default assets are gitignored build inputs — regenerate them from the
+      # tracked originals in assets\ before building.
+      - name: Pack embedded assets
+        shell: pwsh
+        run: ./tools/Pack-EmbeddedAssets.ps1
 
-      - name: Build core (AssetBundle)
+      - name: Build core
         run: msbuild JipperKeyViewer\JipperKeyViewer.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      - name: Build Loader.UMM (AssetBundle)
+      - name: Build Loader.UMM
         run: msbuild JipperKeyViewer.Loader.UMM\JipperKeyViewer.Loader.UMM.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      - name: Build Loader.Melon (AssetBundle)
+      - name: Build Loader.Melon
         run: msbuild JipperKeyViewer.Loader.Melon\JipperKeyViewer.Loader.Melon.csproj /p:Configuration=Release /p:Platform="AnyCPU"
 
-      # ========== FileBased Variant ==========
+      # 无需随包分发资源文件——默认资源已内嵌 DLL，首次运行自动释放到 assets\。 /
+      # No asset files ship with the package — defaults are embedded in the DLL and
+      # self-extract to assets\ on first run.
 
-      - name: Build core (FileBased)
-        run: msbuild JipperKeyViewer-FileBased\JipperKeyViewer-FileBased.csproj /p:Configuration=Release /p:Platform="AnyCPU"
-
-      - name: Build Loader.UMM (FileBased)
-        run: msbuild JipperKeyViewer-FileBased.Loader.UMM\JipperKeyViewer-FileBased.Loader.UMM.csproj /p:Configuration=Release /p:Platform="AnyCPU"
-
-      - name: Build Loader.Melon (FileBased)
-        run: msbuild JipperKeyViewer-FileBased.Loader.Melon\JipperKeyViewer-FileBased.Loader.Melon.csproj /p:Configuration=Release /p:Platform="AnyCPU"
-
-      # ========== Package AssetBundle (UMM + MelonLoader) ==========
-
-      - name: Package JipperKeyViewer (AssetBundle)
+      - name: Package JipperKeyViewer
         shell: pwsh
         run: |
           $dist = "dist\JipperKeyViewer"
-          New-Item -ItemType Directory -Force -Path $dist\assets | Out-Null
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item JipperKeyViewer\bin\Release\JipperKeyViewer.dll $dist\
           Copy-Item JipperKeyViewer.Loader.UMM\bin\Release\JipperKeyViewer.Loader.UMM.dll $dist\
           Copy-Item JipperKeyViewer.Loader.Melon\bin\Release\JipperKeyViewer.Loader.Melon.dll $dist\
-          Copy-Item Info.json $dist\
-          Copy-Item JipperKeyViewer\assets\keyviewer_resources $dist\assets\
+          Copy-Item JipperKeyViewer\Info.json $dist\
 
-      # ========== Package FileBased (UMM + MelonLoader) ==========
-
-      - name: Package JipperKeyViewer-FileBased
-        shell: pwsh
-        run: |
-          $dist = "dist\JipperKeyViewer-FileBased"
-          New-Item -ItemType Directory -Force -Path $dist\assets | Out-Null
-          Copy-Item JipperKeyViewer-FileBased\bin\Release\JipperKeyViewer-FileBased.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased.Loader.UMM\bin\Release\JipperKeyViewer-FileBased.Loader.UMM.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased.Loader.Melon\bin\Release\JipperKeyViewer-FileBased.Loader.Melon.dll $dist\
-          Copy-Item JipperKeyViewer-FileBased\Info.json $dist\
-          Copy-Item JipperKeyViewer-FileBased\assets\* $dist\assets\
-
-      - name: Upload JipperKeyViewer (AssetBundle)
+      - name: Upload JipperKeyViewer
         uses: actions/upload-artifact@v7
         with:
-          name: JipperKeyViewer-AssetBundle
+          name: JipperKeyViewer
           path: dist/JipperKeyViewer/
-
-      - name: Upload JipperKeyViewer-FileBased
-        uses: actions/upload-artifact@v7
-        with:
-          name: JipperKeyViewer-FileBased
-          path: dist/JipperKeyViewer-FileBased/

@@ -1,7 +1,7 @@
-﻿# Set the mod version in every place it is hardcoded:
-#   - the six AssemblyInfo.cs files (AssemblyVersion / AssemblyFileVersion)
+# Set the mod version in every place it is hardcoded:
+#   - the three AssemblyInfo.cs files (AssemblyVersion / AssemblyFileVersion)
 #   - the [MelonInfo] version string in MelonEntry.cs
-#   - Info.json + JipperKeyViewer-FileBased\Info.json ("Version")
+#   - JipperKeyViewer\Info.json ("Version")
 #   - Repository.json ("Version" fields + releases/download/<ver>/ URLs)
 #
 # Usage:  ./tools/SetVersion.ps1 -Version 1.7.1
@@ -10,7 +10,7 @@
 # keep the hand-written AssemblyInfo.cs as the single version source with GenerateAssemblyInfo=
 # false, so msbuild's /p:Version remains ignored and the sources are patched instead).
 #
-# 一键修改所有硬编码版本号：6 个 AssemblyInfo、MelonEntry 的 [MelonInfo] 版本串、两个
+# 一键修改所有硬编码版本号：3 个 AssemblyInfo、MelonEntry 的 [MelonInfo] 版本串、
 # Info.json、Repository.json（版本字段 + 下载 URL）。发版工作流在 msbuild 之前于构建机上运行
 # 本脚本（各工程以 GenerateAssemblyInfo=false 保留手写 AssemblyInfo 作为唯一版本来源，
 # /p:Version 依然无效，故直接改源码）；本地发版前也可手动运行。
@@ -52,11 +52,8 @@ function Update-File([string]$relPath, [scriptblock]$edit) {
 
 $assemblyInfos = @(
     'JipperKeyViewer\Properties\AssemblyInfo.cs',
-    'JipperKeyViewer-FileBased\Properties\AssemblyInfo.cs',
     'JipperKeyViewer.Loader.UMM\Properties\AssemblyInfo.cs',
-    'JipperKeyViewer.Loader.Melon\Properties\AssemblyInfo.cs',
-    'JipperKeyViewer-FileBased.Loader.UMM\Properties\AssemblyInfo.cs',
-    'JipperKeyViewer-FileBased.Loader.Melon\Properties\AssemblyInfo.cs'
+    'JipperKeyViewer.Loader.Melon\Properties\AssemblyInfo.cs'
 )
 foreach ($rel in $assemblyInfos) {
     Update-File $rel { param($t)
@@ -69,10 +66,8 @@ Update-File 'JipperKeyViewer.Loader.Melon\MelonEntry.cs' { param($t)
     $t -replace '("Jipper Key Viewer", ")[\d.]+(")', ('${1}' + $Version + '${2}')
 }
 
-foreach ($rel in @('Info.json', 'JipperKeyViewer-FileBased\Info.json')) {
-    Update-File $rel { param($t)
-        $t -replace '("Version"\s*:\s*")[^"]+(")', ('${1}' + $Version + '${2}')
-    }
+Update-File 'JipperKeyViewer\Info.json' { param($t)
+    $t -replace '("Version"\s*:\s*")[^"]+(")', ('${1}' + $Version + '${2}')
 }
 
 Update-File 'Repository.json' { param($t)
