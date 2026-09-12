@@ -48,7 +48,7 @@ cd JipperKeyViewer
 dotnet build JipperKeyViewer/JipperKeyViewer.csproj -c Release
 ```
 
-将 `bin/Release` 产物连同 Loader 入口、`Info.json` 拷入游戏的 `Mods/`（见 §9）——无需任何资源文件，首次启动自动释放到 `assets/` / Copy outputs + loader entries + `Info.json` into the game's `Mods/` folder (see §9) — no asset files needed, they self-extract to `assets/` on first launch.
+将仓库根 `bin\` 的三个 DLL 连同 `Info.json` 拷入游戏的 `Mods/`（见 §9）——无需任何资源文件，首次启动自动释放到 `assets/` / Copy the three DLLs from the repo-root `bin\` + `Info.json` into the game's `Mods/` folder (see §9) — no asset files needed, they self-extract to `assets/` on first launch.
 
 ## 4. 目录结构 / Repository Layout
 

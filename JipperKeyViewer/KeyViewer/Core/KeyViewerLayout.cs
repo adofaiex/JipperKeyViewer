@@ -115,6 +115,10 @@ namespace JipperKeyViewer.KeyViewer
             // 显式清空活跃雨滴状态再丢弃 Keys 引用——活跃集此前仅靠"雨滴索引 <24 < 任意
             // 数组长度"的隐式不变量保持正确;清空让正确性不再依赖它。
             rainSystem.ClearActiveDrops(Keys);
+            // Same texture-ownership reason as ResetKeyViewer — destroying KeyViewerObject does
+            // not free any custom-image texture. / 与 ResetKeyViewer 同理的贴图归属问题——
+            // 销毁 KeyViewerObject 不会释放任何自定义图片贴图。
+            ReleaseCustomTextures();
             Object.Destroy(KeyViewerObject);
             KeyViewerObject = null;
             KeyViewerSizeObject = null;
@@ -1530,6 +1534,11 @@ namespace JipperKeyViewer.KeyViewer
             if (KeyViewerObject == null) return;
             if (Keys != null)
             {
+                // Custom-image textures are NOT owned by the GameObjects being destroyed below —
+                // release them first or every rebuild leaks one GPU texture per image node.
+                // / 自定义图片贴图不属于下方将被销毁的 GameObject——先释放，否则每次重建
+                // 每个图片节点泄漏一张 GPU 贴图。
+                ReleaseCustomTextures();
                 // Destroy EVERY key child under the size object (main keys, foot keys, KPS/Total boxes,
                 // any leaks) so no stale key survives a layout switch — but keep the shape/text layer
                 // objects; their slots are reset via Init and their text roots destroyed below.

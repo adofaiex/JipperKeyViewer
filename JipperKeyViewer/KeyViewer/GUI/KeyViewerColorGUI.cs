@@ -445,8 +445,31 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.Space(5);
             if (redBtnStyle == null)
                 redBtnStyle = new GUIStyle(GUI.skin.button) { normal = { textColor = Color.red } };
+            GUILayout.BeginHorizontal();
+            // Manual count entry — the fixed-layout twin of the FreeMake editor's field: set
+            // this key's count to any value, with the global TotalCount following the delta so
+            // the Total panel stays truthful. Parses live while typing (same as the editor).
+            // 手动输入计数——FreeMake 编辑器同款功能在固定布局这边的镜像：把该键计数设为
+            // 任意值，全局 TotalCount 按差额同步。输入即解析（与编辑器一致）。
+            string typed = TextInputField("perkey_cnt_" + s, Settings.Data.Count[s].ToString(), GUILayout.Width(64f));
+            if (int.TryParse((typed ?? "").Replace("—", "").Trim(), out int newCount)
+                && newCount >= 0 && newCount != Settings.Data.Count[s])
+            {
+                Settings.Data.TotalCount += newCount - Settings.Data.Count[s];
+                if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
+                Settings.Data.Count[s] = newCount;
+                if (Keys != null && s < Keys.Length && Keys[s]?.value != null)
+                    Keys[s].value.text = newCount.ToString();
+                SaveSettingsFromGui();
+            }
             if (GUILayout.Button(I18n.Tr("reset_counts") + " (" + Settings.Data.Count[s] + ")", redBtnStyle))
             {
+                // Give this key's presses back to the Total, mirroring the FreeMake reset —
+                // previously the per-key reset zeroed the count but left the Total counting
+                // them forever. / 把该键的按压还给 Total，与 FreeMake 重置对齐——此前每键
+                // 重置只清零计数，Total 却永远算着这些按压。
+                Settings.Data.TotalCount -= Settings.Data.Count[s];
+                if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
                 Settings.Data.Count[s] = 0;
                 if (keyPressTimes != null && s < keyPressTimes.Length && keyPressTimes[s] != null)
                     keyPressTimes[s].Clear();
@@ -456,6 +479,7 @@ namespace JipperKeyViewer.KeyViewer
                     Keys[s].value.text = "0";
                 SaveSettingsFromGui();
             }
+            GUILayout.EndHorizontal();
         }
 
         private static KeyCode GetKeyCodeForIndex(int idx)

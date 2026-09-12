@@ -61,9 +61,9 @@ jobs:
         run: |
           $dist = "dist\JipperKeyViewer"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item JipperKeyViewer\bin\Release\JipperKeyViewer.dll $dist\
-          Copy-Item JipperKeyViewer.Loader.UMM\bin\Release\JipperKeyViewer.Loader.UMM.dll $dist\
-          Copy-Item JipperKeyViewer.Loader.Melon\bin\Release\JipperKeyViewer.Loader.Melon.dll $dist\
+          Copy-Item bin\JipperKeyViewer.dll $dist\
+          Copy-Item bin\JipperKeyViewer.Loader.UMM.dll $dist\
+          Copy-Item bin\JipperKeyViewer.Loader.Melon.dll $dist\
           Copy-Item JipperKeyViewer\Info.json $dist\
 
       - name: Upload JipperKeyViewer

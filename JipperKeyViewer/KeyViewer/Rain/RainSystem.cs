@@ -91,7 +91,18 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
                 RectTransform keyRt = (RectTransform)key.transform;
                 Vector2 keyPos = keyRt.anchoredPosition;
-                int row = ki < 8 ? 0 : (ki < 16 ? 1 : 2);
+                // Row for the per-frame speed/height arrays (0/1/2): custom nodes carry their
+                // own RainRow — custom slots are assigned in DEPTH order, so deriving from ki
+                // handed every 9th+ custom key row-2 params regardless of its setting, while
+                // drop CREATION (CreateRainDropForKey) used the correct row → mixed-row drops.
+                // Fixed layouts keep the slot thresholds, mirroring CreateRainDropForKey.
+                // 每帧速度/高度数组所用的排（0/1/2）：自定义节点自带 RainRow——自定义槽位按
+                // 深度序分配，按 ki 推导会让第 9 个及以后的键无论设置如何都吃到第 2 排参数，
+                // 而雨滴生成（CreateRainDropForKey）用的是正确的排 → 参数串排。固定布局沿用
+                // 槽位阈值，与 CreateRainDropForKey 对齐。
+                int row = key.CustomNode != null
+                    ? Mathf.Clamp(key.CustomNode.RainRow, 0, 2)
+                    : (ki < 8 ? 0 : (ki < 16 ? 1 : 2));
                 for (int j = key.rainList.Count - 1; j >= 0; j--)
                     UpdateSingleRainDrop(key.rainList[j], key, ki, keyPos, j, row, dtSec);
             }
@@ -615,22 +626,51 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public void ClearRowDrops(Key[] keys, int row)
         {
             if (keys == null) return;
-            int start = row * 8;
-            int end = start + 8;
-            for (int i = start; i < end && i < keys.Length; i++)
+            if (KeyViewer.IsCustomLayout)
             {
-                Key key = keys[i];
-                if (key == null) continue;
-                foreach (var rain in key.rainList)
-                    ReturnRawRain(rain);
-                key.rainList.Clear();
-            }
-            for (int i = rainActiveKeys.Count - 1; i >= 0; i--)
-            {
-                if (rainActiveKeys[i] >= start && rainActiveKeys[i] < end)
+                // Custom slots are depth-ordered, NOT row-packed (row*8..+8 ranges select
+                // unrelated keys) — select by each node's own RainRow instead.
+                // / 自定义槽位按深度排序而非按排打包（row*8..+8 选中的是无关按键）——
+                // 改按节点自身的 RainRow 选取。
+                for (int i = 0; i < keys.Length; i++)
                 {
-                    rainActiveSet.Remove(rainActiveKeys[i]);
-                    rainActiveKeys.RemoveAt(i);
+                    Key key = keys[i];
+                    if (key == null || key.CustomNode == null) continue;
+                    if (Mathf.Clamp(key.CustomNode.RainRow, 0, 2) != row) continue;
+                    foreach (var rain in key.rainList)
+                        ReturnRawRain(rain);
+                    key.rainList.Clear();
+                }
+                for (int i = rainActiveKeys.Count - 1; i >= 0; i--)
+                {
+                    int ki = rainActiveKeys[i];
+                    Key k = ki >= 0 && ki < keys.Length ? keys[ki] : null;
+                    if (k != null && k.CustomNode != null && Mathf.Clamp(k.CustomNode.RainRow, 0, 2) == row)
+                    {
+                        rainActiveSet.Remove(ki);
+                        rainActiveKeys.RemoveAt(i);
+                    }
+                }
+            }
+            else
+            {
+                int start = row * 8;
+                int end = start + 8;
+                for (int i = start; i < end && i < keys.Length; i++)
+                {
+                    Key key = keys[i];
+                    if (key == null) continue;
+                    foreach (var rain in key.rainList)
+                        ReturnRawRain(rain);
+                    key.rainList.Clear();
+                }
+                for (int i = rainActiveKeys.Count - 1; i >= 0; i--)
+                {
+                    if (rainActiveKeys[i] >= start && rainActiveKeys[i] < end)
+                    {
+                        rainActiveSet.Remove(rainActiveKeys[i]);
+                        rainActiveKeys.RemoveAt(i);
+                    }
                 }
             }
             if (Layer != null) Layer.MarkDirty();

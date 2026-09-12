@@ -182,6 +182,7 @@ namespace JipperKeyViewer.KeyViewer
             // ——Ctrl+Z 可恢复。
             if (GUILayout.Button(I18n.Tr("fm_presets"), GUILayout.MinWidth(42f))) fmPresetStripOpen = !fmPresetStripOpen;
             if (GUILayout.Button(I18n.Tr("fm_wipe"), GUILayout.MinWidth(42f))) EditorWipeCanvas();
+            if (GUILayout.Button(I18n.Tr("fm_arrange"), GUILayout.MinWidth(42f))) fmArrangeStripOpen = !fmArrangeStripOpen;
             GUILayout.FlexibleSpace();
             GUILayout.Label(string.Format(I18n.Tr("fm_status"), Settings.Data.CustomNodes.Count, editorSelection.Count),
                 GUILayout.Width(120f));
@@ -211,10 +212,44 @@ namespace JipperKeyViewer.KeyViewer
                     EditorApplyPreset(picked, fmPresetNewProfile);
                 }
             }
+            // Arrange strip: align/distribute the selection and stamp array copies. /
+            // 排列条：对选区对齐/等距分布，以及阵列复制。
+            if (fmArrangeStripOpen)
+            {
+                GUILayout.BeginHorizontal();
+                GUI.enabled = editorSelection.Count >= 2;
+                if (GUILayout.Button(I18n.Tr("fm_align_left"), GUILayout.MinWidth(34f))) EditorAlignSelection(0);
+                if (GUILayout.Button(I18n.Tr("fm_align_hcenter"), GUILayout.MinWidth(34f))) EditorAlignSelection(1);
+                if (GUILayout.Button(I18n.Tr("fm_align_right"), GUILayout.MinWidth(34f))) EditorAlignSelection(2);
+                if (GUILayout.Button(I18n.Tr("fm_align_top"), GUILayout.MinWidth(34f))) EditorAlignSelection(3);
+                if (GUILayout.Button(I18n.Tr("fm_align_vcenter"), GUILayout.MinWidth(34f))) EditorAlignSelection(4);
+                if (GUILayout.Button(I18n.Tr("fm_align_bottom"), GUILayout.MinWidth(34f))) EditorAlignSelection(5);
+                GUI.enabled = editorSelection.Count >= 3;
+                if (GUILayout.Button(I18n.Tr("fm_dist_h"), GUILayout.MinWidth(34f))) EditorDistributeSelection(true);
+                if (GUILayout.Button(I18n.Tr("fm_dist_v"), GUILayout.MinWidth(34f))) EditorDistributeSelection(false);
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(I18n.Tr("fm_array_count"), GUILayout.Width(40f));
+                fmArrayCountText = TextInputField("fme_arr_n", fmArrayCountText, GUILayout.Width(34f));
+                GUILayout.Label(I18n.Tr("fm_array_spacing"), GUILayout.Width(40f));
+                fmArraySpacingText = TextInputField("fme_arr_s", fmArraySpacingText, GUILayout.Width(44f));
+                int arrayN = 0; float arrayGap = 0f;
+                bool arrayOk = int.TryParse(fmArrayCountText.Trim(), out arrayN) && arrayN >= 1 && arrayN <= 200
+                    && float.TryParse(fmArraySpacingText.Replace("—", "").Trim(), out arrayGap);
+                GUI.enabled = arrayOk && editorSelection.Count > 0;
+                if (GUILayout.Button(I18n.Tr("fm_array_h"), GUILayout.MinWidth(64f))) EditorArraySelection(true, arrayN, arrayGap);
+                if (GUILayout.Button(I18n.Tr("fm_array_v"), GUILayout.MinWidth(64f))) EditorArraySelection(false, arrayN, arrayGap);
+                GUI.enabled = true;
+                GUILayout.EndHorizontal();
+            }
         }
 
         private bool fmPresetStripOpen;
         private bool fmPresetNewProfile = true;
+        private bool fmArrangeStripOpen;
+        private string fmArrayCountText = "4";
+        private string fmArraySpacingText = "20";
 
         /// <summary>Apply a built-in layout preset. `newProfile` (default) lands it in a NEW
         /// profile cloned from the current one — the current layout untouched; otherwise it
@@ -674,6 +709,120 @@ namespace JipperKeyViewer.KeyViewer
             editorSelection.Clear();
             foreach (FmNode node in Settings.Data.CustomNodes)
                 if (node != null) editorSelection.Add(node);
+        }
+
+        /// <summary>Align the selection (modes 0-5: left / horizontal-center / right / top /
+        /// vertical-center / bottom) against its own bounds. Undoable property change. /
+        /// 将选区按自身包围盒对齐（模式 0-5：左 / 水平居中 / 右 / 顶 / 垂直居中 / 底）。
+        /// 可撤销的属性变更。</summary>
+        private void EditorAlignSelection(int mode)
+        {
+            List<FmNode> sel = new List<FmNode>();
+            foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
+            if (sel.Count < 2) return;
+            float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
+            foreach (FmNode n in sel)
+            {
+                minX = Math.Min(minX, n.X); maxX = Math.Max(maxX, n.X + n.Width);
+                minY = Math.Min(minY, n.Y); maxY = Math.Max(maxY, n.Y + n.Height);
+            }
+            PushEditorHistory();
+            foreach (FmNode n in sel)
+            {
+                switch (mode)
+                {
+                    case 0: n.X = minX; break;
+                    case 1: n.X = minX + (maxX - minX - n.Width) * 0.5f; break;
+                    case 2: n.X = maxX - n.Width; break;
+                    case 3: n.Y = minY; break;
+                    case 4: n.Y = minY + (maxY - minY - n.Height) * 0.5f; break;
+                    case 5: n.Y = maxY - n.Height; break;
+                }
+            }
+            EditorPropertyChanged();
+        }
+
+        /// <summary>Distribute the selection evenly along one axis: the OUTERMOST nodes stay
+        /// put, the ones between spread to equal center spacing. Undoable. /
+        /// 沿一根轴等距分布：最外侧两节点不动，中间的按中心等间距铺开。可撤销。</summary>
+        private void EditorDistributeSelection(bool horizontal)
+        {
+            List<FmNode> sel = new List<FmNode>();
+            foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
+            if (sel.Count < 3) return;
+            PushEditorHistory();
+            if (horizontal)
+            {
+                sel.Sort((a, b) => a.X.CompareTo(b.X));
+                float first = sel[0].X + sel[0].Width * 0.5f;
+                float last = sel[sel.Count - 1].X + sel[sel.Count - 1].Width * 0.5f;
+                if (Math.Abs(last - first) < 0.001f) return;
+                float step = (last - first) / (sel.Count - 1);
+                for (int i = 1; i < sel.Count - 1; i++)
+                    sel[i].X = first + step * i - sel[i].Width * 0.5f;
+            }
+            else
+            {
+                sel.Sort((a, b) => a.Y.CompareTo(b.Y));
+                float first = sel[0].Y + sel[0].Height * 0.5f;
+                float last = sel[sel.Count - 1].Y + sel[sel.Count - 1].Height * 0.5f;
+                if (Math.Abs(last - first) < 0.001f) return;
+                float step = (last - first) / (sel.Count - 1);
+                for (int i = 1; i < sel.Count - 1; i++)
+                    sel[i].Y = first + step * i - sel[i].Height * 0.5f;
+            }
+            EditorPropertyChanged();
+        }
+
+        /// <summary>Stamp `count` copies of the selection along one axis, each offset by the
+        /// selection's bounds size + gap. Honors the same per-group budgets as paste (stat
+        /// exclusivity, key-like cap, unbound-image cap) and stops early when they run out.
+        /// Structural, undoable, selects originals + copies. / 沿一根轴阵列复制选区 count 份，
+        /// 每份偏移选区包围盒尺寸 + 间距。遵守与粘贴相同的按组预算（面板独占、按键上限、
+        /// 未绑定图片上限），预算耗尽即停。结构性变更、可撤销、选中原件+副本。</summary>
+        private void EditorArraySelection(bool horizontal, int count, float gap)
+        {
+            if (count < 1 || editorSelection.Count == 0) return;
+            float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
+            foreach (FmNode n in editorSelection)
+            {
+                if (n == null) continue;
+                minX = Math.Min(minX, n.X); maxX = Math.Max(maxX, n.X + n.Width);
+                minY = Math.Min(minY, n.Y); maxY = Math.Max(maxY, n.Y + n.Height);
+            }
+            if (minX > maxX) return; // selection was all nulls / 选区全为空
+            float dx = horizontal ? (maxX - minX) + gap : 0f;
+            float dy = horizontal ? 0f : (maxY - minY) + gap;
+            PushEditorHistory();
+            // Snapshot the templates: copies are APPENDED to editorSelection below, and
+            // enumerating it directly while adding would throw. / 先快照模板：副本会追加进
+            // editorSelection，边枚举边添加会抛异常。
+            List<FmNode> templates = new List<FmNode>(editorSelection);
+            int stamped = 0;
+            for (int i = 1; i <= count; i++)
+            {
+                bool any = false;
+                foreach (FmNode template in templates)
+                {
+                    if (template == null) continue;
+                    if (template.NodeType == 1 && GroupHasStat(template.GroupId, 1)) continue;
+                    if (template.NodeType == 2 && GroupHasStat(template.GroupId, 2)) continue;
+                    bool keyLike = template.NodeType != 3 || !string.IsNullOrWhiteSpace(template.KeyBind);
+                    if (keyLike && KeyLikeCountInGroup(template.GroupId) >= CustomKeyNodeCap) continue;
+                    if (!keyLike && UnboundImageCountInGroup(template.GroupId) >= 8) continue;
+                    FmNode copy = template.Clone();
+                    copy.Id = Settings.Data.CustomNodeNextId++;
+                    copy.X += dx * i;
+                    copy.Y += dy * i;
+                    Settings.Data.CustomNodes.Add(copy);
+                    editorSelection.Add(copy);
+                    any = true;
+                }
+                if (!any) break; // group budgets exhausted / 组预算耗尽
+                stamped++;
+            }
+            if (stamped == 0) return;
+            EditorMutated();
         }
 
         private void EditorMutated()
@@ -2226,18 +2375,18 @@ namespace JipperKeyViewer.KeyViewer
                 }, "fm_help_rain_fade");
                 if (first.UseCustomRainFade)
                 {
-                    DrawEditorToggle(I18n.Tr("rain_gradient"), first.TrailFadeEnabled, v => { foreach (FmNode n in editorSelection) n.TrailFadeEnabled = v; });
+                    DrawEditorToggle(I18n.Tr("rain_gradient"), first.TrailFadeEnabled, v => { foreach (FmNode n in editorSelection) n.TrailFadeEnabled = v; }, "fm_help_rain_fade");
                     DrawEditorFloatField(I18n.Tr("gradient_percent"), "fme_tfp_" + first.Id, n => n.TrailFadePx, v =>
                     {
                         foreach (FmNode n in editorSelection) n.TrailFadePx = Mathf.Clamp(v, 0f, 500f);
                         EditorPropertyChanged();
-                    });
-                    DrawEditorToggle(I18n.Tr("rain_fade"), first.ReleaseFadeEnabled, v => { foreach (FmNode n in editorSelection) n.ReleaseFadeEnabled = v; });
+                    }, "fm_help_rain_fade");
+                    DrawEditorToggle(I18n.Tr("rain_fade"), first.ReleaseFadeEnabled, v => { foreach (FmNode n in editorSelection) n.ReleaseFadeEnabled = v; }, "fm_help_rain_fade");
                     DrawEditorFloatField(I18n.Tr("fade_duration"), "fme_rfd_" + first.Id, n => n.ReleaseFadeDuration, v =>
                     {
                         foreach (FmNode n in editorSelection) n.ReleaseFadeDuration = Mathf.Clamp(v, 0f, 5f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_rain_fade");
                 }
                 // Per-node shadow/outline overrides (the Rain tab's shadow/outline rows sunk to
                 // the node; off → follow the selected row). / 节点级阴影/描边覆盖（雨线页的
@@ -2257,18 +2406,18 @@ namespace JipperKeyViewer.KeyViewer
                 }, "fm_help_rain_shadow");
                 if (first.UseCustomRainShadow)
                 {
-                    DrawEditorToggle(I18n.Tr("rain_shadow"), first.RainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.RainShadowEnabled = v; });
+                    DrawEditorToggle(I18n.Tr("rain_shadow"), first.RainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.RainShadowEnabled = v; }, "fm_help_rain_shadow");
                     DrawEditorColorField(I18n.Tr("rain_shadow_color"), first.RainShadowColor, new Color(0f, 0f, 0f, 0.35f), arr => { foreach (FmNode n in editorSelection) n.RainShadowColor = arr; });
                     DrawEditorFloatField("X", "fme_rshx_" + first.Id, n => n.RainShadowOffsetX, v =>
                     {
                         foreach (FmNode n in editorSelection) n.RainShadowOffsetX = Mathf.Clamp(v, -50f, 50f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_rain_shadow");
                     DrawEditorFloatField("Y", "fme_rshy_" + first.Id, n => n.RainShadowOffsetY, v =>
                     {
                         foreach (FmNode n in editorSelection) n.RainShadowOffsetY = Mathf.Clamp(v, -50f, 50f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_rain_shadow");
                 }
                 DrawEditorToggle(I18n.Tr("fm_rain_outline_custom"), first.UseCustomRainOutline, v =>
                 {
@@ -2280,13 +2429,13 @@ namespace JipperKeyViewer.KeyViewer
                 }, "fm_help_rain_outline");
                 if (first.UseCustomRainOutline)
                 {
-                    DrawEditorToggle(I18n.Tr("rain_outline"), first.RainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.RainOutlineEnabled = v; });
+                    DrawEditorToggle(I18n.Tr("rain_outline"), first.RainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.RainOutlineEnabled = v; }, "fm_help_rain_outline");
                     DrawEditorColorField(I18n.Tr("rain_outline_color"), first.RainOutlineColor, new Color(1f, 1f, 1f, 0.5f), arr => { foreach (FmNode n in editorSelection) n.RainOutlineColor = arr; });
                     DrawEditorFloatField(I18n.Tr("rain_outline_width"), "fme_row_" + first.Id, n => n.RainOutlineWidth, v =>
                     {
                         foreach (FmNode n in editorSelection) n.RainOutlineWidth = Mathf.Clamp(v, 0f, 50f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_rain_outline");
                 }
                 // Per-node GHOST rain shadow/outline — only meaningful with a ghost key bound. /
                 // 节点级鬼雨阴影/描边——仅在绑定了鬼键时有意义。
@@ -2306,27 +2455,27 @@ namespace JipperKeyViewer.KeyViewer
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainWidth = Mathf.Max(0f, v);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                         DrawEditorFloatField(I18n.Tr("rain_height"), "fme_grh_" + first.Id, n => n.GhostRainHeight, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainHeight = Mathf.Max(0f, v);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                         DrawEditorFloatField(I18n.Tr("rain_speed"), "fme_grs_" + first.Id, n => n.GhostRainSpeed, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainSpeed = Mathf.Max(0f, v);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                         DrawEditorFloatField(I18n.Tr("fm_rain_offset_x"), "fme_grox_" + first.Id, n => n.GhostRainOffsetX, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainOffsetX = Mathf.Clamp(v, -2000f, 2000f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                         DrawEditorFloatField(I18n.Tr("fm_rain_offset_y"), "fme_groy_" + first.Id, n => n.GhostRainOffsetY, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainOffsetY = Mathf.Clamp(v, -2000f, 2000f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                     }
                     DrawEditorToggle(I18n.Tr("fm_ghost_rain_shadow_custom"), first.UseCustomGhostRainShadow, v =>
                     {
@@ -2338,18 +2487,18 @@ namespace JipperKeyViewer.KeyViewer
                     }, "fm_help_ghost_rain");
                     if (first.UseCustomGhostRainShadow)
                     {
-                        DrawEditorToggle(I18n.Tr("rain_shadow"), first.GhostRainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainShadowEnabled = v; });
+                        DrawEditorToggle(I18n.Tr("rain_shadow"), first.GhostRainShadowEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainShadowEnabled = v; }, "fm_help_ghost_rain");
                         DrawEditorColorField(I18n.Tr("rain_shadow_color"), first.GhostRainShadowColor, new Color(0f, 0f, 0f, 0.35f), arr => { foreach (FmNode n in editorSelection) n.GhostRainShadowColor = arr; });
                         DrawEditorFloatField("X", "fme_grshx_" + first.Id, n => n.GhostRainShadowOffsetX, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainShadowOffsetX = Mathf.Clamp(v, -50f, 50f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                         DrawEditorFloatField("Y", "fme_grshy_" + first.Id, n => n.GhostRainShadowOffsetY, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainShadowOffsetY = Mathf.Clamp(v, -50f, 50f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                     }
                     DrawEditorToggle(I18n.Tr("fm_ghost_rain_outline_custom"), first.UseCustomGhostRainOutline, v =>
                     {
@@ -2361,13 +2510,13 @@ namespace JipperKeyViewer.KeyViewer
                     }, "fm_help_ghost_rain");
                     if (first.UseCustomGhostRainOutline)
                     {
-                        DrawEditorToggle(I18n.Tr("rain_outline"), first.GhostRainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainOutlineEnabled = v; });
+                        DrawEditorToggle(I18n.Tr("rain_outline"), first.GhostRainOutlineEnabled, v => { foreach (FmNode n in editorSelection) n.GhostRainOutlineEnabled = v; }, "fm_help_ghost_rain");
                         DrawEditorColorField(I18n.Tr("rain_outline_color"), first.GhostRainOutlineColor, new Color(1f, 1f, 1f, 0.5f), arr => { foreach (FmNode n in editorSelection) n.GhostRainOutlineColor = arr; });
                         DrawEditorFloatField(I18n.Tr("rain_outline_width"), "fme_grow_" + first.Id, n => n.GhostRainOutlineWidth, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainOutlineWidth = Mathf.Clamp(v, 0f, 50f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_ghost_rain");
                     }
                 }
                 // Per-node press scale (the Display tab's press animation per key). /
@@ -2387,7 +2536,7 @@ namespace JipperKeyViewer.KeyViewer
                         {
                             foreach (FmNode n in editorSelection) n.PressAnimScale = Mathf.Clamp(v, 0.3f, 2f);
                             EditorPropertyChanged();
-                        });
+                        }, "fm_help_press_anim");
                 }
                 // Counter bounce . / 计数器弹跳（计数器弹跳动画）。
                 DrawEditorToggle(I18n.Tr("fm_counter_anim"), first.CounterAnimEnabled, v =>
@@ -2400,12 +2549,12 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         foreach (FmNode n in editorSelection) n.CounterAnimScale = Mathf.Clamp(v, 1f, 2f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_counter_anim");
                     DrawEditorFloatField(I18n.Tr("fm_anim_duration"), "fme_adur_" + first.Id, n => n.CounterAnimDurationMs, v =>
                     {
                         foreach (FmNode n in editorSelection) n.CounterAnimDurationMs = Mathf.Clamp(v, 100f, 5000f);
                         EditorPropertyChanged();
-                    });
+                    }, "fm_help_counter_anim");
                 }
             }
             DrawEditorToggle(I18n.Tr("fm_unselectable"), first.Unselectable, v => { foreach (FmNode n in editorSelection) n.Unselectable = v; });
@@ -2857,6 +3006,11 @@ namespace JipperKeyViewer.KeyViewer
                     Loader.Error($"KeyViewer: image import failed: {e.Message}");
                 }
             }
+            // Importing overwrites files under CustomImages\ — drop the canvas texture cache or
+            // the editor keeps drawing the PRE-import image until restart. /
+            // 导入会覆盖 CustomImages\ 下的文件——清掉画布贴图缓存，否则编辑器到重启前
+            // 一直画的是导入前的旧图。
+            fmTexCache.Clear();
             EditorPropertyChanged();
         }
 

@@ -10,10 +10,19 @@
          Hand-written Properties\AssemblyInfo.cs stays the single source of assembly
          attributes and versions (SetVersion.ps1 keeps patching it) — disable SDK generation. -->
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-    <!-- CI 直接从 bin\Release\ 拷贝 DLL：保持经典输出路径，不加 TFM 子目录 /
-         CI copies DLLs straight from bin\Release\ — keep the classic output path,
-         no TFM segment appended. -->
+    <!-- CI 直接从仓库根 bin\ 拷贝 DLL：不加 TFM 子目录 /
+         CI copies DLLs straight from the repo-root bin\ — no TFM segment appended. -->
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <!-- Release 产物统一落到仓库根的 bin\（三个工程的 DLL 汇于一处，直接可拷进游戏）；
+         Debug 仍留在各自工程的 bin\，避免调试构建覆盖发布产物。 /
+         Release outputs land in the REPO-ROOT bin\ (all three DLLs in one place, ready to
+         drop into the game); Debug stays in each project's own bin\ so debug builds never
+         clobber release artifacts. -->
+    <OutputPath Condition="'$(Configuration)'=='Release'">..\bin\</OutputPath>
+    <!-- Release 不生成 pdb：共享的仓库根 bin\ 只剩三个 DLL，打包/手拷都不会混入符号文件。
+         / No pdb in Release: the shared repo-root bin\ holds exactly the three DLLs —
+         symbols can never sneak into packaging or a manual copy. -->
+    <DebugType Condition="'$(Configuration)'=='Release'">none</DebugType>
   </PropertyGroup>
 
   <!-- 允许在未安装 .NET Framework 4.8.1 Developer Pack 的机器上编译 /

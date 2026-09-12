@@ -43,11 +43,15 @@ namespace JipperKeyViewer.KeyViewer
         private readonly Dictionary<string, int> customShownKps = new Dictionary<string, int>();
         private readonly Dictionary<string, long> customShownTotal = new Dictionary<string, long>();
 
-        /// <summary>Append a press stamp to a group's queue ("" = global bucket). /
-        /// 向组队列追加按压时间戳（"" = 全局桶）。</summary>
+        /// <summary>Append a press stamp to a group's queue. Ungrouped ("") is a no-op: the
+        /// ungrouped panels read the already-drained GLOBAL PressTimes, so the "" bucket was
+        /// enqueued into and never read — pure dead weight. /
+        /// 向组队列追加按压时间戳。未分组（""）为空操作：未分组面板读取的是已排过的全局
+        /// PressTimes，""桶入队后永不被读——纯死重。</summary>
         internal void EnqueueCustomGroupPress(string groupId, long timeMs)
         {
             string g = groupId ?? "";
+            if (g.Length == 0) return;
             if (!customGroupPresses.TryGetValue(g, out Queue<long> q))
                 customGroupPresses[g] = q = new Queue<long>(64);
             q.Enqueue(timeMs);
@@ -337,16 +341,24 @@ namespace JipperKeyViewer.KeyViewer
         /// layouts return an empty list — they use the single Kps/Total refs. /
         /// 某面板类型的全部已创建运行时按键（自定义布局可携带多块——每个可见图层组各一；
         /// 隐藏组的节点不会创建）。固定布局返回空列表——它们用单一 Kps/Total 引用。</summary>
+        // Shared scratch list for StatKeys: every one of its call sites foreach-es the result
+        // to completion before the next call (verified: sequential, never nested), so a reused
+        // buffer is safe and the per-frame "new List" allocations stop. Callers must not hold
+        // the returned reference. / StatKeys 的共享暂存列表：全部调用点都在下一次调用前
+        // foreach 完毕（已核实：顺序、无嵌套），复用缓冲安全，同时消灭每帧 new List 分配。
+        // 调用方不得持有返回引用。
+        private readonly List<Key> statKeyBuffer = new List<Key>(8);
+
         private List<Key> StatKeys(int type)
         {
-            var list = new List<Key>();
-            if (Keys == null) return list;
+            statKeyBuffer.Clear();
+            if (Keys == null) return statKeyBuffer;
             for (int i = 0; i < Keys.Length; i++)
             {
                 Key k = Keys[i];
-                if (k != null && k.CustomNode != null && k.CustomNode.NodeType == type) list.Add(k);
+                if (k != null && k.CustomNode != null && k.CustomNode.NodeType == type) statKeyBuffer.Add(k);
             }
-            return list;
+            return statKeyBuffer;
         }
 
         /// <summary>Show/hide every stat panel (streamer mode). Custom layouts iterate all
@@ -529,6 +541,49 @@ namespace JipperKeyViewer.KeyViewer
                 key.CustomTexNormal = normal;
                 key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
             }
+            else if (normal != null)
+            {
+                // Decoration images own their texture exclusively (nothing else references it),
+                // so track it here — ReleaseCustomTextures destroys it on teardown. /
+                // 装饰图片独占自己的贴图（无其它引用），在此登记——ReleaseCustomTextures
+                // 在拆解时销毁它。
+                customDecorationTextures.Add(normal);
+            }
+        }
+
+        // Textures loaded for DECORATION image nodes (keyed ones live on Key.CustomTexNormal/
+        // Pressed). Destroying the RawImage or its GameObject does NOT destroy the Texture2D —
+        // without this list every layout rebuild leaked one GPU texture per decoration node.
+        // / 装饰图片节点加载的贴图（带键的存于 Key.CustomTexNormal/Pressed）。销毁 RawImage
+        // 或其 GameObject 并不会销毁 Texture2D——没有这份清单，每次布局重建每个装饰节点
+        // 都泄漏一张 GPU 贴图。
+        private readonly List<Texture2D> customDecorationTextures = new List<Texture2D>();
+
+        /// <summary>Destroy every custom-image texture (keyed + decoration) and drop the
+        /// references. Unity's overloaded null makes this idempotent — a second call is a no-op.
+        /// Called from ResetKeyViewer/DisableKeyViewer BEFORE the GameObjects go away.
+        /// / 销毁全部自定义图片贴图（带键+装饰）并清引用。Unity 重载的判空使其幂等——
+        /// 二次调用为空操作。由 ResetKeyViewer/DisableKeyViewer 在 GameObject 销毁前调用。
+        /// </summary>
+        private void ReleaseCustomTextures()
+        {
+            if (Keys != null)
+            {
+                for (int i = 0; i < Keys.Length; i++)
+                {
+                    Key k = Keys[i];
+                    if (k == null) continue;
+                    if (k.CustomTexNormal != null) Destroy(k.CustomTexNormal);
+                    if (k.CustomTexPressed != null) Destroy(k.CustomTexPressed);
+                    k.CustomTexNormal = null;
+                    k.CustomTexPressed = null;
+                    k.CustomImage = null;
+                    k.CustomImageRect = null;
+                }
+            }
+            for (int i = 0; i < customDecorationTextures.Count; i++)
+                if (customDecorationTextures[i] != null) Destroy(customDecorationTextures[i]);
+            customDecorationTextures.Clear();
         }
 
         /// <summary>Resolve an image reference: absolute path as-is, otherwise relative to
