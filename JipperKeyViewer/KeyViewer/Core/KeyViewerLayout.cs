@@ -1264,6 +1264,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (Keys == null || !Settings.Data.CustomPositionEnabled) return;
             if (IsFullKeyboard) return; // full keyboard has no foot keys / 全键盘无脚键
+            // Custom layouts have no foot keys EITHER, and their Keys array is only as long as the
+            // visible node count — the FootKeyBase(24)-anchored writes below would land on REAL
+            // nodes (a 25+ node canvas, e.g. a 108K preset) and teleport them to the fixed foot
+            // rows. Reachable with the flag persisted from a fixed layout plus a non-Off foot style,
+            // via OnEnable / the master toggle / CheckResolutionChanged. / 自定义布局同样没有脚键，
+            // 且其 Keys 数组只有可见节点数那么长——下方按 FootKeyBase(24) 起的写入会落在**真实
+            // 节点**上（25 个节点以上的画布，如 108K 预设），把它们瞬移到固定脚键排布。
+            // 该标志从固定布局持久化 + 脚键布局非 Off 时即可触发，路径有 OnEnable / 显示总开关 /
+            // CheckResolutionChanged。
+            if (IsCustomLayout) return; // nodes are their own position / 节点即位置
             Vector2 norm = Settings.Data.FootKeyViewerPosition;
             int size = FootKeySize(Settings.Data.FootKeyViewerStyle);
             if (size == 0) return;

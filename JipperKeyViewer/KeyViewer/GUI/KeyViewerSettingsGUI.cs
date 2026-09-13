@@ -511,13 +511,21 @@ namespace JipperKeyViewer.KeyViewer
                     }
                 }
 
-                GUILayout.Label(I18n.Tr("foot_keys") + ":");
-                FootKeyviewerStyle newFootStyle = (FootKeyviewerStyle)GUILayout.SelectionGrid((int)Settings.Data.FootKeyViewerStyle, FootKeyLayoutNames, 5);
-                if (newFootStyle != Settings.Data.FootKeyViewerStyle)
+                // Custom layouts initialize no foot keys at all (KeyViewerLayout.InitializeMainKeys
+                // skips them), so the grid is a dead control there — and leaving it reachable kept
+                // the foot-position path alive against the node canvas. / 自定义布局完全不初始化
+                // 脚键（见 KeyViewerLayout.InitializeMainKeys），该网格在此是死控件——留着它也让
+                // 脚键定位路径继续作用于节点画布。
+                if (!IsCustomLayout)
                 {
-                    Settings.Data.FootKeyViewerStyle = newFootStyle;
-                    ResetFootKeyViewer();
-                    SaveSettingsFromGui();
+                    GUILayout.Label(I18n.Tr("foot_keys") + ":");
+                    FootKeyviewerStyle newFootStyle = (FootKeyviewerStyle)GUILayout.SelectionGrid((int)Settings.Data.FootKeyViewerStyle, FootKeyLayoutNames, 5);
+                    if (newFootStyle != Settings.Data.FootKeyViewerStyle)
+                    {
+                        Settings.Data.FootKeyViewerStyle = newFootStyle;
+                        ResetFootKeyViewer();
+                        SaveSettingsFromGui();
+                    }
                 }
             }
 
