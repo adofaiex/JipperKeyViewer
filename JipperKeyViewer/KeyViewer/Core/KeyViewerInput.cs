@@ -314,7 +314,7 @@ namespace JipperKeyViewer.KeyViewer
                         float target = current ? pressAnimScale : 1f;
                         if (key.currentAnim != null)
                             StopCoroutine(key.currentAnim);
-                        key.currentAnim = StartCoroutine(AnimateKeyScale(key, target, 0.08f));
+                        key.currentAnim = StartCoroutine(AnimateKeyScale(key, target, PressAnimDurationFor(key)));
                     }
                     if (current)
                     {
@@ -571,6 +571,20 @@ namespace JipperKeyViewer.KeyViewer
             if (key.value != null) key.value.color = key.text.color;
         }
 
+        /// <summary>Press-animation duration for a key, in seconds. Custom-layout nodes may carry
+        /// their own easing/duration; every other key follows the global Display-tab values. /
+        /// 某按键的按压动画时长（秒）。自定义布局节点可携带自己的缓动/时长；其余按键跟随显示页的
+        /// 全局值。</summary>
+        private static float PressAnimDurationFor(Key key)
+        {
+            FmNode node = key != null ? key.CustomNode : null;
+            float ms = node != null && node.UseCustomPressEasing ? node.PressAnimDurationMs : Settings.Data.PressAnimationDurationMs;
+            // Clamp: a 0 or negative duration would make the while-loop body never run and the key
+            // would be left at the previous scale forever. / 钳制：0 或负时长会让 while 循环体一次
+            // 都不执行，按键将永远停在上一档缩放。
+            return Mathf.Clamp(ms, 10f, 2000f) / 1000f;
+        }
+
         /// <summary>
         /// Smoothly animate key visuals scale (text wrapper + merged shape mesh).
         /// When EnablePressAnimationOnRain is on, the merged rain layer scales that key's drops too;
@@ -584,6 +598,13 @@ namespace JipperKeyViewer.KeyViewer
             Transform animTarget = key.visuals;
             float startS = animTarget.localScale.x;
             int generation = keyShapeLayer != null ? keyShapeLayer.Generation : -1;
+            // Read the easing ONCE: re-reading it per frame would make a mid-animation settings edit
+            // (or a profile switch) bend the curve halfway through, and the curve's own start point
+            // would then no longer match startS. / 只读取一次缓动：逐帧重读会让动画途中的设置修改
+            //（或切换配置）把曲线在中途掰弯，且曲线的起点将不再对应 startS。
+            string easing = key.CustomNode != null && key.CustomNode.UseCustomPressEasing
+                ? key.CustomNode.PressAnimEasing
+                : Settings.Data.PressAnimationEasing;
             float elapsed = 0f;
             while (elapsed < duration)
             {
@@ -593,7 +614,10 @@ namespace JipperKeyViewer.KeyViewer
                 if (keyShapeLayer == null || keyShapeLayer.Generation != generation) yield break;
                 elapsed += Time.unscaledDeltaTime;
                 float p = Mathf.Min(1f, elapsed / duration);
-                float s = Mathf.Lerp(startS, target, p);
+                // Ease the NORMALIZED progress, then lerp: easing the lerp result instead would move
+                // the endpoint (an ease-out would land short of `target`). / 对「归一化进度」做缓动
+                // 再插值：若对插值结果做缓动，终点会偏移（ease-out 会停在不到 target 的位置）。
+                float s = Mathf.Lerp(startS, target, Util.KvEasing.Ease(easing, p));
                 animTarget.localScale = new Vector3(s, s, 1);
                 // Image keys scale their RawImage visual alongside the text wrapper. /
                 // 图片按键的 RawImage 视觉与文本包裹层同步缩放。

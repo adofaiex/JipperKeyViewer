@@ -78,6 +78,13 @@
       <HintPath>..\libs\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <!-- 视频按键节点：VideoPlayer 位于 VideoModule，游戏 Managed 目录自带该 DLL。 /
+         Video key nodes: VideoPlayer lives in VideoModule, which the game ships in its own
+         Managed directory. -->
+    <Reference Include="UnityEngine.VideoModule">
+      <HintPath>..\libs\UnityEngine.VideoModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <!-- 游戏自带 Newtonsoft：自定义布局的节点/图层组列表用它持久化（运行时 JsonUtility 会
          丢弃类数组字段）。游戏在 Managed 目录自带该 DLL，运行时可直接解析。 /
          The game ships Newtonsoft: the custom layout node/group lists persist through it

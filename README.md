@@ -92,7 +92,8 @@ JipperKeyViewer/
 
 ## 5. 包与依赖 / Dependencies
 
-- **游戏程序集 / Game assemblies**: `UnityEngine.*` (CoreModule/UIModule/IMGUIModule/InputLegacyModule…), `Assembly-CSharp`, `Unity.TextMeshPro`; `System.IO.Compression`（内嵌资源解压，Unity Mono 自带 / embedded-asset decompression, shipped by Unity Mono）
+- **游戏程序集 / Game assemblies**: `UnityEngine.*` (CoreModule/UIModule/IMGUIModule/InputLegacyModule/VideoModule…), `Assembly-CSharp`, `Unity.TextMeshPro`; `System.IO.Compression`（内嵌资源解压 / 配置包 zip，Unity Mono 自带 / embedded-asset decompression + package zips, shipped by Unity Mono）
+- **视频节点 / Video nodes**: `UnityEngine.VideoModule`（`VideoPlayer`）——同样从游戏 Managed 目录取得，编译期需 `libs/` 内该 DLL / same story: taken from the game's Managed dir, needs the DLL under `libs/` to compile
 - **序列化 / Serialization**: `Newtonsoft.Json` — resolved from the game's Managed dir at runtime; `libs/` copy for compile time
 - **加载器 API / Loader APIs**: `UnityModManager`, `MelonLoader`, `0Harmony` (loader entries only — the core project does not depend on Harmony / 仅加载器入口引用，主工程不依赖 Harmony)
 - 无 NuGet 运行时依赖；`Microsoft.NETFramework.ReferenceAssemblies` 自动还原 / no NuGet runtime deps; reference assemblies auto-restored

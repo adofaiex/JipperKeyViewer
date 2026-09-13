@@ -170,6 +170,46 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool EnablePressAnimation = false;
         public float PressAnimationScale = 0.95f;
         public bool EnablePressAnimationOnRain = false;
+        // Press-animation easing, by name (see KvEasing). The old build hard-coded a plain linear
+        // Lerp, so "linear" is the default and reproduces the previous feel exactly. /
+        // 按压动画缓动，按名字取用（见 KvEasing）。旧版写死普通线性 Lerp，故默认 "linear" 精确
+        // 复刻此前的观感。
+        public string PressAnimationEasing = "linear";
+        // Press-animation duration in milliseconds. The old hard-coded 80ms is the default. /
+        // 按压动画时长（毫秒）。旧版写死的 80ms 即默认值。
+        public float PressAnimationDurationMs = 80f;
+
+        // ===== Text outline / shadow (key label and count text resolved separately) =====
+        // Outline uses TMP's SDF outline (OUTLINE_ON + _OutlineWidth/_OutlineColor); shadow uses
+        // the underlay pass (UNDERLAY_ON + _UnderlayColor/_UnderlayOffsetX/Y/_UnderlaySoftness).
+        // Both live on the font MATERIAL, so a style change builds a NEW cached material instead
+        // of mutating the shared font-asset material — mutating that would leak the style into
+        // every TMP text in the game.
+        // / 文字描边/阴影（按键标签与计数文本分别解析）。描边用 TMP 的 SDF 描边
+        //（OUTLINE_ON + _OutlineWidth/_OutlineColor）；阴影用 underlay 通道（UNDERLAY_ON +
+        // _UnderlayColor/_UnderlayOffsetX/Y/_UnderlaySoftness）。两者都挂在字体材质上，故样式
+        // 变化会新建缓存材质，而不是改写共享的字体资源材质——改写会让样式泄漏到游戏内所有
+        // TMP 文本。
+        public bool EnableKeyTextOutline = false;
+        public Color KeyTextOutlineColor = new Color(0f, 0f, 0f, 1f);
+        public float KeyTextOutlineThickness = 0.2f;
+        public bool EnableCountTextOutline = false;
+        public Color CountTextOutlineColor = new Color(0f, 0f, 0f, 1f);
+        public float CountTextOutlineThickness = 0.2f;
+        // Shadow defaults reproduce the pre-1.7.2 hard-coded underlay exactly (black at 0.5 alpha,
+        // offset 1,-1, no softness), so existing profiles keep the text look they already had.
+        // / 阴影默认值精确复刻 1.7.2 之前写死的 underlay（黑 0.5、偏移 1,-1、无柔化），现有配置
+        // 的文字观感保持不变。
+        public bool EnableKeyTextShadow = true;
+        public Color KeyTextShadowColor = new Color(0f, 0f, 0f, 0.5f);
+        public float KeyTextShadowOffsetX = 1f;
+        public float KeyTextShadowOffsetY = -1f;
+        public float KeyTextShadowSoftness = 0f;
+        public bool EnableCountTextShadow = true;
+        public Color CountTextShadowColor = new Color(0f, 0f, 0f, 0.5f);
+        public float CountTextShadowOffsetX = 1f;
+        public float CountTextShadowOffsetY = -1f;
+        public float CountTextShadowSoftness = 0f;
 
         public Color GhostRainColor = KeyViewer.GhostRainColorDefault;
         public Color GhostRainColor2 = KeyViewer.GhostRainColor2Default;
@@ -610,6 +650,15 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool Unselectable;
         public float Opacity = 1f;
         public string ImagePath = "";
+        // Video source for an image node. A non-empty VideoPath that points at a playable file makes
+        // the node render a looping VideoPlayer into a RenderTexture INSTEAD of the PNG — the node
+        // stays NodeType 3, so binding/counting/press/opacity/rain/layering all keep working. A
+        // missing or unsupported file silently falls back to ImagePath. /
+        // 图片节点的视频来源。VideoPath 非空且指向可播放文件时，节点改为把 VideoPlayer 循环渲染
+        // 到 RenderTexture，而非使用 PNG——节点仍为 NodeType 3，故绑定/计数/按压/不透明度/雨滴/
+        // 层级全部照常工作。文件缺失或格式不支持时静默回落到 ImagePath。
+        public string VideoPath = "";
+        public bool VideoLoop = true;
         public bool UseCustomColor;
         public float[] Bg;
         public float[] BgPressed;
@@ -658,6 +707,12 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool PressAnimEnabled = true;
         public bool UseCustomPressAnim;
         public float PressAnimScale = 0.9f;
+        // Per-node press easing + duration. Off (the default) follows the global Display-tab
+        // values; on, this node keeps its own curve and timing. / 节点级按压缓动与时长。关闭
+        //（默认）跟随显示页的全局值；开启后该节点使用自己的曲线与时长。
+        public bool UseCustomPressEasing;
+        public string PressAnimEasing = "linear";
+        public float PressAnimDurationMs = 80f;
         // Per-node KPS/Total text layout: follows the global centered/stacked/hide-label toggles
         // unless UseCustomStatLayout. node.HideLabel doubles as the value-only switch.
         // / 节点级 KPS/Total 文本布局：未开启 UseCustomStatLayout 时跟随全局的居中/堆叠/
@@ -718,11 +773,43 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // Per-node count hiding (independent of the global HideMainKeyCount). /
         // 逐节点隐藏计数（独立于全局「隐藏主按键计数」）。
         public bool HideCount;
+        // Per-node box shape: corner radius in px (0 = the square 9-slice box) and border
+        // thickness in px (0 = follow the sprite's own 9-slice border). A radius > 0 switches the
+        // slot to the procedural rounded mesh, which is the only way to round a 9-sliced corner.
+        // / 节点级盒子形状：圆角半径（像素，0 = 直角九宫格盒子）与边框厚度（像素，0 = 跟随
+        // 贴图自带的九宫格边框）。半径 > 0 会把该槽位切到程序化圆角 mesh——这是让九宫格圆角
+        // 唯一的办法。
+        public float CornerRadius;
+        public float BorderThickness;
         // 0 = use the global key font size / 0 = 使用全局按键字号
         public float FontSize;
         // Temporarily excluded from the runtime build; the editor dims it. /
         // 暂时从运行时构建中排除；编辑器里以低透明度显示。
         public bool Hidden;
+
+        // ===== per-node text outline / shadow override / 节点级文字描边/阴影覆盖 =====
+        // UseCustomTextStyle takes the node out of the global text-style settings for BOTH its
+        // label and its count; the label and count each carry an independent outline + shadow
+        // (the same split the Display tab exposes globally). / UseCustomTextStyle 让该节点的标签与
+        // 计数文本同时脱离全局文字样式；标签与计数各自带独立的描边 + 阴影（与显示页的全局划分
+        // 一致）。
+        public bool UseCustomTextStyle;
+        public bool KeyTextOutlineEnabled;
+        public float[] KeyTextOutlineColor;
+        public float KeyTextOutlineThickness = 0.2f;
+        public bool KeyTextShadowEnabled = true;
+        public float[] KeyTextShadowColor;
+        public float KeyTextShadowOffsetX = 1f;
+        public float KeyTextShadowOffsetY = -1f;
+        public float KeyTextShadowSoftness;
+        public bool CountTextOutlineEnabled;
+        public float[] CountTextOutlineColor;
+        public float CountTextOutlineThickness = 0.2f;
+        public bool CountTextShadowEnabled = true;
+        public float[] CountTextShadowColor;
+        public float CountTextShadowOffsetX = 1f;
+        public float CountTextShadowOffsetY = -1f;
+        public float CountTextShadowSoftness;
 
         /// <summary>Runtime-only back-reference to the built Key (never serialized — JsonUtility
         /// would write UnityEngine.Object references as instance IDs). / 仅运行时的 Key 反向引用

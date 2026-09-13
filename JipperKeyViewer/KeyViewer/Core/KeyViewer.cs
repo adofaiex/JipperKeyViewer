@@ -320,8 +320,14 @@ namespace JipperKeyViewer.KeyViewer
         private bool[] ghostKeyStates;
         /// <summary>MapleStory font loaded from AssetBundle / 从 AssetBundle 加载的 MapleStory 字体</summary>
         private TMP_FontAsset mapleFont;
-        /// <summary>Cache of per-font shadow materials / 每个字体的阴影材质缓存</summary>
-        private Dictionary<TMP_FontAsset, Material> shadowMaterials = new Dictionary<TMP_FontAsset, Material>();
+        /// <summary>Cache of text-style materials keyed by the RESOLVED outline/shadow style, so
+        /// every combination (on/off, colors, widths, offsets) gets its own material instead of
+        /// one hard-coded underlay. / 以「解析后的描边/阴影样式」为键的文字样式材质缓存，使每种
+        /// 组合（开关、颜色、粗细、偏移）各有材质，取代单一写死的 underlay。</summary>
+        private Dictionary<long, Material> textStyleMaterials = new Dictionary<long, Material>();
+        /// <summary>Per-font material for the neutral style (no outline, no shadow) — the font's
+        /// own material. / 中性样式（无描边无阴影）的每字体材质——即字体自带材质。</summary>
+        private Dictionary<TMP_FontAsset, Material> neutralFontMaterials = new Dictionary<TMP_FontAsset, Material>();
         /// <summary>List of all available fonts (built-in + custom) / 所有可用字体列表（内置 + 自定义）</summary>
         static readonly List<FontEntry> fontList = new List<FontEntry>();
         /// <summary>Whether the font selection list is expanded in settings / 设置中字体选择列表是否展开</summary>
@@ -407,9 +413,7 @@ namespace JipperKeyViewer.KeyViewer
             instance = null; // stop loader GUI callbacks from running on the destroyed component / 阻止加载器 GUI 回调继续在已销毁组件上运行
             SceneManager.sceneLoaded -= OnSceneLoaded;
             rainSystem?.ClearAll(Keys);
-            foreach (var mat in shadowMaterials.Values)
-                Destroy(mat);
-            shadowMaterials.Clear();
+            ReleaseTextStyleMaterials();
         }
 
         /// <summary>

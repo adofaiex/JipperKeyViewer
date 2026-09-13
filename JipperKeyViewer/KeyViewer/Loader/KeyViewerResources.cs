@@ -138,9 +138,10 @@ namespace JipperKeyViewer.KeyViewer
             foreach (var e in fontList)
                 if (e.font != null) Destroy(e.font);
             fontList.Clear();
-            foreach (var m in shadowMaterials.Values)
-                if (m != null) Destroy(m);
-            shadowMaterials.Clear();
+            // The style materials are copies of the just-destroyed font materials — drop them
+            // before the next font load builds new ones. / 样式材质是刚被销毁的字体材质的副本——
+            // 在下次字体加载构建新材质前先丢弃。
+            ReleaseTextStyleMaterials();
 
             string modPath = Loader.ModPath;
             string assetsDir = Path.Combine(modPath, "assets");
@@ -285,13 +286,30 @@ namespace JipperKeyViewer.KeyViewer
         {
             TMP_FontAsset currentFont = GetCurrentFont();
             if (currentFont == null) return;
-            Material shadowMat = GetShadowMaterial(currentFont);
+            // Resolve per text KIND (label vs. count) so the Display tab's separate outline/shadow
+            // pairs actually apply; a node's own override is applied afterwards by
+            // ApplyCustomTextStyles when the overlay rebuilds. / 按文本类别（标签/计数）分别解析，
+            // 使显示页的两套描边/阴影真正生效；节点自身的覆盖在覆盖层重建时由
+            // ApplyCustomTextStyles 追加应用。
+            Material keyMat = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, null, Rendering.KvTextKind.KeyLabel));
+            Material countMat = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, null, Rendering.KvTextKind.Count));
             FontStyles style = (FontStyles)Settings.Data.FontStyleFlags;
-            void UpdateText(TMP_Text t)
+            // node is non-null only for custom-layout keys: their own text style then wins over
+            // the global one, which is the ONLY way a font switch can preserve a per-node override
+            // (this method rewrites fontMaterial on every text). / node 仅对自定义布局按键非空：
+            // 此时节点自身的文字样式优先于全局——这是字体切换能保住节点级覆盖的唯一办法（本方
+            // 法会重写每个文本的 fontMaterial）。
+            void UpdateText(TMP_Text t, Material mat, Settings.FmNode node = null, bool isCount = false)
             {
                 if (t == null) return;
                 t.font = currentFont;
-                t.fontMaterial = shadowMat;
+                Material use = mat;
+                if (node != null && node.UseCustomTextStyle)
+                {
+                    use = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, node,
+                        isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel));
+                }
+                if (use != null) t.fontMaterial = use;
                 t.fontStyle = style;
                 t.fontSizeMax = Settings.Data.KeyFontSize;
             }
@@ -308,14 +326,15 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     if (Keys[i] == null) continue;
                     int pi = i;
-                    UpdateText(Keys[i].text);
+                    Settings.FmNode node = Keys[i].CustomNode;
+                    UpdateText(Keys[i].text, keyMat, node, false);
                     ApplyPerKeyOverride(Keys[i].text, pi);
                     // value: reset FIRST, then override — the old order let UpdateText's
                     // unconditional fontSizeMax write clobber the per-key size (the Kps/Total
                     // blocks below already had the correct order).
                     // value:先重置后覆盖——旧顺序会让 UpdateText 的无条件 fontSizeMax 写入
                     // 抹掉每键字号(下方 Kps/Total 段原本顺序就正确)。
-                    UpdateText(Keys[i].value);
+                    UpdateText(Keys[i].value, countMat, node, true);
                     ApplyPerKeyOverride(Keys[i].value, pi);
                 }
             }
@@ -328,16 +347,18 @@ namespace JipperKeyViewer.KeyViewer
             // Unity 重载检查兜底）。
             if (Kps != null)
             {
-                UpdateText(Kps.text);
+                Settings.FmNode kpsNode = Kps.CustomNode;
+                UpdateText(Kps.text, keyMat, kpsNode, false);
                 ApplyPerKeyOverride(Kps.text, kpsPi);
-                UpdateText(Kps.value);
+                UpdateText(Kps.value, countMat, kpsNode, true);
                 ApplyPerKeyOverride(Kps.value, kpsPi);
             }
             if (Total != null)
             {
-                UpdateText(Total.text);
+                Settings.FmNode totalNode = Total.CustomNode;
+                UpdateText(Total.text, keyMat, totalNode, false);
                 ApplyPerKeyOverride(Total.text, totalPi);
-                UpdateText(Total.value);
+                UpdateText(Total.value, countMat, totalNode, true);
                 ApplyPerKeyOverride(Total.value, totalPi);
             }
         }
@@ -347,25 +368,61 @@ namespace JipperKeyViewer.KeyViewer
         /// Uses the "UNDERLAY_ON" shader keyword for TMP drop shadow / 使用 TMP 的 "UNDERLAY_ON" 着色器关键字实现投影
         /// Materials are cached and reused / 材质会被缓存和复用
         /// </summary>
-        Material GetShadowMaterial(TMP_FontAsset font)
+        Material GetTextStyleMaterial(TMP_FontAsset font, in Rendering.KvTextStyle style)
         {
             if (font == null) return null;
-            if (shadowMaterials.TryGetValue(font, out var mat)) return mat;
-
-            var fontMat = GetFontMaterial(font);
+            if (!style.NeedsMaterial)
+            {
+                // Neutral style: the font's own material, exactly what every TMP text used before
+                // outline/shadow became configurable.
+                // 中性样式：字体自带材质，即描边/阴影可配置之前所有 TMP 文本用的那个。
+                if (!neutralFontMaterials.TryGetValue(font, out Material neutral) || neutral == null)
+                {
+                    neutral = GetFontMaterial(font);
+                    neutralFontMaterials[font] = neutral;
+                }
+                return neutral;
+            }
+            long key = style.CacheKey(font.GetInstanceID());
+            if (textStyleMaterials.TryGetValue(key, out Material cached) && cached != null) return cached;
+            Material fontMat = GetFontMaterial(font);
             if (fontMat == null)
             {
-                Loader.Error("KeyViewer: Cannot get material from font asset, skipping shadow");
+                Loader.Error("KeyViewer: Cannot get material from font asset, skipping text outline/shadow");
                 return null;
             }
-            mat = new Material(fontMat);
-            mat.EnableKeyword("UNDERLAY_ON");
-            mat.SetColor("_UnderlayColor", new Color(0, 0, 0, 0.5f));
-            mat.SetFloat("_UnderlayOffsetX", 1f);
-            mat.SetFloat("_UnderlayOffsetY", -1f);
-            mat.SetFloat("_UnderlaySoftness", 0f);
-            shadowMaterials[font] = mat;
+            Material mat = new Material(fontMat);
+            // TMP's SDF outline and underlay are shader keywords + floats on the font material; the
+            // keyword must be enabled or the shader skips the pass entirely.
+            // TMP 的 SDF 描边与 underlay 是字体材质上的着色器关键字 + 浮点值；必须启用关键字，
+            // 否则着色器整段跳过。
+            if (style.Outline)
+            {
+                mat.EnableKeyword("OUTLINE_ON");
+                mat.SetColor("_OutlineColor", style.OutlineColor);
+                mat.SetFloat("_OutlineWidth", style.OutlineWidth);
+            }
+            if (style.Shadow)
+            {
+                mat.EnableKeyword("UNDERLAY_ON");
+                mat.SetColor("_UnderlayColor", style.ShadowColor);
+                mat.SetFloat("_UnderlayOffsetX", style.ShadowOffsetX);
+                mat.SetFloat("_UnderlayOffsetY", style.ShadowOffsetY);
+                mat.SetFloat("_UnderlaySoftness", style.ShadowSoftness);
+            }
+            textStyleMaterials[key] = mat;
             return mat;
+        }
+
+        /// <summary>Destroy every cached text-style material (teardown), so a long session of style
+        /// tweaks cannot leak materials. The font's own materials are never touched. / 销毁全部缓存
+        /// 文字样式材质（拆解时），使反复调样式的长会话不会泄漏材质。字体自带材质绝不触碰。</summary>
+        private void ReleaseTextStyleMaterials()
+        {
+            foreach (Material m in textStyleMaterials.Values)
+                if (m != null) Destroy(m);
+            textStyleMaterials.Clear();
+            neutralFontMaterials.Clear();
         }
 
         static MemberInfo cachedMaterialMember;

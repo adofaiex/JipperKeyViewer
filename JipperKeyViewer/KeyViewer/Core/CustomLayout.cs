@@ -22,6 +22,7 @@ using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
+using JipperKeyViewer.KeyViewer.Rendering;
 using JipperKeyViewer.KeyViewer.Settings;
 using JipperKeyViewer.KeyViewer.Util;
 
@@ -381,6 +382,11 @@ namespace JipperKeyViewer.KeyViewer
         private void InitializeCustomLayout()
         {
             List<FmNode> nodes = Settings.Data.CustomNodes;
+            // One video build pass: every player this pass uses is stamped, and players left over
+            // from the previous build (deleted / hidden / re-pathed nodes) are released at the end.
+            // / 一次视频构建：本次用到的播放器全部打标，上一次构建遗留的（节点被删/隐藏/改路径）
+            // 在末尾释放。
+            KvVideoTextureManager.BeginBuild();
             // Stat panels draw after the key slots, one shape slot each. /
             // 面板排在按键槽位之后绘制，各占一个形状槽。
             customStatSlotCursor = Keys.Length;
@@ -409,6 +415,8 @@ namespace JipperKeyViewer.KeyViewer
             foreach (FmNode node in nodes)
                 if (node != null && node.NodeType == 3 && !CustomNodeHasKey(node) && CustomNodeVisible(node))
                     CreateCustomImageObject(node);
+            // Release every video player this pass did not touch. / 释放本次构建未触及的所有视频播放器。
+            KvVideoTextureManager.EndBuild();
         }
 
         private Key CreateCustomKey(FmNode node, int slot)
@@ -471,6 +479,8 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (!isStat)
                 UpdateCustomKeyText(key, node); // stat labels are owned by SetKpsTotalDisplay / stat 标签由 SetKpsTotalDisplay 接管
+            ApplyCustomShapeStyle(key, node);
+            ApplyCustomTextStyles(key, node);
             LayoutCustomTexts(key, node);
             return key;
         }
@@ -522,32 +532,54 @@ namespace JipperKeyViewer.KeyViewer
             rt.SetSiblingIndex(0);
             RawImage raw = go.AddComponent<RawImage>();
             raw.raycastTarget = false;
-            Texture2D normal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
-            if (normal == null)
+            // A video node renders the VideoPlayer's RenderTexture instead of a PNG. The node stays
+            // NodeType 3, so everything else about it (binding, counting, press, rain, layering) is
+            // untouched. When the file is missing/unsupported GetOrCreate returns null and this
+            // falls through to the static-image path — a typo degrades to a placeholder, not to an
+            // invisible node. / 视频节点渲染 VideoPlayer 的 RenderTexture 而非 PNG。节点仍为
+            // NodeType 3，故其它一切（绑定、计数、按压、雨滴、层级）不受影响。文件缺失/不支持时
+            // GetOrCreate 返回 null，本方法继续走静态图片路径——路径写错只退化为占位图，而非
+            // 变成看不见的节点。
+            RenderTexture video = string.IsNullOrWhiteSpace(node.VideoPath)
+                ? null
+                : KvVideoTextureManager.GetOrCreate(node.Id, node.VideoPath, node.VideoLoop, node.Width, node.Height);
+            if (video != null)
             {
-                raw.color = new Color(0.25f, 0.25f, 0.28f, 0.85f);
-                if (!string.IsNullOrWhiteSpace(node.ImagePath))
-                    Loader.Warning($"KeyViewer: custom image '{node.ImagePath}' not found, drew a placeholder");
+                raw.texture = video;
+                raw.color = new Color(1f, 1f, 1f, Mathf.Clamp01(node.Opacity));
             }
             else
             {
-                raw.texture = normal;
-                raw.color = new Color(1f, 1f, 1f, Mathf.Clamp01(node.Opacity));
+                Texture2D normal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                if (normal == null)
+                {
+                    raw.color = new Color(0.25f, 0.25f, 0.28f, 0.85f);
+                    if (!string.IsNullOrWhiteSpace(node.ImagePath) || !string.IsNullOrWhiteSpace(node.VideoPath))
+                        Loader.Warning($"KeyViewer: custom image/video '{node.ImagePath}{node.VideoPath}' not found, drew a placeholder");
+                }
+                else
+                {
+                    raw.texture = normal;
+                    raw.color = new Color(1f, 1f, 1f, Mathf.Clamp01(node.Opacity));
+                }
+                if (key != null)
+                {
+                    key.CustomTexNormal = normal;
+                    key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
+                }
+                else if (normal != null)
+                {
+                    // Decoration images own their texture exclusively (nothing else references it),
+                    // so track it here — ReleaseCustomTextures destroys it on teardown. /
+                    // 装饰图片独占自己的贴图（无其它引用），在此登记——ReleaseCustomTextures
+                    // 在拆解时销毁它。
+                    customDecorationTextures.Add(normal);
+                }
             }
             if (key != null)
             {
                 key.CustomImageRect = rt;
                 key.CustomImage = raw;
-                key.CustomTexNormal = normal;
-                key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
-            }
-            else if (normal != null)
-            {
-                // Decoration images own their texture exclusively (nothing else references it),
-                // so track it here — ReleaseCustomTextures destroys it on teardown. /
-                // 装饰图片独占自己的贴图（无其它引用），在此登记——ReleaseCustomTextures
-                // 在拆解时销毁它。
-                customDecorationTextures.Add(normal);
             }
         }
 
@@ -621,6 +653,39 @@ namespace JipperKeyViewer.KeyViewer
             foreach (FmLayerGroup group in Settings.Data.LayerGroups)
                 if (group != null && group.Id == node.GroupId) return group.Visible;
             return true;
+        }
+
+        /// <summary>Apply the node's text outline/shadow override to its label and count texts.
+        /// Only nodes with UseCustomTextStyle do anything here — everything else already got the
+        /// global style in ConfigureText. / 把节点的文字描边/阴影覆盖应用到其标签与计数文本。只有
+        /// 开启了 UseCustomTextStyle 的节点在此有动作——其余节点已在 ConfigureText 中拿到全局
+        /// 样式。</summary>
+        private void ApplyCustomTextStyles(Key key, FmNode node)
+        {
+            if (key == null || node == null || !node.UseCustomTextStyle) return;
+            TMP_FontAsset font = GetCurrentFont();
+            if (font == null) return;
+            if (key.text != null)
+            {
+                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.KeyLabel));
+                if (m != null) key.text.fontMaterial = m;
+            }
+            if (key.value != null)
+            {
+                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.Count));
+                if (m != null) key.value.fontMaterial = m;
+            }
+        }
+
+        /// <summary>Push the node's box shape (corner radius / border thickness) into the merged
+        /// shape layer. Image nodes draw no box, so their slot keeps the defaults. / 把节点的盒子
+        /// 形状（圆角半径/边框厚度）写入合并形状层。图片节点不画盒子，其槽位保持默认值。</summary>
+        private void ApplyCustomShapeStyle(Key key, FmNode node)
+        {
+            if (key == null || keyShapeLayer == null || key.shapeSlot < 0) return;
+            if (node.NodeType == 3) return;
+            keyShapeLayer.SetCornerRadius(key.shapeSlot, node.CornerRadius);
+            keyShapeLayer.SetBorderThickness(key.shapeSlot, node.BorderThickness);
         }
 
         private void ApplyCustomKeyColors(Key key, FmNode node, bool pressed)
@@ -808,7 +873,7 @@ namespace JipperKeyViewer.KeyViewer
                 float scaleTarget = down ? pressScale : 1f;
                 if (key.currentAnim != null)
                     StopCoroutine(key.currentAnim);
-                key.currentAnim = StartCoroutine(AnimateKeyScale(key, scaleTarget, 0.08f));
+                key.currentAnim = StartCoroutine(AnimateKeyScale(key, scaleTarget, PressAnimDurationFor(key)));
             }
             // Image keys swap to the pressed texture first. /
             // 图片按键先切换按压贴图（按压语义）。

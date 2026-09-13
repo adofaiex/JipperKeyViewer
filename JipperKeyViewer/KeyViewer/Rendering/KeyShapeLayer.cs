@@ -22,12 +22,24 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         // 旧 CreateImage 以 2 倍 sizeDelta + 0.5 缩放绘制，九宫格边框在屏幕上减半。精确复刻以保证视觉一致。
         private const float BorderScale = 0.5f;
 
+        // Rounded-corner mode is a procedural mesh (the 9-slice sprites cannot round a corner),
+        // so its outline ring needs a fallback thickness when the node does not set one. /
+        // 圆角模式是程序化 mesh（九宫格贴图无法把直角变圆），因此其描边环在节点未指定厚度
+        // 时需要默认厚度。
+        private const float DefaultRoundedBorder = 2f;
+
         // --- Slot state (owner = background layer) / 槽位状态（持有者为背景层） ---
         private Rect[] rects;
         private Color[] bgColors;
         private Color[] outlineColors;
         private float[] scales;
         private bool[] visibles;
+        // Per-slot corner radius (0 = square, the legacy 9-slice path) and per-slot border
+        // thickness in on-screen px (0 = follow the sprite's own 9-slice border). /
+        // 每槽圆角半径（0 = 直角，走原九宫格路径）与每槽边框厚度（屏幕像素，0 = 跟随贴图自带的
+        // 九宫格边框）。
+        private float[] cornerRadii;
+        private float[] borderThicknesses;
         private int count;
 
         /// <summary>State owner; null on the background layer itself / 状态持有者；背景层自身为 null</summary>
@@ -59,6 +71,8 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             outlineColors = new Color[slotCount];
             scales = new float[slotCount];
             visibles = new bool[slotCount];
+            cornerRadii = new float[slotCount];
+            borderThicknesses = new float[slotCount];
             for (int i = 0; i < slotCount; i++)
             {
                 bgColors[i] = Color.white;
@@ -129,6 +143,28 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             MarkDirty();
         }
 
+        /// <summary>Per-slot corner radius in px (0 = the square 9-slice path) /
+        /// 每槽圆角半径（像素；0 = 直角九宫格路径）</summary>
+        public void SetCornerRadius(int slot, float radius)
+        {
+            if (slot < 0 || slot >= count) return;
+            radius = radius < 0f ? 0f : radius;
+            if (cornerRadii[slot] == radius) return;
+            cornerRadii[slot] = radius;
+            MarkDirty();
+        }
+
+        /// <summary>Per-slot border thickness in px (0 = follow the sprite's own 9-slice border) /
+        /// 每槽边框厚度（像素；0 = 跟随贴图自带的九宫格边框）</summary>
+        public void SetBorderThickness(int slot, float thickness)
+        {
+            if (slot < 0 || slot >= count) return;
+            thickness = thickness < 0f ? 0f : thickness;
+            if (borderThicknesses[slot] == thickness) return;
+            borderThicknesses[slot] = thickness;
+            MarkDirty();
+        }
+
         private void MarkDirty()
         {
             SetVerticesDirty();
@@ -159,7 +195,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 钳制)会产生负宽高——镜像交叠的垃圾切片。同时拦截未来坏缩放数学产生的 NaN。
                     if (float.IsNaN(r.width) || float.IsNaN(r.height) || r.width <= 0f || r.height <= 0f) continue;
                 }
-                DrawSliced(vh, r, colors[i], Sprite);
+                float radius = src.cornerRadii[i];
+                if (radius > 0f)
+                {
+                    // Outline ring drawn separately (slightly smaller quad below the filled one)
+                    // so both layers keep the same two-mesh structure as the 9-slice path.
+                    // 描边环单独绘制（填充块下方略小的块），使两层与九宫格路径保持同样的双
+                    // mesh 结构。
+                    float border = src.borderThicknesses[i];
+                    DrawRounded(vh, r, colors[i], radius, border);
+                }
+                else
+                {
+                    DrawSliced(vh, r, colors[i], Sprite);
+                }
             }
         }
 
@@ -177,6 +226,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static readonly float[] scratchY = new float[4];
         private static readonly float[] scratchU = new float[4];
         private static readonly float[] scratchV = new float[4];
+
+        // Rounded-corner geometry scratch: one arc segment per ~7.5 degrees of a 90-degree corner
+        // (12 segments), so 4 corners produce 52 points — smooth enough at any key size while
+        // keeping the fan/ring vertex count bounded. Same no-per-call-allocation rule as above. /
+        // 圆角几何暂存：每 90 度角按约 7.5 度一段（12 段），4 个角共 52 点——任意键尺寸下都足够
+        // 平滑，同时把扇形/环的顶点数控制住。与上方同样的「逐调用不分配」原则。
+        private const int RoundedSegments = 12;
+        private const int MaxRoundedPoints = (RoundedSegments + 1) * 4;
+        private static readonly float[] scratchRoundX = new float[MaxRoundedPoints];
+        private static readonly float[] scratchRoundY = new float[MaxRoundedPoints];
+        private static readonly float[] scratchInnerX = new float[MaxRoundedPoints];
+        private static readonly float[] scratchInnerY = new float[MaxRoundedPoints];
 
         private static void DrawSliced(VertexHelper vh, Rect r, Color color, Sprite sprite)
         {
@@ -239,6 +300,120 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     AddQuad(vh, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], color);
                 }
             }
+        }
+
+        /// <summary>Fill xs/ys with the counter-clockwise outline of a rounded rect (4 arcs,
+        /// bottom-left corner first) and return the point count. / 用圆角矩形的逆时针轮廓
+        ///（4 段圆弧，从左下角开始）填充 xs/ys 并返回点数。</summary>
+        private static int FillRoundedPoints(Rect r, float radius, float[] xs, float[] ys)
+        {
+            if (r.width <= 0f || r.height <= 0f) return 0;
+            float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
+            int k = 0;
+            // Corner centers in CCW order with each arc's start angle (degrees). / 逆时针顺序的
+            // 角心及每段圆弧的起始角度（度）。
+            float[] cx = { r.xMin + rad, r.xMax - rad, r.xMax - rad, r.xMin + rad };
+            float[] cy = { r.yMin + rad, r.yMin + rad, r.yMax - rad, r.yMax - rad };
+            float[] a0 = { 180f, 270f, 0f, 90f };
+            for (int c = 0; c < 4; c++)
+            {
+                for (int i = 0; i <= RoundedSegments; i++)
+                {
+                    float a = (a0[c] + 90f * i / RoundedSegments) * Mathf.Deg2Rad;
+                    xs[k] = cx[c] + rad * Mathf.Cos(a);
+                    ys[k] = cy[c] + rad * Mathf.Sin(a);
+                    k++;
+                }
+            }
+            return k;
+        }
+
+        /// <summary>Sample point for the procedural path: the middle texel of this layer's sprite,
+        /// so a flat fill picks up the same texture tint the 9-slice body would. / 程序化路径的
+        /// 采样点：本层贴图的中央 texel，使纯色填充取到与九宫格主体一致的贴图色。</summary>
+        private Vector2 RoundedUV()
+        {
+            if (Sprite == null) return new Vector2(0.5f, 0.5f);
+            Rect tr = Sprite.textureRect;
+            Texture tex = Sprite.texture;
+            if (tex == null) return new Vector2(0.5f, 0.5f);
+            return new Vector2((tr.x + tr.width * 0.5f) / tex.width, (tr.y + tr.height * 0.5f) / tex.height);
+        }
+
+        /// <summary>Rounded-rect mesh: the background layer fills the shape, the outline layer
+        /// draws a border-thick ring just inside the edge. A 9-slice sprite cannot round a corner,
+        /// so radius &gt; 0 slots bypass DrawSliced entirely. / 圆角矩形 mesh：背景层填充形状，
+        /// 描边层沿边缘内侧画 border 像素的环。九宫格贴图无法圆角，故 radius &gt; 0 的槽位完全
+        /// 绕开 DrawSliced。</summary>
+        private void DrawRounded(VertexHelper vh, Rect r, Color color, float radius, float border)
+        {
+            float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
+            Vector2 uv = RoundedUV();
+            if (rad <= 0f)
+            {
+                // A radius that collapsed (sub-pixel box) still renders as a plain quad rather
+                // than vanishing. / 半径被压缩到 0（亚像素盒子）时仍画成普通矩形而非消失。
+                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, uv.x, uv.x, uv.y, uv.y, color);
+                return;
+            }
+            int n = FillRoundedPoints(r, rad, scratchRoundX, scratchRoundY);
+            if (n == 0) return;
+            if (!isOutline)
+            {
+                // Filled shape: triangle fan around the rect centre. / 填充形状：绕矩形中心的三角扇。
+                int c = vh.currentVertCount;
+                UIVertex v = UIVertex.simpleVert;
+                v.color = color;
+                v.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
+                v.position = new Vector3(r.center.x, r.center.y, 0f);
+                vh.AddVert(v);
+                for (int i = 0; i < n; i++)
+                {
+                    v.position = new Vector3(scratchRoundX[i], scratchRoundY[i], 0f);
+                    vh.AddVert(v);
+                }
+                for (int i = 0; i < n; i++)
+                    vh.AddTriangle(c, c + 1 + i, c + 1 + (i + 1) % n);
+                return;
+            }
+            // Outline ring between the outer rounded rect and an inset rounded rect. / 描边环：
+            // 外圈圆角矩形与内缩圆角矩形之间。
+            float b = border > 0f ? border : DefaultRoundedBorder;
+            b = Mathf.Min(b, Mathf.Min(r.width, r.height) * 0.5f);
+            if (b <= 0f) return;
+            Rect inner = new Rect(r.x + b, r.y + b, r.width - 2f * b, r.height - 2f * b);
+            int m = FillRoundedPoints(inner, Mathf.Max(0f, rad - b), scratchInnerX, scratchInnerY);
+            if (m != n) return;
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                AddQuadVerts(vh,
+                    new Vector2(scratchRoundX[i], scratchRoundY[i]),
+                    new Vector2(scratchRoundX[j], scratchRoundY[j]),
+                    new Vector2(scratchInnerX[j], scratchInnerY[j]),
+                    new Vector2(scratchInnerX[i], scratchInnerY[i]),
+                    uv, color);
+            }
+        }
+
+        /// <summary>Arbitrary quad — the ring segments are not axis-aligned. / 任意四边形——环段
+        /// 不与坐标轴对齐。</summary>
+        private static void AddQuadVerts(VertexHelper vh, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv, Color color)
+        {
+            int i = vh.currentVertCount;
+            UIVertex vert = UIVertex.simpleVert;
+            vert.color = color;
+            vert.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
+            vert.position = new Vector3(a.x, a.y, 0f);
+            vh.AddVert(vert);
+            vert.position = new Vector3(b.x, b.y, 0f);
+            vh.AddVert(vert);
+            vert.position = new Vector3(c.x, c.y, 0f);
+            vh.AddVert(vert);
+            vert.position = new Vector3(d.x, d.y, 0f);
+            vh.AddVert(vert);
+            vh.AddTriangle(i, i + 1, i + 2);
+            vh.AddTriangle(i, i + 2, i + 3);
         }
 
         private static void AddQuad(VertexHelper vh, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1, Color color)

@@ -123,10 +123,13 @@ namespace JipperKeyViewer.KeyViewer
             KeyViewerObject = null;
             KeyViewerSizeObject = null;
             rainSystem.DetachLayers();
-            // Destroy shadow materials / 销毁阴影材质
-            foreach (var mat in shadowMaterials.Values)
-                Object.Destroy(mat);
-            shadowMaterials.Clear();
+            // Video players live on their own DontDestroyOnLoad root, NOT under KeyViewerObject —
+            // they must be torn down explicitly or the decoder keeps running with no visible quad.
+            // / 视频播放器挂在独立的 DontDestroyOnLoad 根节点上，而非 KeyViewerObject 之下——
+            // 必须显式拆解，否则解码器会继续运行而画面上没有四边形。
+            Rendering.KvVideoTextureManager.ReleaseAll();
+            // Destroy the cached text-style materials / 销毁缓存的文字样式材质
+            ReleaseTextStyleMaterials();
             Canvas = null;
             keyShapeLayer = null;
             keyOutlineLayer = null;
@@ -396,6 +399,12 @@ namespace JipperKeyViewer.KeyViewer
 
         private void InitializeMainKeys(LayoutDesc layout)
         {
+            // Fixed layouts contain no image/video nodes, so any video player left over from a
+            // custom layout is now unreferenced — release it here instead of waiting for teardown,
+            // or the decoder keeps running with no visible quad after a layout switch. /
+            // 固定布局不含图片/视频节点，故自定义布局遗留的视频播放器已无引用——在此释放而不等到
+            // 拆解，否则切换布局后解码器会继续运行而画面上没有四边形。
+            if (!IsCustomLayout) Rendering.KvVideoTextureManager.ReleaseAll();
             if (IsFullKeyboard) { InitializeFullKeyboard(); return; }
             if (IsCustomLayout) { InitializeCustomLayout(); return; }
             int remove = Settings.Data.DownLocation ? 200 : 0;
@@ -953,7 +962,7 @@ namespace JipperKeyViewer.KeyViewer
             }
             rt.localScale = Vector3.one;
             TextAlignmentOptions align = stackedLabel ? TextAlignmentOptions.Center : (centered ? TextAlignmentOptions.Center : ((slim && !isFootKey) ? TextAlignmentOptions.Left : TextAlignmentOptions.Center));
-            return ConfigureText(go, settings, align, perKeyIndex);
+            return ConfigureText(go, settings, align, perKeyIndex, Rendering.KvTextKind.KeyLabel);
         }
 
         private TextMeshProUGUI CreateCountText(GameObject parent, float sizeX, bool slim, KeyViewerSettings settings, bool stackedValue = false, int perKeyIndex = -1)
@@ -982,17 +991,20 @@ namespace JipperKeyViewer.KeyViewer
             }
             rt.localScale = Vector3.one;
             TextAlignmentOptions align = stackedValue ? TextAlignmentOptions.Center : (slim ? TextAlignmentOptions.Right : TextAlignmentOptions.Top);
-            return ConfigureText(go, settings, align, perKeyIndex);
+            return ConfigureText(go, settings, align, perKeyIndex, Rendering.KvTextKind.Count);
         }
 
-        private TextMeshProUGUI ConfigureText(GameObject go, KeyViewerSettings settings, TextAlignmentOptions alignment, int perKeyIndex = -1)
+        private TextMeshProUGUI ConfigureText(GameObject go, KeyViewerSettings settings, TextAlignmentOptions alignment, int perKeyIndex = -1, Rendering.KvTextKind kind = Rendering.KvTextKind.KeyLabel)
         {
             var text = go.AddComponent<TextMeshProUGUI>();
             var keyFont = GetCurrentFont();
             if (keyFont != null)
             {
                 text.font = keyFont;
-                var mat = GetShadowMaterial(keyFont);
+                // Global outline/shadow (custom nodes may override this right after CreateKey
+                // returns, via ApplyCustomTextStyles). / 全局描边/阴影（自定义节点可能在 CreateKey
+                // 返回后由 ApplyCustomTextStyles 覆盖）。
+                var mat = GetTextStyleMaterial(keyFont, Rendering.KvTextStyle.Resolve(settings.Data, null, kind));
                 if (mat != null) text.fontMaterial = mat;
             }
             text.fontStyle = (FontStyles)settings.Data.FontStyleFlags;

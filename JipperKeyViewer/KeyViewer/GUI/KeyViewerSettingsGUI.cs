@@ -2,6 +2,7 @@
 // Profile, language, count reset, font, folder buttons, custom position, layout, display, full-keyboard KPS/Total layout / 配置、语言、计数重置、字体、文件夹、自定义位置、布局、显示、全键盘 KPS/Total 布局
 // Shared small draw helpers (FloatSliderField, foldout buttons) also live here / 通用小绘制工具(FloatSliderField、折叠按钮)也放在此文件
 
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -16,6 +17,10 @@ namespace JipperKeyViewer.KeyViewer
     {
         // ===== Profile UI state / 配置选择器 UI 状态 =====
         bool profileExpanded;
+        /// <summary>Id of the currently expanded easing list (null = none). / 当前展开的缓动列表
+        /// id（null = 无）。</summary>
+        private string easingListExpanded;
+        private Vector2 easingScroll;
         bool profileIsRenaming;
         string profileRenameBuffer = "";
         string profileSaveAsBuffer = "";
@@ -98,6 +103,8 @@ namespace JipperKeyViewer.KeyViewer
                 DrawProfileRenameButton();
                 DrawProfileDeleteButton();
                 GUILayout.EndHorizontal();
+                GUILayout.Space(4);
+                DrawPackageSection();
             }
             GUILayout.EndVertical();
             GUILayout.Space(5);
@@ -183,6 +190,72 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (GUILayout.Button("✗", GUILayout.Width(24)))
                 profileIsRenaming = false;
+        }
+
+        // ===== profile packages (.jkv) / 配置包（.jkv） =====
+        private bool packageListExpanded;
+        private string packageMessage = "";
+
+        /// <summary>Export / import the current profile as a shareable .jkv archive. / 把当前配置
+        /// 导出 / 导入为可分享的 .jkv 归档。</summary>
+        private void DrawPackageSection()
+        {
+            GUILayout.BeginVertical("box");
+            GUILayout.Label(I18n.Tr("pkg_section"));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(I18n.Tr("pkg_export"), GUILayout.MinWidth(110f)))
+            {
+                string path = ExportProfilePackage(Settings.CurrentProfile);
+                packageMessage = path != null
+                    ? string.Format(I18n.Tr("pkg_exported"), Path.GetFileName(path))
+                    : I18n.Tr("pkg_err_export");
+            }
+            if (GUILayout.Button(I18n.Tr("pkg_import"), GUILayout.MinWidth(110f)))
+            {
+                // Refresh on open, not per event: IMGUI fires Layout+Repaint per frame and this is a
+                // directory scan. / 展开时刷新而非每事件刷新：IMGUI 每帧触发 Layout+Repaint 多次，
+                // 而这是一次目录扫描。
+                packageListExpanded = !packageListExpanded;
+                if (packageListExpanded) SyncProfilesWithDisk();
+            }
+            if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f)))
+            {
+                try
+                {
+                    string dir = Path.Combine(Loader.ModPath, "Packages");
+                    if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                    System.Diagnostics.Process.Start("explorer.exe", dir);
+                }
+                catch (Exception e)
+                {
+                    Loader.Error($"KeyViewer: cannot open packages folder: {e.Message}");
+                }
+            }
+            GUILayout.EndHorizontal();
+
+            if (packageListExpanded)
+            {
+                List<string> packages = ListProfilePackages();
+                if (packages.Count == 0)
+                {
+                    GUILayout.Label(I18n.Tr("pkg_none"));
+                }
+                else
+                {
+                    foreach (string pkg in packages)
+                    {
+                        if (!GUILayout.Button(pkg, GUILayout.MinWidth(200f))) continue;
+                        if (ImportProfilePackage(pkg, out string msg)) packageMessage = msg;
+                        else packageMessage = msg ?? I18n.Tr("pkg_err_failed_generic");
+                        packageListExpanded = false;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrEmpty(packageMessage))
+                GUILayout.Label(packageMessage);
+            GUILayout.Label(I18n.Tr("pkg_hint"));
+            GUILayout.EndVertical();
         }
 
         private void DrawProfileDeleteButton()
@@ -744,6 +817,8 @@ namespace JipperKeyViewer.KeyViewer
             // Per-key text size / spacing section / 每键字号/字间距 区块
             DrawPerKeyTextSizeSection();
 
+            DrawTextStyleSection();
+
             // Center KPS / Total text — only for flat (slim) KPS/Total designs (e.g. full keyboard, 8K/14K/16K/24K).
             // Hidden for stacked (non-slim) layouts like 12K/10K/20K standard. / 仅对扁平（slim）KPS/Total 生效（全键盘及 8K/14K/16K/24K 等），堆叠布局（12K/10K/20K 标准）隐藏。
             if (KeyViewer.KpsTotalIsSlim())
@@ -795,7 +870,231 @@ namespace JipperKeyViewer.KeyViewer
                     Settings.Data.EnablePressAnimationOnRain = newRainAnim;
                     SaveSettingsFromGui();
                 }
+
+                // Easing + duration: the old build hard-coded a linear 80ms lerp, so these default
+                // to exactly that and existing setups look unchanged. / 缓动 + 时长：旧版写死线性
+                // 80ms 插值，故默认值即为此，现有配置观感不变。
+                DrawEasingSelector("press_anim_easing", Settings.Data.PressAnimationEasing, v =>
+                {
+                    Settings.Data.PressAnimationEasing = v;
+                    SaveSettingsFromGui();
+                });
+                float newDur = FloatSliderField(I18n.Tr("press_anim_duration"), Settings.Data.PressAnimationDurationMs, 10f, 500f, "F0");
+                if (newDur != Settings.Data.PressAnimationDurationMs)
+                {
+                    Settings.Data.PressAnimationDurationMs = newDur;
+                    Settings.Data.PressAnimationDurationMs = Mathf.Clamp(newDur, 10f, 2000f);
+                    SaveSettingsFromGui();
+                }
             }
+        }
+
+        // ===== text outline / shadow (Display tab) / 文字描边/阴影（显示页） =====
+        // Key label and press count carry INDEPENDENT outline + shadow pairs: a large label and a
+        // small count number rarely want the same treatment. / 按键标签与计数文本各自带独立的描边
+        // + 阴影：大号标签与小号计数很少需要同样的处理。
+        /// <summary>Named-easing selector with a curve preview. A plain dropdown would make 27
+        /// cubic-bezier-free curves indistinguishable by name alone — the preview is what makes the
+        /// choice possible. / 带曲线预览的命名缓动选择器。纯下拉框会让 27 条与三次贝塞尔无关的曲线
+        /// 仅凭名字无法区分——预览才让选择成为可能。</summary>
+        private void DrawEasingSelector(string id, string current, Action<string> apply)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(100f));
+            string shown = string.IsNullOrEmpty(current) ? Util.KvEasing.Default : current;
+            if (GUILayout.Button(shown, GUILayout.Width(140f)))
+            {
+                easingListExpanded = easingListExpanded == id ? null : id;
+                if (easingListExpanded == id) easingScroll = Vector2.zero;
+            }
+            // Preview of the CURRENT selection sits next to the button, so the chosen curve is always
+            // visible without opening the list. / 当前选择的预览就在按钮旁边，无需展开列表即可看到
+            // 所选曲线。
+            DrawEasingCurve(new Rect(GUILayoutUtility.GetRect(56f, 22f).position, new Vector2(56f, 22f)), shown);
+            GUILayout.EndHorizontal();
+
+            if (easingListExpanded != id) return;
+            GUILayout.BeginVertical("box");
+            // Fixed-height scroll: 27 entries must not stretch the settings window off-screen. /
+            // 固定高度滚动区：27 个条目不能把设置窗口撑出屏幕。
+            easingScroll = GUILayout.BeginScrollView(easingScroll, GUILayout.Height(180f));
+            for (int i = 0; i < Util.KvEasing.Names.Length; i++)
+            {
+                string name = Util.KvEasing.Names[i];
+                bool selected = string.Equals(name, shown, StringComparison.OrdinalIgnoreCase);
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button((selected ? "✓ " : "  ") + name, GUILayout.MinWidth(150f)))
+                {
+                    apply(name);
+                    easingListExpanded = null;
+                }
+                DrawEasingCurve(new Rect(GUILayoutUtility.GetRect(70f, 20f).position, new Vector2(70f, 20f)), name);
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.EndScrollView();
+            GUILayout.EndVertical();
+        }
+
+        /// <summary>Plot one easing into a rect. Values outside [0,1] (the back variants overshoot)
+        /// are accommodated by padding the plot vertically, so an overshoot curve is visible rather
+        /// than clipped flat. / 把一条缓动画进矩形。越出 [0,1] 的值（back 系列会过冲）通过在竖直方向
+        /// 留边来容纳，使过冲曲线可见而非被削平。</summary>
+        private void DrawEasingCurve(Rect r, string name)
+        {
+            if (Event.current == null || Event.current.type != EventType.Repaint) return;
+            GUIUtils.DrawRect(r, new Color(0.12f, 0.12f, 0.14f, 0.85f));
+            const int Steps = 24;
+            float minV = 0f, maxV = 1f;
+            // Two passes: first find the actual range (only back easings leave [0,1]), then plot. /
+            // 两遍：先求实际取值范围（只有 back 系列会越出 [0,1]），再绘制。
+            for (int i = 0; i <= Steps; i++)
+            {
+                float v = Util.KvEasing.Ease(name, i / (float)Steps);
+                if (v < minV) minV = v;
+                if (v > maxV) maxV = v;
+            }
+            float span = Mathf.Max(0.0001f, maxV - minV);
+            Vector2 prev = Vector2.zero;
+            for (int i = 0; i <= Steps; i++)
+            {
+                float t = i / (float)Steps;
+                float v = Util.KvEasing.Ease(name, t);
+                Vector2 p = new Vector2(r.x + t * r.width, r.yMax - (v - minV) / span * r.height);
+                if (i > 0) DrawEasingSegment(prev, p);
+                prev = p;
+            }
+            DrawRectOutline(r, new Color(1f, 1f, 1f, 0.18f), 1f);
+        }
+
+        private void DrawEasingSegment(Vector2 a, Vector2 b)
+        {
+            // Sample the segment rather than drawing a true line: GUIUtils has only axis-aligned
+            // rects, and 3 interpolated dots per step is indistinguishable at this size. /
+            // 用取样代替真正的画线：GUIUtils 只有轴对齐矩形，而这个尺寸下每段 3 个插值点已经看不出差别。
+            const int Dots = 4;
+            for (int i = 0; i <= Dots; i++)
+            {
+                float t = i / (float)Dots;
+                float x = Mathf.Lerp(a.x, b.x, t);
+                float y = Mathf.Lerp(a.y, b.y, t);
+                GUIUtils.DrawRect(new Rect(x, y, 1.5f, 1.5f), new Color(0.55f, 0.85f, 1f, 1f));
+            }
+        }
+
+        private void DrawTextStyleSection()
+        {
+            GUILayout.Space(4f);
+            GUILayout.Label(I18n.Tr("text_style"));
+            DrawTextStyleBlock("key",
+                Settings.Data.EnableKeyTextOutline, Settings.Data.KeyTextOutlineColor, Settings.Data.KeyTextOutlineThickness,
+                Settings.Data.EnableKeyTextShadow, Settings.Data.KeyTextShadowColor,
+                Settings.Data.KeyTextShadowOffsetX, Settings.Data.KeyTextShadowOffsetY, Settings.Data.KeyTextShadowSoftness,
+                (on, col, w) =>
+                {
+                    Settings.Data.EnableKeyTextOutline = on;
+                    Settings.Data.KeyTextOutlineColor = col;
+                    Settings.Data.KeyTextOutlineThickness = w;
+                },
+                (on, col, ox, oy, soft) =>
+                {
+                    Settings.Data.EnableKeyTextShadow = on;
+                    Settings.Data.KeyTextShadowColor = col;
+                    Settings.Data.KeyTextShadowOffsetX = ox;
+                    Settings.Data.KeyTextShadowOffsetY = oy;
+                    Settings.Data.KeyTextShadowSoftness = soft;
+                });
+
+            DrawTextStyleBlock("count",
+                Settings.Data.EnableCountTextOutline, Settings.Data.CountTextOutlineColor, Settings.Data.CountTextOutlineThickness,
+                Settings.Data.EnableCountTextShadow, Settings.Data.CountTextShadowColor,
+                Settings.Data.CountTextShadowOffsetX, Settings.Data.CountTextShadowOffsetY, Settings.Data.CountTextShadowSoftness,
+                (on, col, w) =>
+                {
+                    Settings.Data.EnableCountTextOutline = on;
+                    Settings.Data.CountTextOutlineColor = col;
+                    Settings.Data.CountTextOutlineThickness = w;
+                },
+                (on, col, ox, oy, soft) =>
+                {
+                    Settings.Data.EnableCountTextShadow = on;
+                    Settings.Data.CountTextShadowColor = col;
+                    Settings.Data.CountTextShadowOffsetX = ox;
+                    Settings.Data.CountTextShadowOffsetY = oy;
+                    Settings.Data.CountTextShadowSoftness = soft;
+                });
+        }
+
+        private void DrawTextStyleBlock(string id, bool outlineOn, Color outlineColor, float outlineWidth,
+            bool shadowOn, Color shadowColor, float offX, float offY, float softness,
+            Action<bool, Color, float> applyOutline, Action<bool, Color, float, float, float> applyShadow)
+        {
+            GUILayout.BeginVertical("box");
+            GUILayout.Label(I18n.Tr(id == "key" ? "fm_key_text_style" : "fm_count_text_style"));
+
+            bool newOutline = GUILayout.Toggle(outlineOn, I18n.Tr("fm_text_outline"));
+            if (newOutline != outlineOn)
+            {
+                applyOutline(newOutline, outlineColor, outlineWidth);
+                RefreshTextStyles();
+            }
+            if (newOutline)
+            {
+                Color newCol = DrawColorPicker(I18n.Tr("fm_text_outline_color"), outlineColor, Color.black);
+                if (newCol != outlineColor)
+                {
+                    applyOutline(newOutline, newCol, outlineWidth);
+                    RefreshTextStyles();
+                }
+                float newW = FloatSliderField(I18n.Tr("fm_text_outline_thickness"), outlineWidth, 0f, 1f);
+                if (newW != outlineWidth)
+                {
+                    applyOutline(newOutline, outlineColor, newW);
+                    RefreshTextStyles();
+                }
+            }
+
+            bool newShadow = GUILayout.Toggle(shadowOn, I18n.Tr("fm_text_shadow"));
+            if (newShadow != shadowOn)
+            {
+                applyShadow(newShadow, shadowColor, offX, offY, softness);
+                RefreshTextStyles();
+            }
+            if (newShadow)
+            {
+                Color newCol = DrawColorPicker(I18n.Tr("fm_text_shadow_color"), shadowColor, new Color(0f, 0f, 0f, 0.5f));
+                if (newCol != shadowColor)
+                {
+                    applyShadow(newShadow, newCol, offX, offY, softness);
+                    RefreshTextStyles();
+                }
+                float newX = FloatSliderField(I18n.Tr("fm_text_shadow_offset_x"), offX, -20f, 20f, "F0");
+                float newY = FloatSliderField(I18n.Tr("fm_text_shadow_offset_y"), offY, -20f, 20f, "F0");
+                if (newX != offX || newY != offY)
+                {
+                    applyShadow(newShadow, shadowColor, newX, newY, softness);
+                    RefreshTextStyles();
+                }
+                float newSoft = FloatSliderField(I18n.Tr("fm_text_shadow_softness"), softness, 0f, 16f, "F0");
+                if (newSoft != softness)
+                {
+                    applyShadow(newShadow, shadowColor, offX, offY, newSoft);
+                    RefreshTextStyles();
+                }
+            }
+            GUILayout.EndVertical();
+        }
+
+        /// <summary>Push the new global text style onto every live text. A full rebuild would also
+        /// do it, but rebuilding on every slider tick during a drag is what the debounced save path
+        /// exists to avoid — re-materialing the existing texts is enough, and the overlay only needs
+        /// a rebuild when per-node overrides have to re-resolve. / 把新的全局文字样式写入所有现存
+        /// 文本。整体重建也能做到，但拖动时每个滑杆 tick 都重建正是去抖保存要避免的——给现存文本
+        /// 换材质就够了；只有需要重新解析节点级覆盖时覆盖层才需重建。</summary>
+        private void RefreshTextStyles()
+        {
+            UpdateAllFonts();
+            if (IsCustomLayout) RequestEditorRebuild();
+            SaveSettingsFromGui();
         }
 
         // ===== Full-keyboard KPS / Total section foldout state =====

@@ -77,6 +77,9 @@ namespace JipperKeyViewer.KeyViewer
         private FmNode fmCaptureGhostNode;
         private Vector2 fmPropsScroll;
         private GUIStyle fmNodeLabelStyle;
+        private GUIStyle fmVideoGlyphStyle;
+        /// <summary>Control id of the expanded per-node easing picker (null = none) / 展开的节点级缓动选择器的控件 id（null = 无）</summary>
+        private string fmEasingPicker;
         private GUIStyle fmHintStyle;
         private readonly Dictionary<string, Texture2D> fmTexCache = new Dictionary<string, Texture2D>();
         private readonly List<string> fmScratchKeys = new List<string>();
@@ -1153,7 +1156,17 @@ namespace JipperKeyViewer.KeyViewer
                 RectTransform rt = (RectTransform)key.transform;
                 rt.anchoredPosition = new Vector2(node.X, cy);
                 if (keyShapeLayer != null && key.shapeSlot >= 0)
+                {
                     keyShapeLayer.SetRect(key.shapeSlot, node.X, cy - node.Height * 0.5f, node.Width, node.Height);
+                    // Shape edits (radius / border) ride the same live path as geometry, so the
+                    // panel sliders show their effect without waiting for a full rebuild. /
+                    // 形状编辑（圆角/边框）与几何走同一条实时路径，面板滑块无需等整建即可见。
+                    if (node.NodeType != 3)
+                    {
+                        keyShapeLayer.SetCornerRadius(key.shapeSlot, node.CornerRadius);
+                        keyShapeLayer.SetBorderThickness(key.shapeSlot, node.BorderThickness);
+                    }
+                }
                 if (key.visuals != null)
                 {
                     RectTransform vt = (RectTransform)key.visuals;
@@ -1938,6 +1951,48 @@ namespace JipperKeyViewer.KeyViewer
             GUIUtils.DrawRect(new Rect(r.xMax - t, r.y + t, t, Mathf.Max(0f, r.height - 2f * t)), color);
         }
 
+        // ---- rounded-rect preview / 圆角矩形预览 ----
+        // The editor canvas mirrors the runtime box shape, so a radius typed in the panel must be
+        // visible on the canvas. IMGUI has no rounded primitive, so the corners are filled with a
+        // small per-row span scan (12 rows per corner): cheap, allocation-free, and exact enough
+        // at canvas zoom. / 编辑器画布要反映运行时盒子形状，面板里输入的圆角必须能在画布上看到。
+        // IMGUI 没有圆角图元，故用逐行跨度扫描填角（每角 12 行）：廉价、零分配，在画布缩放下
+        // 足够精确。
+        private const int FmCornerRows = 12;
+
+        private static void DrawRoundedRect(Rect r, Color color, float radius)
+        {
+            if (r.width <= 0f || r.height <= 0f) return;
+            float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
+            if (rad <= 0.5f)
+            {
+                GUIUtils.DrawRect(r, color);
+                return;
+            }
+            // Middle band (full width) + two side bands minus the corner notches. /
+            // 中间整宽带 + 两侧带（扣掉圆角缺口）。
+            GUIUtils.DrawRect(new Rect(r.x, r.y + rad, r.width, r.height - 2f * rad), color);
+            GUIUtils.DrawRect(new Rect(r.x + rad, r.y, r.width - 2f * rad, rad), color);
+            GUIUtils.DrawRect(new Rect(r.x + rad, r.yMax - rad, r.width - 2f * rad, rad), color);
+            int rows = FmCornerRows;
+            float rowH = rad / rows;
+            for (int i = 0; i < rows; i++)
+            {
+                // Half-width of the circle at this row, measured from the row's outer edge. /
+                // 该行处圆的半宽（自该行外缘起算）。
+                float dy = rad - (i + 0.5f) * rowH;
+                float dx = rad - Mathf.Sqrt(Mathf.Max(0f, rad * rad - dy * dy));
+                float w = rad - dx;
+                if (w <= 0f) continue;
+                float yTop = r.y + i * rowH;
+                float yBot = r.yMax - (i + 1) * rowH;
+                GUIUtils.DrawRect(new Rect(r.x + dx, yTop, w, rowH), color);
+                GUIUtils.DrawRect(new Rect(r.xMax - dx - w, yTop, w, rowH), color);
+                GUIUtils.DrawRect(new Rect(r.x + dx, yBot, w, rowH), color);
+                GUIUtils.DrawRect(new Rect(r.xMax - dx - w, yBot, w, rowH), color);
+            }
+        }
+
         private void DrawEditorNode(FmNode node, Rect sr, Rect canvasRect)
         {
             bool selected = editorSelection.Contains(node);
@@ -1956,14 +2011,51 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     GUIUtils.DrawRect(ClipRect(sr, canvasRect), new Color(0.3f, 0.3f, 0.34f, 0.9f * dim));
                 }
+                // Video nodes cannot be previewed here (the frame only exists in a RenderTexture at
+                // runtime), so the canvas marks them with a play glyph and a brighter border — an
+                // unmarked video node would be indistinguishable from a broken image node. /
+                // 视频节点无法在此预览（画面只在运行时的 RenderTexture 里），故画布用播放符号与更亮
+                // 的边框标记它们——不标记的话视频节点和坏掉的图片节点看起来完全一样。
+                if (!string.IsNullOrWhiteSpace(node.VideoPath))
+                {
+                    Rect r = ClipRect(sr, canvasRect);
+                    DrawRectOutline(r, WithAlpha(new Color(0.45f, 0.85f, 1f, 1f), dim), 2f);
+                    if (fmVideoGlyphStyle == null)
+                        fmVideoGlyphStyle = new GUIStyle(GUI.skin.label)
+                        {
+                            alignment = TextAnchor.MiddleCenter,
+                            fontStyle = FontStyle.Bold,
+                        };
+                    fmVideoGlyphStyle.fontSize = Mathf.Max(9, Mathf.RoundToInt(22f * fmZoom));
+                    fmVideoGlyphStyle.normal.textColor = WithAlpha(Color.white, dim);
+                    GUI.Label(r, "▶", fmVideoGlyphStyle);
+                }
             }
             else
             {
                 ProfileData d = Settings.Data;
                 Color bg = node.UseCustomColor ? NodeColor(node.Bg, d.Background) : d.Background;
                 Color ol = node.UseCustomColor ? NodeColor(node.Outline, d.Outline) : d.Outline;
-                GUIUtils.DrawRect(ClipRect(sr, canvasRect), WithAlpha(bg, dim));
-                DrawRectOutline(ClipRect(sr, canvasRect), WithAlpha(ol, dim), 1.5f);
+                // Mirror the runtime box shape. Rounded nodes: the outline color fills the
+                // rounded rect and the background covers it inset by the border width (the
+                // same ring the runtime mesh draws). Square nodes keep the legacy rect +
+                // 1.5px marker outline. / 复刻运行时盒子形状。圆角节点：描边色填充圆角矩形，
+                // 背景色按边框宽度内缩覆盖（与运行时 mesh 画的是同一个环）。直角节点沿用
+                // 原矩形 + 1.5px 标记描边。
+                Rect clipped = ClipRect(sr, canvasRect);
+                if (node.CornerRadius > 0.5f)
+                {
+                    float b = node.BorderThickness > 0f ? node.BorderThickness * fmZoom : 1.5f;
+                    DrawRoundedRect(clipped, WithAlpha(ol, dim), node.CornerRadius * fmZoom);
+                    Rect inner = new Rect(clipped.x + b, clipped.y + b,
+                        Mathf.Max(0f, clipped.width - 2f * b), Mathf.Max(0f, clipped.height - 2f * b));
+                    DrawRoundedRect(inner, WithAlpha(bg, dim), Mathf.Max(0f, node.CornerRadius * fmZoom - b));
+                }
+                else
+                {
+                    GUIUtils.DrawRect(clipped, WithAlpha(bg, dim));
+                    DrawRectOutline(clipped, WithAlpha(ol, dim), 1.5f);
+                }
                 string label = node.NodeType == 1
                     ? (string.IsNullOrEmpty(node.CustomText) ? "KPS" : node.CustomText)
                     : node.NodeType == 2
@@ -2175,6 +2267,53 @@ namespace JipperKeyViewer.KeyViewer
                 EditorPropertyChanged();
             }, "fm_help_height");
 
+            // Box shape: corner radius + border thickness. Radius > 0 switches the slot to the
+            // procedural rounded mesh; both values apply to every box-drawing node type (keys,
+            // KPS/Total panels) but never to image nodes, which draw no box at all. /
+            // 盒子形状：圆角半径 + 边框厚度。半径 > 0 会把槽位切到程序化圆角 mesh；两个值对
+            // 所有会画盒子的节点类型生效（按键、KPS/Total 面板），但绝不作用于完全不画盒子的
+            // 图片节点。
+            if (first.NodeType != 3)
+            {
+                DrawEditorFloatField(I18n.Tr("fm_corner_radius"), "fme_cr_" + first.Id, n => n.CornerRadius, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CornerRadius = Mathf.Max(0f, v);
+                    EditorPropertyChanged();
+                }, "fm_help_corner_radius");
+                DrawEditorFloatField(I18n.Tr("fm_border_thickness"), "fme_bt_" + first.Id, n => n.BorderThickness, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.BorderThickness = Mathf.Max(0f, v);
+                    EditorPropertyChanged();
+                }, "fm_help_border_thickness");
+            }
+
+            DrawEditorTextStyleSection(first);
+
+            // Press-animation easing, per node / 节点级按压动画缓动
+            DrawEditorToggle(I18n.Tr("fm_press_easing_custom"), first.UseCustomPressEasing, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UseCustomPressEasing = v;
+                    if (v)
+                    {
+                        n.PressAnimEasing = Settings.Data.PressAnimationEasing;
+                        n.PressAnimDurationMs = Settings.Data.PressAnimationDurationMs;
+                    }
+                }
+            }, "fm_help_press_easing_custom");
+            if (first.UseCustomPressEasing)
+            {
+                DrawEditorEasingSelector("fme_ease_" + first.Id, first.PressAnimEasing, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressAnimEasing = v;
+                });
+                DrawEditorFloatField(I18n.Tr("press_anim_duration"), "fme_pad_" + first.Id, n => n.PressAnimDurationMs, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressAnimDurationMs = Mathf.Clamp(v, 10f, 2000f);
+                }, "fm_help_press_easing_custom");
+            }
+
             int depth = first.Depth;
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("fm_depth"), GUILayout.Width(96f));
@@ -2236,6 +2375,23 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.ImagePathPressed = v;
                     EditorPropertyChanged();
                 }, "fm_help_pressed_image");
+                DrawEditorTextField(I18n.Tr("fm_video_path"), "fme_vid_" + first.Id, first.VideoPath, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.VideoPath = v;
+                    EditorPropertyChanged();
+                }, "fm_help_video_path");
+                if (!string.IsNullOrWhiteSpace(first.VideoPath))
+                {
+                    DrawEditorToggle(I18n.Tr("fm_video_loop"), first.VideoLoop, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.VideoLoop = v;
+                        EditorPropertyChanged();
+                    }, "fm_help_video_loop");
+                    // A video node's press texture still comes from the PNG pair; say so instead of
+                    // letting the user assume the video swaps on press. / 视频节点的按压贴图仍来自
+                    // PNG 对；明确说明，避免用户误以为按下会切换视频。
+                    GUILayout.Label(I18n.Tr("fm_video_press_hint"));
+                }
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(I18n.Tr("fm_import"), GUILayout.MinWidth(90f))) EditorImportImages();
                 if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f))) OpenCustomImagesDir();
@@ -2965,6 +3121,178 @@ namespace JipperKeyViewer.KeyViewer
                 EditorPropertyChanged();
             }
         }
+
+        /// <summary>Per-node text outline / shadow. Off (the default) follows the global Display-tab
+        /// style; turning it on seeds every field from the CURRENT globals first, so the node keeps
+        /// the look it had and the user only changes what they came for — the same
+        /// seed-then-override flow the rain overrides use. / 节点级文字描边/阴影。关闭（默认）跟随
+        /// 显示页的全局样式；开启时先用「当前全局值」填充每个字段，使节点保持原有观感，用户只改
+        /// 自己关心的项——与雨滴覆盖同款「先填充再覆盖」流程。</summary>
+        private void DrawEditorTextStyleSection(FmNode first)
+        {
+            DrawEditorToggle(I18n.Tr("fm_text_style_custom"), first.UseCustomTextStyle, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UseCustomTextStyle = v;
+                    if (v) SeedTextStyleFromGlobals(n);
+                }
+            }, "fm_help_text_style_custom");
+            if (!first.UseCustomTextStyle)
+            {
+                GUILayout.Label("<i>" + I18n.Tr("fm_text_style_following_global") + "</i>");
+                return;
+            }
+
+            // Label text / 标签文字
+            GUILayout.Label(I18n.Tr("fm_key_text_style"));
+            DrawEditorToggle(I18n.Tr("fm_text_outline"), first.KeyTextOutlineEnabled, v =>
+            {
+                foreach (FmNode n in editorSelection) n.KeyTextOutlineEnabled = v;
+            }, "fm_help_text_outline");
+            if (first.KeyTextOutlineEnabled)
+            {
+                DrawEditorColorField(I18n.Tr("fm_text_outline_color"), first.KeyTextOutlineColor, Settings.Data.KeyTextOutlineColor,
+                    arr => { foreach (FmNode n in editorSelection) n.KeyTextOutlineColor = arr; });
+                DrawEditorFloatField(I18n.Tr("fm_text_outline_thickness"), "fme_kot_" + first.Id, n => n.KeyTextOutlineThickness, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.KeyTextOutlineThickness = Mathf.Clamp(v, 0f, 1f);
+                }, "fm_help_text_outline");
+            }
+            DrawEditorToggle(I18n.Tr("fm_text_shadow"), first.KeyTextShadowEnabled, v =>
+            {
+                foreach (FmNode n in editorSelection) n.KeyTextShadowEnabled = v;
+            }, "fm_help_text_shadow");
+            if (first.KeyTextShadowEnabled)
+            {
+                DrawEditorColorField(I18n.Tr("fm_text_shadow_color"), first.KeyTextShadowColor, Settings.Data.KeyTextShadowColor,
+                    arr => { foreach (FmNode n in editorSelection) n.KeyTextShadowColor = arr; });
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_x"), "fme_ksx_" + first.Id, n => n.KeyTextShadowOffsetX, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.KeyTextShadowOffsetX = Mathf.Clamp(v, -20f, 20f);
+                }, "fm_help_text_shadow");
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_y"), "fme_ksy_" + first.Id, n => n.KeyTextShadowOffsetY, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.KeyTextShadowOffsetY = Mathf.Clamp(v, -20f, 20f);
+                }, "fm_help_text_shadow");
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_softness"), "fme_kss_" + first.Id, n => n.KeyTextShadowSoftness, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.KeyTextShadowSoftness = Mathf.Clamp(v, 0f, 64f);
+                }, "fm_help_text_shadow");
+            }
+
+            // Count text / 计数文字
+            GUILayout.Label(I18n.Tr("fm_count_text_style"));
+            DrawEditorToggle(I18n.Tr("fm_text_outline"), first.CountTextOutlineEnabled, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountTextOutlineEnabled = v;
+            }, "fm_help_text_outline");
+            if (first.CountTextOutlineEnabled)
+            {
+                DrawEditorColorField(I18n.Tr("fm_text_outline_color"), first.CountTextOutlineColor, Settings.Data.CountTextOutlineColor,
+                    arr => { foreach (FmNode n in editorSelection) n.CountTextOutlineColor = arr; });
+                DrawEditorFloatField(I18n.Tr("fm_text_outline_thickness"), "fme_cot_" + first.Id, n => n.CountTextOutlineThickness, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextOutlineThickness = Mathf.Clamp(v, 0f, 1f);
+                }, "fm_help_text_outline");
+            }
+            DrawEditorToggle(I18n.Tr("fm_text_shadow"), first.CountTextShadowEnabled, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountTextShadowEnabled = v;
+            }, "fm_help_text_shadow");
+            if (first.CountTextShadowEnabled)
+            {
+                DrawEditorColorField(I18n.Tr("fm_text_shadow_color"), first.CountTextShadowColor, Settings.Data.CountTextShadowColor,
+                    arr => { foreach (FmNode n in editorSelection) n.CountTextShadowColor = arr; });
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_x"), "fme_csx_" + first.Id, n => n.CountTextShadowOffsetX, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextShadowOffsetX = Mathf.Clamp(v, -20f, 20f);
+                }, "fm_help_text_shadow");
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_y"), "fme_csy_" + first.Id, n => n.CountTextShadowOffsetY, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextShadowOffsetY = Mathf.Clamp(v, -20f, 20f);
+                }, "fm_help_text_shadow");
+                DrawEditorFloatField(I18n.Tr("fm_text_shadow_softness"), "fme_css_" + first.Id, n => n.CountTextShadowSoftness, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextShadowSoftness = Mathf.Clamp(v, 0f, 64f);
+                }, "fm_help_text_shadow");
+            }
+
+            if (GUILayout.Button(I18n.Tr("fm_text_style_follow_global"), GUILayout.MinWidth(110f)))
+            {
+                foreach (FmNode n in editorSelection) n.UseCustomTextStyle = false;
+                EditorPropertyChanged();
+            }
+        }
+
+        /// <summary>Named-easing picker for the editor. Unlike the settings window's version this one
+        /// lives inside the scrolling property panel, so it renders a flat button grid instead of a
+        /// nested scroll view (a scroll view inside a scroll view is unusable with a mouse wheel).
+        /// / 编辑器用的命名缓动选择器。与设置窗口的版本不同，它位于可滚动的属性面板内，故渲染为平铺
+        /// 按钮网格而非嵌套滚动区（滚动区套滚动区用滚轮根本没法操作）。</summary>
+        private void DrawEditorEasingSelector(string ctrl, string current, Action<string> apply)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(96f));
+            string shown = Util.KvEasing.Normalize(current);
+            if (GUILayout.Button(shown, GUILayout.Width(140f)))
+                fmEasingPicker = fmEasingPicker == ctrl ? null : ctrl;
+            GUILayout.EndHorizontal();
+            if (fmEasingPicker != ctrl) return;
+
+            // Two per row: a curve preview needs real width to be readable, and 27 entries at two per
+            // row is 14 rows — acceptable inside the panel's own scroll view. / 每行两个：曲线预览需要
+            // 真实宽度才可读，27 个条目每行两个共 14 行——在面板自身的滚动区内可以接受。
+            GUILayout.BeginVertical("box");
+            for (int i = 0; i < Util.KvEasing.Names.Length; i += 2)
+            {
+                GUILayout.BeginHorizontal();
+                DrawEditorEasingCell(ctrl, Util.KvEasing.Names[i], shown, apply);
+                if (i + 1 < Util.KvEasing.Names.Length)
+                    DrawEditorEasingCell(ctrl, Util.KvEasing.Names[i + 1], shown, apply);
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.EndVertical();
+        }
+
+        private void DrawEditorEasingCell(string ctrl, string name, string shown, Action<string> apply)
+        {
+            bool selected = string.Equals(name, shown, StringComparison.OrdinalIgnoreCase);
+            if (GUILayout.Button((selected ? "✓ " : "  ") + name, GUILayout.MinWidth(120f)))
+            {
+                apply(name);
+                fmEasingPicker = null;
+                EditorPropertyChanged();
+            }
+            DrawEasingCurve(new Rect(GUILayoutUtility.GetRect(46f, 18f).position, new Vector2(46f, 18f)), name);
+        }
+
+        /// <summary>Seed a node's text-style override from the current global settings — called when
+        /// the user first turns the override on, so enabling it never changes the rendered text.
+        /// / 用当前全局设置填充节点的文字样式覆盖——用户首次开启覆盖时调用，使开启动作本身绝不改变
+        /// 已渲染的文字。</summary>
+        private static void SeedTextStyleFromGlobals(FmNode n)
+        {
+            ProfileData d = Settings.Data;
+            n.KeyTextOutlineEnabled = d.EnableKeyTextOutline;
+            n.KeyTextOutlineColor = ColorArray(d.KeyTextOutlineColor);
+            n.KeyTextOutlineThickness = d.KeyTextOutlineThickness;
+            n.KeyTextShadowEnabled = d.EnableKeyTextShadow;
+            n.KeyTextShadowColor = ColorArray(d.KeyTextShadowColor);
+            n.KeyTextShadowOffsetX = d.KeyTextShadowOffsetX;
+            n.KeyTextShadowOffsetY = d.KeyTextShadowOffsetY;
+            n.KeyTextShadowSoftness = d.KeyTextShadowSoftness;
+            n.CountTextOutlineEnabled = d.EnableCountTextOutline;
+            n.CountTextOutlineColor = ColorArray(d.CountTextOutlineColor);
+            n.CountTextOutlineThickness = d.CountTextOutlineThickness;
+            n.CountTextShadowEnabled = d.EnableCountTextShadow;
+            n.CountTextShadowColor = ColorArray(d.CountTextShadowColor);
+            n.CountTextShadowOffsetX = d.CountTextShadowOffsetX;
+            n.CountTextShadowOffsetY = d.CountTextShadowOffsetY;
+            n.CountTextShadowSoftness = d.CountTextShadowSoftness;
+        }
+
+        private static float[] ColorArray(Color c) => new[] { c.r, c.g, c.b, c.a };
 
         private void EditorPropertyChanged()
         {
