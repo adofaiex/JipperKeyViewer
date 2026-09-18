@@ -584,21 +584,18 @@ namespace JipperKeyViewer.KeyViewer
                     }
                 }
 
-                // Custom layouts initialize no foot keys at all (KeyViewerLayout.InitializeMainKeys
-                // skips them), so the grid is a dead control there — and leaving it reachable kept
-                // the foot-position path alive against the node canvas. / 自定义布局完全不初始化
-                // 脚键（见 KeyViewerLayout.InitializeMainKeys），该网格在此是死控件——留着它也让
-                // 脚键定位路径继续作用于节点画布。
-                if (!IsCustomLayout)
+                // FreeMake preset generation uses FootKeyViewerStyle to create foot-key nodes,
+                // so the selector must stay reachable in custom layout too. ResetFootKeyViewer
+                // is already a no-op for custom layout, so exposing the grid is safe. / FreeMake
+                // 预设生成会按 FootKeyViewerStyle 创建脚键节点，因此自定义布局下也必须保留
+                // 该选择器；ResetFootKeyViewer 在自定义布局下已是空操作，暴露网格安全。
+                GUILayout.Label(I18n.Tr("foot_keys") + ":");
+                FootKeyviewerStyle newFootStyle = (FootKeyviewerStyle)GUILayout.SelectionGrid((int)Settings.Data.FootKeyViewerStyle, FootKeyLayoutNames, 5);
+                if (newFootStyle != Settings.Data.FootKeyViewerStyle)
                 {
-                    GUILayout.Label(I18n.Tr("foot_keys") + ":");
-                    FootKeyviewerStyle newFootStyle = (FootKeyviewerStyle)GUILayout.SelectionGrid((int)Settings.Data.FootKeyViewerStyle, FootKeyLayoutNames, 5);
-                    if (newFootStyle != Settings.Data.FootKeyViewerStyle)
-                    {
-                        Settings.Data.FootKeyViewerStyle = newFootStyle;
-                        ResetFootKeyViewer();
-                        SaveSettingsFromGui();
-                    }
+                    Settings.Data.FootKeyViewerStyle = newFootStyle;
+                    ResetFootKeyViewer();
+                    SaveSettingsFromGui();
                 }
             }
 
