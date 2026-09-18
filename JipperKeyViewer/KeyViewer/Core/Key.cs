@@ -60,6 +60,15 @@ namespace JipperKeyViewer.KeyViewer
         public readonly Queue<long> KpsLog = new Queue<long>(32);
         /// <summary>Last per-key KPS value written to the counter text / 上一次写入计数文本的每键 KPS 值</summary>
         public int LastShownKps = int.MinValue;
+        /// <summary>Last group Total written to a custom Total panel. Per KEY, not per group:
+        /// several panels can share one group, and a group-keyed cache let the first panel
+        /// suppress every sibling's refresh. / 上一次写入自定义 Total 面板的组总数。按「按键」
+        /// 而非按「组」缓存：一个组可以有多个面板，按组缓存会让第一个面板把同组的其它面板
+        /// 永远压掉不刷新。</summary>
+        public long LastShownTotal = long.MinValue;
+        /// <summary>Last group KPS written to a custom KPS panel — same per-key reasoning. /
+        /// 上一次写入自定义 KPS 面板的组 KPS——同样按按键缓存。</summary>
+        public int LastShownStatKps = int.MinValue;
         /// <summary>Image-key visuals: the RawImage replaces the shape-layer box, and the two
         /// textures swap on press / 图片按键视觉：RawImage 取代形状层盒子，两张贴图按压时切换</summary>
         public RectTransform CustomImageRect;

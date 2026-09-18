@@ -41,8 +41,6 @@ namespace JipperKeyViewer.KeyViewer
         // of G's keys only. Ungrouped panels keep the global PressTimes semantics. /
         // 按组的按压时间戳：G 组的面板只显示 G 组按键的 KPS。未分组面板保持全局语义。
         private readonly Dictionary<string, Queue<long>> customGroupPresses = new Dictionary<string, Queue<long>>();
-        private readonly Dictionary<string, int> customShownKps = new Dictionary<string, int>();
-        private readonly Dictionary<string, long> customShownTotal = new Dictionary<string, long>();
 
         /// <summary>Append a press stamp to a group's queue. Ungrouped ("") is a no-op: the
         /// ungrouped panels read the already-drained GLOBAL PressTimes, so the "" bucket was
@@ -83,6 +81,39 @@ namespace JipperKeyViewer.KeyViewer
                     sum += n.Count;
             return sum;
         }
+
+        /// <summary>Write one custom stat panel with ITS OWN group's value. A panel in group G
+        /// shows G's keys only; ungrouped panels mirror the global accumulator. / 把单个自定义
+        /// 统计面板刷新为自己所属组的值。G 组的面板只显示 G 组按键，未分组面板镜像全局累计值。</summary>
+        private void RefreshCustomStatKey(Key key)
+        {
+            if (key == null || key.CustomNode == null) return;
+            string g = key.CustomNode.GroupId ?? "";
+            if (key.CustomNode.NodeType == 1)
+            {
+                long now = Stopwatch != null ? Stopwatch.ElapsedMilliseconds : 0L;
+                int kps = CustomGroupKps(g, now);
+                key.LastShownStatKps = kps;
+                SetKpsTotalDisplay(key, "KPS", FormatStatNumber(kps));
+            }
+            else if (key.CustomNode.NodeType == 2)
+            {
+                long total = CustomGroupTotal(g);
+                key.LastShownTotal = total;
+                SetKpsTotalDisplay(key, "Total", FormatStatNumber(total));
+            }
+        }
+
+        /// <summary>Refresh every custom KPS/Total panel from its own group. / 按各自所属组
+        /// 刷新全部自定义 KPS/Total 面板。</summary>
+        private void RefreshCustomStatDisplays()
+        {
+            foreach (Key k in StatKeys(1)) RefreshCustomStatKey(k);
+            foreach (Key k in StatKeys(2)) RefreshCustomStatKey(k);
+            lastKps = PressTimes != null ? PressTimes.Count : 0;
+            lastTotal = Settings.Data.TotalCount;
+        }
+
         /// <summary>Keys with a live counter bounce animation / 正在进行计数器弹跳动画的按键</summary>
         private readonly List<Key> counterBounces = new List<Key>();
 
@@ -391,8 +422,10 @@ namespace JipperKeyViewer.KeyViewer
             // 面板排在按键槽位之后绘制，各占一个形状槽。
             customStatSlotCursor = Keys.Length;
             customGroupPresses.Clear();
-            customShownKps.Clear();
-            customShownTotal.Clear();
+            // The "already shown" caches live on Key (LastShownStatKps/LastShownTotal) and are
+            // rebuilt with the overlay — keys are recreated on every rebuild, so nothing to clear.
+            // 「已显示」缓存挂在 Key 上（LastShownStatKps/LastShownTotal），随覆盖层重建——
+            // 每次重建按键都是新建的，无需清理。
             // Slot nodes in Depth order so the merged mesh draws lowest Depth first. /
             // 按 Depth 排序分配槽位，使合并 mesh 从低 Depth 先画。
             List<FmNode> slotNodes = nodes

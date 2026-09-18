@@ -363,22 +363,26 @@ namespace JipperKeyViewer.KeyViewer
             if (IsCustomLayout)
             {
                 // Per-GROUP values: a panel in group G shows the KPS/Total of G's keys only;
-                // ungrouped panels keep the global semantics. / 按组取值：G 组的面板只显示 G
-                // 组按键的 KPS/Total；未分组面板保持全局语义。
+                // ungrouped panels keep the global semantics. The "already shown" cache is per
+                // PANEL (per Key), not per group: one group may own several panels, and a
+                // group-keyed cache let the first panel suppress every sibling's refresh — a
+                // sibling kept whatever UpdateKeyText stamped on it, which is the GLOBAL total.
+                // 按组取值：G 组的面板只显示 G 组按键的 KPS/Total；未分组面板保持全局语义。
+                // 「已显示」缓存按「面板」（按键）而非按「组」：一个组可以有多个面板，按组缓存
+                // 会让第一个面板压掉同组其它面板的刷新——后者会一直留着 UpdateKeyText 盖上的
+                // 全局总数。
                 foreach (Key k in StatKeys(1))
                 {
-                    string g = k.CustomNode.GroupId ?? "";
-                    int kps = CustomGroupKps(g, elapsedMilliseconds);
-                    if (customShownKps.TryGetValue(g, out int shown) && shown == kps) continue;
-                    customShownKps[g] = kps;
+                    int kps = CustomGroupKps(k.CustomNode.GroupId ?? "", elapsedMilliseconds);
+                    if (k.LastShownStatKps == kps) continue;
+                    k.LastShownStatKps = kps;
                     SetKpsTotalDisplay(k, "KPS", FormatStatNumber(kps));
                 }
                 foreach (Key k in StatKeys(2))
                 {
-                    string g = k.CustomNode.GroupId ?? "";
-                    long total = CustomGroupTotal(g);
-                    if (customShownTotal.TryGetValue(g, out long shownT) && shownT == total) continue;
-                    customShownTotal[g] = total;
+                    long total = CustomGroupTotal(k.CustomNode.GroupId ?? "");
+                    if (k.LastShownTotal == total) continue;
+                    k.LastShownTotal = total;
                     SetKpsTotalDisplay(k, "Total", FormatStatNumber(total));
                 }
                 lastKps = currentKps;   // keep the global cache in step for the forced refresh /

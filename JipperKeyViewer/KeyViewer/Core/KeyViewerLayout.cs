@@ -1151,10 +1151,20 @@ namespace JipperKeyViewer.KeyViewer
             // otherwise show a wrong 0 indefinitely. lastKps = -1 also forces a rewrite next frame.
             // 用实时 KPS 值而非硬编码 "0":ProcessKpsInUpdate 只在计数变化时重写文本,匀速游玩时
             // 数值框会无限期显示错误的 0。lastKps = -1 同时强制下帧重写。
-            foreach (Key k in IsCustomLayout ? StatKeys(1) : SinglePanel(Kps))
-                SetKpsTotalDisplay(k, "KPS", (PressTimes?.Count ?? 0).ToString());
-            foreach (Key k in IsCustomLayout ? StatKeys(2) : SinglePanel(Total))
-                SetKpsTotalDisplay(k, "Total", FormatCount(Settings.Data.TotalCount));
+            if (IsCustomLayout)
+            {
+                // Each stat panel takes its own group's value — a global write would stamp the
+                // same number onto every group's panel. / 每个统计面板取自己所属组的值——写全局值
+                // 会把同一个数字盖到所有组的面板上。
+                RefreshCustomStatDisplays();
+            }
+            else
+            {
+                foreach (Key k in SinglePanel(Kps))
+                    SetKpsTotalDisplay(k, "KPS", (PressTimes?.Count ?? 0).ToString());
+                foreach (Key k in SinglePanel(Total))
+                    SetKpsTotalDisplay(k, "Total", FormatCount(Settings.Data.TotalCount));
+            }
             lastKps = -1;
         }
 
@@ -1795,21 +1805,25 @@ namespace JipperKeyViewer.KeyViewer
                 // Counts live on the nodes; per-key KPS drains each node's own log. /
                 // 计数内聚在节点上；每键 KPS 由节点自己的队列驱动。
                 RefreshCustomCountDisplays();
+                // Stat panels are refreshed from THEIR OWN group, never from the global
+                // accumulator: writing TotalCount into every Total panel made editing one
+                // group's count overwrite every other group's total. / 统计面板按各自所属组
+                // 刷新，绝不使用全局累计值：把 TotalCount 写进每个 Total 面板会让「改一个
+                // 组的计数」覆盖其它所有组的总数。
+                RefreshCustomStatDisplays();
+                return;
             }
-            else
+            for (int i = 0; i < Keys.Length; i++)
             {
-                for (int i = 0; i < Keys.Length; i++)
+                if (Keys[i] != null && Keys[i].value != null)
                 {
-                    if (Keys[i] != null && Keys[i].value != null)
-                    {
-                        if (Settings.Data.EnablePerKeyKps)
-                            Keys[i].value.text = (keyPressTimes != null && i < keyPressTimes.Length && keyPressTimes[i] != null) ? keyPressTimes[i].Count.ToString() : "0";
-                        else
-                            Keys[i].value.text = FormatCount(Settings.Data.Count[i]);
-                    }
+                    if (Settings.Data.EnablePerKeyKps)
+                        Keys[i].value.text = (keyPressTimes != null && i < keyPressTimes.Length && keyPressTimes[i] != null) ? keyPressTimes[i].Count.ToString() : "0";
+                    else
+                        Keys[i].value.text = FormatCount(Settings.Data.Count[i]);
                 }
             }
-            foreach (Key k in IsCustomLayout ? StatKeys(2) : SinglePanel(Total))
+            foreach (Key k in SinglePanel(Total))
                 SetKpsTotalDisplay(k, "Total", FormatCount(Settings.Data.TotalCount));
         }
 

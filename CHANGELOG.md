@@ -8,6 +8,9 @@
 - **Share packages (.jkv)**: export the current profile as a ZIP holding the profile JSON, package info and every referenced image/video, with node paths rewritten to bare file names. Import extracts the assets into `CustomImages\` (never overwriting existing files, with a zip-slip guard) and always creates a NEW profile — importing twice yields two profiles rather than silently replacing one. The package records the export-time canvas width and import rescales node X/width/rain-offset-X to the local aspect ratio; the fixed 1080 reference height means Y and height are never touched.
 - **Named press-animation easing**: the press animation gained a 27-entry easing selector (linear, smoothstep/smootherstep, the Penner sine/quad/cubic/quart/quint/expo/circ/back families) with a curve preview next to both the global Display-tab control and the per-node override, plus an adjustable duration. Defaults are `linear` at 80ms — byte-for-byte the previous hard-coded behaviour, so existing setups look unchanged. Easing is applied to the normalized progress before interpolation, so an ease-out curve still lands exactly on the target scale.
 
+### 🐞 Bug Fixes
+- **Editing a group's count no longer overwrites every other group's Total**: the forced-refresh paths (`RefreshAllCountDisplay`, `RefreshKpsTotalLabels`) wrote the *global* `TotalCount` into every Total panel. Since the per-frame loop skips a group whose value it believes is already displayed, the wrong number stuck permanently rather than self-correcting. Both paths now refresh each custom stat panel from its own group — the per-frame path was already group-aware, so group panels were only ever corrupted by these two forced refreshes.
+
 ## 1.7.1
 ### 🚀 New Features
 
