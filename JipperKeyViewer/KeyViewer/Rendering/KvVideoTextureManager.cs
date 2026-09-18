@@ -241,8 +241,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (e == null || e.Player == null || e.Player.isPlaying) return;
             try
             {
-                if (!e.Player.isPrepared) e.Player.Prepare();
-                else e.Player.Play();
+                // Play() is safe to call before Prepare() completes: Unity will auto-prepare
+                // and start playback once ready. Without this, a freshly-built entry that
+                // hasn't finished Prepare() yet stays silent until the next rebuild. /
+                // Play() 在 Prepare() 完成前调用也是安全的：Unity 会自动准备并在就绪后开始
+                // 播放。没有这一步，刚构建完、Prepare() 还没完成的条目会一直静默，直到下次重建。
+                e.Player.Play();
             }
             catch (Exception ex)
             {
