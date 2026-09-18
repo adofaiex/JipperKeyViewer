@@ -715,32 +715,39 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Align the selection (modes 0-5: left / horizontal-center / right / top /
-        /// vertical-center / bottom) against its own bounds. Undoable property change. /
-        /// 将选区按自身包围盒对齐（模式 0-5：左 / 水平居中 / 右 / 顶 / 垂直居中 / 底）。
-        /// 可撤销的属性变更。</summary>
+        /// vertical-center / bottom) while preserving the gaps between items. The outermost
+        /// items snap to the target edge/center and the rest keep their relative spacing. /
+        /// 对齐选区（模式 0-5：左 / 水平居中 / 右 / 顶 / 垂直居中 / 底），同时保留项目间的间隙。
+        /// 最外侧项目吸附到目标边/中心，其余项目保持相对间距。</summary>
         private void EditorAlignSelection(int mode)
         {
             List<FmNode> sel = new List<FmNode>();
             foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
             if (sel.Count < 2) return;
-            float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
-            foreach (FmNode n in sel)
-            {
-                minX = Math.Min(minX, n.X); maxX = Math.Max(maxX, n.X + n.Width);
-                minY = Math.Min(minY, n.Y); maxY = Math.Max(maxY, n.Y + n.Height);
-            }
             PushEditorHistory();
-            foreach (FmNode n in sel)
+            if (mode <= 2)
             {
-                switch (mode)
-                {
-                    case 0: n.X = minX; break;
-                    case 1: n.X = minX + (maxX - minX - n.Width) * 0.5f; break;
-                    case 2: n.X = maxX - n.Width; break;
-                    case 3: n.Y = minY; break;
-                    case 4: n.Y = minY + (maxY - minY - n.Height) * 0.5f; break;
-                    case 5: n.Y = maxY - n.Height; break;
-                }
+                sel.Sort((a, b) => a.X.CompareTo(b.X));
+                float minX = sel[0].X;
+                float maxX = float.MinValue;
+                foreach (FmNode n in sel) maxX = Math.Max(maxX, n.X + n.Width);
+                float target = mode == 0 ? minX : mode == 2 ? maxX - sel[sel.Count - 1].Width : minX;
+                sel[0].X = target;
+                float gap = sel[1].X - (sel[0].X + sel[0].Width);
+                for (int i = 1; i < sel.Count; i++)
+                    sel[i].X = sel[i - 1].X + sel[i - 1].Width + gap;
+            }
+            else
+            {
+                sel.Sort((a, b) => a.Y.CompareTo(b.Y));
+                float minY = sel[0].Y;
+                float maxY = float.MinValue;
+                foreach (FmNode n in sel) maxY = Math.Max(maxY, n.Y + n.Height);
+                float target = mode == 3 ? minY : mode == 5 ? maxY - sel[sel.Count - 1].Height : minY;
+                sel[0].Y = target;
+                float gap = sel[1].Y - (sel[0].Y + sel[0].Height);
+                for (int i = 1; i < sel.Count; i++)
+                    sel[i].Y = sel[i - 1].Y + sel[i - 1].Height + gap;
             }
             EditorPropertyChanged();
         }
