@@ -17,6 +17,7 @@ using System.Linq;
 using Newtonsoft.Json;
 using UnityEngine;
 
+using JipperKeyViewer.KeyViewer.Rendering;
 using JipperKeyViewer.KeyViewer.Settings;
 using JipperKeyViewer.KeyViewer.Util;
 using JipperKeyViewer.KeyViewer.Editor;
@@ -3316,6 +3317,18 @@ namespace JipperKeyViewer.KeyViewer
             }
             catch (Exception) { /* snapshot failure must not block the edit / 快照失败不阻塞编辑 */ }
             SaveSettingsFromGui();
+            // If the selection contains a video node whose path was just changed, force the
+            // video texture manager to drop any stale entry for that node before the rebuild —
+            // otherwise the next GetOrCreate can reuse an old player that never prepared or
+            // played, and the video only appears after a later drag/rebuild. /
+            // 如果选中节点包含刚修改过路径的视频节点，在重建前强制视频纹理管理器丢弃该节
+            // 点的旧 entry——否则下次 GetOrCreate 可能复用一个从未 prepared/played 的旧播放器，
+            // 导致视频直到后续拖动/重建才出现。
+            foreach (FmNode n in editorSelection)
+            {
+                if (n == null || string.IsNullOrWhiteSpace(n.VideoPath)) continue;
+                KvVideoTextureManager.Release(n.Id);
+            }
             RequestEditorRebuild();
         }
 

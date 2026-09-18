@@ -80,6 +80,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     entries.Remove(staleBuffer[i]);
                 }
             }
+            // Ensure every surviving entry is actually playing: the build pass may have just
+            // created the player and called Prepare(), but Play() is deferred until the next
+            // GetOrCreate. Without this, a freshly-built video node stays black until some later
+            // rebuild (e.g. a drag) re-hits GetOrCreate. / 确保所有保留条目都在播放：构建过程
+            // 可能刚创建播放器并调用了 Prepare()，但 Play() 被推迟到下次 GetOrCreate。
+            // 没有这一步，新建的视频节点会保持黑屏直到后续重建（如拖动）再次命中 GetOrCreate。
+            foreach (KeyValuePair<int, Entry> pair in entries)
+            {
+                if (pair.Value != null && pair.Value.Player != null)
+                    EnsurePlaying(pair.Value);
+            }
         }
 
         /// <summary>Destroy every player and render texture. Called from full teardown, never from
@@ -93,6 +104,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 UnityEngine.Object.Destroy(root);
                 root = null;
+            }
+        }
+
+        /// <summary>Release one node's video entry immediately. Used when the editor changes a
+        /// video node's path/size so the next rebuild gets a fresh player instead of reusing a
+        /// stale one that may not have prepared correctly. / 立即释放单个节点的视频条目。
+        /// 编辑器修改视频节点的路径/尺寸时使用，使下次重建获得全新播放器，而非复用一个
+        /// 可能未正确 prepared 的旧播放器。</summary>
+        public static void Release(int nodeId)
+        {
+            if (entries.TryGetValue(nodeId, out Entry entry))
+            {
+                DestroyEntry(entry);
+                entries.Remove(nodeId);
             }
         }
 
