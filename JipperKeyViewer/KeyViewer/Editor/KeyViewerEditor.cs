@@ -165,6 +165,7 @@ namespace JipperKeyViewer.KeyViewer
             if (GUILayout.Button(I18n.Tr("fm_add_kps"), GUILayout.MinWidth(42f))) EditorAddNode(1);
             if (GUILayout.Button(I18n.Tr("fm_add_total"), GUILayout.MinWidth(48f))) EditorAddNode(2);
             if (GUILayout.Button(I18n.Tr("fm_add_image"), GUILayout.MinWidth(48f))) EditorAddNode(3);
+            if (GUILayout.Button(I18n.Tr("fm_add_video"), GUILayout.MinWidth(48f))) EditorAddNode(3);
             GUILayout.Space(6f);
             if (GUILayout.Button(I18n.Tr("fm_copy"), GUILayout.MinWidth(42f))) EditorCopySelection();
             if (GUILayout.Button(I18n.Tr("fm_paste"), GUILayout.MinWidth(42f))) EditorPaste();
