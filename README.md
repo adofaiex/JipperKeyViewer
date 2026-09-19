@@ -119,11 +119,12 @@ JipperKeyViewer/
 
 ### 分层说明 / Layers
 
-- **加载层 / Loading**: Loader entries (UMM/Melon) → inject the core DLL → `ModLoader` glue & logging
-- **生命周期层 / Lifecycle**: `KeyViewer` — Awake/Enable/SceneLoaded/Quit; config load, profile switching, migrations v1→v6
+- **加载层 / Loading**: Loader entries (UMM/Melon) → inject the core DLL → `ModLoader` glue & logging; `TgtCompat` shim (embedded, loaded only without the standalone KeyViewer mod)
+- **生命周期层 / Lifecycle**: `KeyViewer` — Awake/Enable/SceneLoaded/Quit; config load, profile switching, migrations v1→v6; `KeyViewerResources` — fonts/sprites, `UpdateAllFonts`, text-style material cache
+- **设置界面层 / Settings GUI**: `GUI/*` partials (display/color/rain/binding/profile tabs) + `KeyViewerPackages` (.jkv export/import with assets & custom fonts)
 - **编辑器层 / Editor**: `KeyViewerEditor` (IMGUI window) + `EditorHistory` — touches only the data model, never rendering directly
-- **运行时层 / Runtime**: `CustomLayout` (per-node input/counting) + `KeyViewerInput` (KPS/Total pipelines) + `RainSystem` (rain simulation)
-- **渲染层 / Rendering**: `KeyViewerLayout` (overlay construction) + `KeyShapeLayer`/`RainLayer` (merged meshes) + TMP text sub-canvas
+- **运行时层 / Runtime**: `KeySource` (unified key source: physical input + replay injection via the shim) → `CustomLayout` (per-node input/counting) + `KeyViewerInput` (KPS/Total pipelines) + `RainSystem` (rain simulation)
+- **渲染层 / Rendering**: `KeyViewerLayout` (overlay construction) + `KeyShapeLayer`/`RainLayer` (merged meshes) + `KvVideoTextureManager` (video RenderTextures) + `KvTextStyle` (outline/shadow resolve) + TMP text sub-canvas
 - **数据层 / Data**: `KeyViewerSettings` — ProfileData / FmNode / FmLayerGroup + Newtonsoft Fields contract
 
 ### 核心系统关系图 / System diagram
@@ -134,19 +135,27 @@ flowchart TB
         UMM["UMM Loader 入口"]
         Melon["Melon Loader 入口"]
         ModLoader["ModLoader\n胶合/日志/Mod路径"]
+        TgtShim["TgtCompat 垫片\n(内嵌 KeyViewer.dll)\n回放补丁挂载点"]
     end
 
     subgraph Lifecycle["生命周期层 / Lifecycle"]
         KV["KeyViewer\nAwake/OnEnable/SceneLoaded\n配置加载/Profile切换/迁移v1→v6\n原子写保存(去抖)"]
+        Resources["KeyViewerResources\n字体/贴图加载 UpdateAllFonts\n文字样式材质缓存"]
         Settings["KeyViewerSettings\nProfileData(全局设置)\nFmNode(节点)/FmLayerGroup(组)\nNewtonsoft Fields 契约\n旧格式一次性导入"]
     end
 
+    subgraph SettingsGui["设置界面层 / Settings GUI"]
+        Gui["GUI/* 五个分部\n显示/颜色/雨滴/绑定/配置页"]
+        Packages["KeyViewerPackages\n.jkv 导出/导入\nzip-slip 防护·宽高比重缩放\n资源+自定义字体打包"]
+    end
+
     subgraph Editor["编辑器层 (IMGUI 独立弹窗) / Editor"]
-        KVE["KeyViewerEditor\n画布手势(拖拽/吸附/框选/双击循环)\n内置预设(8种,自动建组)\n属性面板(节点级覆盖矩阵)\n多选(活动节点/混合值—)"]
+        KVE["KeyViewerEditor\n画布手势(拖拽/吸附/框选/双击循环)\n排列/分布/阵列\n内置预设(8种,自动建组)\n属性面板(节点级覆盖矩阵)\n多选(活动节点/混合值—)"]
         History["EditorHistory\n时间线撤销\n快照游标+0.4s合并窗口"]
     end
 
     subgraph Runtime["运行时层 / Runtime"]
+        KeySource["KeySource\n统一按键源(反射接入)\n物理输入 + 回放注入"]
         Custom["CustomLayout\n逐节点输入边沿→计数/配色/雨滴\n图层组可见性门控\n按组KPS队列/总数\n校验钳制与按组上限"]
         Input["KeyViewerInput\nKPS/Total管线\n每键KPS/鬼键边沿"]
         Rain["RainSystem\n对象池雨滴\n逐节点参数覆盖(宽/高/速/阴影/描边/渐隐)\n排参数回退"]
@@ -154,27 +163,40 @@ flowchart TB
 
     subgraph Render["渲染层 (uGUI + TMP) / Rendering"]
         Layout["KeyViewerLayout\n覆盖层构建\n固定布局/108K几何\nKPS/Total文本模式"]
-        ShapeLayer["KeyShapeLayer\n合并按键框mesh×2\n(背景+描边)"]
+        ShapeLayer["KeyShapeLayer\n合并按键框mesh×2\n(背景+描边·圆角/直角)"]
+        VideoTex["KvVideoTextureManager\nVideoPlayer→RenderTexture\n代次标记·跨重建存活"]
         RainLayerM["RainLayer / GhostRainLayer\n合并雨滴mesh×2\n(四边形+鬼雨贴图)"]
         TextCanvas["文本子画布 (TMP)\n标签/计数/每键字号"]
+        TextStyle["KvTextStyle\n描边/阴影解析+缓存键"]
     end
 
     UMM --> ModLoader
     Melon --> ModLoader
     ModLoader --> KV
+    TgtShim -. "仅未装独立版时加载\n(loaded only w/o standalone)" .-> KeySource
     KV --> Settings
+    KV --> Resources
     KV --> Layout
+    Gui -- "SaveSettingsFromGui\n开关/滑杆→保存+重建" --> KV
+    Gui --> Packages
+    Packages -- "读写 Profile/CustomImages/CustomFont" --> Settings
     KVE --> Settings
     KVE --> History
     KVE -- "EditorMutated/PropertyChanged\n(保存+重建)" --> KV
     KV --> Custom
     KV --> Input
     KV --> Rain
+    KeySource --> Custom
+    KeySource --> Input
     Custom --> Rain
     Custom --> Input
+    Custom -- "视频节点 GetOrCreate" --> VideoTex
     Layout --> ShapeLayer
     Layout --> RainLayerM
     Layout --> TextCanvas
+    Layout -- "ConfigureText 全局样式" --> TextStyle
+    Resources -- "字体/样式材质" --> TextCanvas
+    Resources -- "九宫格贴图 SetSprites" --> ShapeLayer
     Rain --> RainLayerM
     Settings -.-> Custom
     Settings -.-> Layout
@@ -184,7 +206,7 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    A["物理按键"] --> B["CustomLayout.ProcessCustomKeysInUpdate\nInput.GetKey 轮询(缓存解析的绑定)"]
+    A["物理按键 / 回放注入"] --> B["CustomLayout.ProcessCustomKeysInUpdate\nKeySource.GetKey 轮询(缓存解析的绑定)"]
     B --> C{"边沿变化?"}
     C -- 按下 --> D["ApplyCustomKeyEdge\n图片换按压贴图/配色切换/按压文案\n计数+1(节点自身)→组队列/全局队列\n弹跳动画启动→雨滴触发"]
     C -- 松开 --> E["雨滴回收/淡出\n配色/文案恢复"]
