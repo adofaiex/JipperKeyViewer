@@ -978,11 +978,11 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        // Foldout for the text-style block, defaulting OPEN: the section shipped expanded for a
-        // whole release, so collapsing it by default would read as "the feature vanished" to
-        // anyone who knew where it was. / 文字样式区的折叠开关，默认展开：该区块整个版本以来
-        // 都是平铺展开的，默认收起会让知道它位置的老用户以为功能消失了。
-        private bool textStyleExpanded = true;
+        // Foldout for the text-style block, defaulting COLLAPSED like every other foldout in the
+        // settings window (all reset to closed on restart; only the active TAB persists). /
+        // 文字样式区的折叠开关，默认收起——与设置窗口所有其它折叠区一致（重启后一律回到
+        // 收起；跨会话保存的只有当前标签页）。
+        private bool textStyleExpanded = false;
 
         private void DrawTextStyleSection()
         {
