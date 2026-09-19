@@ -56,6 +56,7 @@ namespace JipperKeyViewer.KeyViewer
         private const string PackageSettingsEntry = "settings.json";
         private const string PackageInfoEntry = "package.json";
         private const string PackageAssetsPrefix = "assets/";
+        private const string PackageFontsPrefix = "fonts/";
 
         /// <summary>Export the named profile (plus its assets) into ModPath\Packages\. / 把指定配置
         /// （连同资源）导出到 ModPath\Packages\。</summary>
@@ -103,6 +104,19 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
 
+            // Bundle the profile's custom font under fonts/: a "Custom: name" selection exists
+            // only in the exporter's own CustomFont\, so without the file the recipient silently
+            // falls back to another typeface. Game fonts and the bundled CJK/MapleStory fonts
+            // exist on every install and are never packaged. / 把配置的自定义字体打包进
+            // fonts/：「Custom: 名称」的选择项只存在于导出者自己的 CustomFont\，缺文件时接收方
+            // 会静默回退到别的字体。游戏内字体与内置 CJK/MapleStory 字体每个安装都有，绝不打包。
+            string fontSelection = data.FontName;
+            if (string.IsNullOrWhiteSpace(fontSelection)
+                && Settings.Data != null && fontList != null
+                && Settings.Data.FontIndex >= 0 && Settings.Data.FontIndex < fontList.Count)
+                fontSelection = fontList[Settings.Data.FontIndex].name; // legacy profiles that never stored FontName / 从未写过 FontName 的旧配置
+            string fontFile = FindCustomFontFile(fontSelection);
+
             string packagesDir = PackagesDir;
             Directory.CreateDirectory(packagesDir);
             string safe = SanitizeFileName(profileName);
@@ -132,6 +146,8 @@ namespace JipperKeyViewer.KeyViewer
                     WriteEntry(archive, PackageInfoEntry, JsonConvert.SerializeObject(info, Formatting.Indented));
                     foreach (KeyValuePair<string, string> pair in assets)
                         WriteFileEntry(archive, PackageAssetsPrefix + pair.Key, pair.Value);
+                    if (fontFile != null)
+                        WriteFileEntry(archive, PackageFontsPrefix + Path.GetFileName(fontFile), fontFile);
                 }
                 if (File.Exists(outputPath)) File.Delete(outputPath);
                 File.Move(tempPath, outputPath);
@@ -162,6 +178,29 @@ namespace JipperKeyViewer.KeyViewer
             // 重复登记。
             if (!assets.ContainsKey(fileName)) assets[fileName] = resolved;
             return fileName;
+        }
+
+        /// <summary>Resolve a "Custom: name" font selection to its file under CustomFont\ (either
+        /// extension tried). Non-custom selections and missing files return null — the caller then
+        /// bundles nothing. / 把「Custom: 名称」的字体选择解析为 CustomFont\ 下的文件（尝试两种
+        /// 扩展名）。非自定义选择或缺文件返回 null——调用方即不打包字体。</summary>
+        private static string FindCustomFontFile(string fontSelection)
+        {
+            if (string.IsNullOrWhiteSpace(fontSelection)) return null;
+            const string customPrefix = "Custom: ";
+            if (!fontSelection.StartsWith(customPrefix, StringComparison.Ordinal)) return null;
+            string name = fontSelection.Substring(customPrefix.Length).Trim();
+            if (string.IsNullOrEmpty(name)) return null;
+            try
+            {
+                string dir = Path.Combine(Loader.ModPath, "CustomFont");
+                string ttf = Path.Combine(dir, name + ".ttf");
+                if (File.Exists(ttf)) return ttf;
+                string otf = Path.Combine(dir, name + ".otf");
+                if (File.Exists(otf)) return otf;
+            }
+            catch (Exception) { /* an unreadable mod path just means no font bundled / 模组路径不可读仅意味着不打包字体 */ }
+            return null;
         }
 
         private static void WriteEntry(ZipArchive archive, string name, string content)
@@ -261,6 +300,7 @@ namespace JipperKeyViewer.KeyViewer
 
                     info = ReadPackageInfo(archive);
                     ExtractPackageAssets(archive);
+                    ExtractPackageFonts(archive);
                 }
             }
             catch (Exception e)
@@ -337,6 +377,39 @@ namespace JipperKeyViewer.KeyViewer
                 if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
                 {
                     Loader.Warning($"KeyViewer: package asset path rejected: {entry.FullName}");
+                    continue;
+                }
+                if (File.Exists(target)) continue;
+
+                string dir = Path.GetDirectoryName(target);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                entry.ExtractToFile(target, false);
+            }
+        }
+
+        /// <summary>Extract fonts/ entries into CustomFont\. Same rules as the asset extraction:
+        /// existing files are never overwritten (an already-present same-named font is by
+        /// definition the local winner) and the zip-slip guard applies. Fonts are scanned once at
+        /// init, so an imported font takes effect after the next game start. / 把 fonts/ 条目解压
+        /// 到 CustomFont\。与资源解压同规则：绝不覆盖已存在文件（同名本地字体按定义优先），
+        /// 目录穿越防护同样生效。字体仅在启动时扫描一次，导入的字体下次启动游戏后生效。</summary>
+        private static void ExtractPackageFonts(ZipArchive archive)
+        {
+            string fontsDir = Path.Combine(Loader.ModPath, "CustomFont");
+            Directory.CreateDirectory(fontsDir);
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name)) continue;
+                string fullName = entry.FullName.Replace('\\', '/');
+                if (!fullName.StartsWith(PackageFontsPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+                string relative = fullName.Substring(PackageFontsPrefix.Length).Replace('/', Path.DirectorySeparatorChar);
+                if (string.IsNullOrWhiteSpace(relative)) continue;
+
+                string target = Path.GetFullPath(Path.Combine(fontsDir, relative));
+                string rootFull = Path.GetFullPath(fontsDir) + Path.DirectorySeparatorChar;
+                if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    Loader.Warning($"KeyViewer: package font path rejected: {entry.FullName}");
                     continue;
                 }
                 if (File.Exists(target)) continue;
