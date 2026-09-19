@@ -383,7 +383,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (b <= 0f) return;
             Rect inner = new Rect(r.x + b, r.y + b, r.width - 2f * b, r.height - 2f * b);
             int m = FillRoundedPoints(inner, Mathf.Max(0f, rad - b), scratchInnerX, scratchInnerY);
-            if (m != n) return;
+            if (m != n)
+            {
+                // The inset rect collapsed (border too thick for the box) or its radius
+                // shrank to 0 while the outer is still rounded. Fall back to drawing the
+                // outer ring only — still better than vanishing entirely. /
+                // 内缩矩形崩溃（边框过粗）或其半径缩到 0 而外圈仍圆角。降级为只画外圈环——
+                // 仍比完全消失要好。
+                m = n;
+                for (int i = 0; i < n; i++)
+                {
+                    float angle = (float)i / n * Mathf.PI * 2f;
+                    float cos = Mathf.Cos(angle);
+                    float sin = Mathf.Sin(angle);
+                    scratchInnerX[i] = r.x + b + cos * Mathf.Max(0f, rad - b);
+                    scratchInnerY[i] = r.y + b + sin * Mathf.Max(0f, rad - b);
+                }
+            }
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
