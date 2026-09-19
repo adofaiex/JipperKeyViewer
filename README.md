@@ -92,9 +92,18 @@ JipperKeyViewer/
 ├─ JipperKeyViewer/                    # 主工程（源码树 + 内嵌默认资源 + Info.json） / the mod project
 ├─ JipperKeyViewer.Loader.UMM/         # UMM loader entry / UMM 加载入口
 ├─ JipperKeyViewer.Loader.Melon/       # Melon loader entry / Melon 加载入口
+├─ TgtCompat/                          # 回放同步垫片工程（编译为 KeyViewer.dll，内嵌进主 DLL） / replay-sync shim (builds as KeyViewer.dll, embedded into the main DLL)
 ├─ libs/                               # Reference DLLs / 引用 DLL
 └─ CHANGELOG.md / 更新日志.md
 ```
+
+### TgtCompat —— 回放同步垫片 / Replay-sync shim
+
+`TgtCompat/` 是一个独立的小工程（4 个源文件、约 280 行），编译产物是**名为 `KeyViewer.dll` 的极小程序集**——程序集名、UMM 入口（`KeyViewer.Main.Load`）与公开输入 API（`KeyViewer.Core.Input.KeyInput` / `WinInput` / `AsyncInputCompat`）逐字镜像社区参考版 KeyViewer mod 的表面，但**不含其任何功能**。/ A tiny separate project (4 source files, ~280 lines) that builds a **minimal assembly named `KeyViewer.dll`** — its assembly name, UMM entry and public input API mirror the reference community KeyViewer mod's surface verbatim, **without any of its functionality**.
+
+**为什么需要它 / Why it exists**：TogetherBootstrap（TGT）类回放直接驱动游戏判定，回放按键**不经过任何输入层**（OS 键状态表、Unity Input、游戏异步输入掩码与键事件队列在回放期间全部无动静），任何轮询输入的按键显示器原理上都看不到回放按键。该回放引导器转而在启动时检测名为 "KeyViewer" 的 mod，对其输入总线打 Harmony 补丁以注入回放录制的按键状态。/ TogetherBootstrap (TGT) replays drive the game's judgment directly — replayed presses **never pass through any input layer** (the OS key table, Unity Input, the game's async-input masks and key event queue all stay silent), so no polling viewer can see them. The bootstrap instead detects a mod named "KeyViewer" at startup and Harmony-patches its input funnel to feed the replay's recorded key state.
+
+**怎么用 / How it's used**：垫片以资源形式内嵌于 `JipperKeyViewer.dll`、初始化时按需加载——**仅当未安装独立 KeyViewer mod 时**（独立版优先，届时内嵌垫片不加载）。补丁挂上后，`KeySource`（见 `Core/KeySource.cs`）经反射读取补丁后的输入总线，画面实时还原录制时的手法，计数/KPS/雨滴与物理按压行为完全一致；物理按键仍走 Unity 原生输入，不受影响。不产生额外 mod 列表条目。/ The shim is embedded as a resource inside `JipperKeyViewer.dll` and loaded on demand at init — **only when the standalone KeyViewer mod is absent** (the standalone takes precedence and the embedded shim stays unloaded). Once patched, `KeySource` (see `Core/KeySource.cs`) reads the patched funnel by reflection: the viewer reproduces the recorded fingering live, with counts/KPS/rain behaving exactly like physical presses; physical keys keep flowing through plain Unity Input. No extra mod-list entry is created.
 
 ## 5. 包与依赖 / Dependencies
 
