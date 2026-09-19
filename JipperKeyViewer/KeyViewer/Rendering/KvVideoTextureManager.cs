@@ -213,6 +213,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 player.audioOutputMode = VideoAudioOutputMode.None;
                 player.targetTexture = texture;
                 player.url = resolvedPath;
+                // Auto-start via the prepareCompleted callback: Prepare() is async, and calling
+                // Play() before it finishes WEDGES the decoder thread — Stop() during teardown
+                // then blocks forever and freezes the game on exit. The handler fires on the
+                // main thread once the decoder is ready, where Play() is always safe. This also
+                // fixes "video stays black until the next rebuild drags it through GetOrCreate".
+                // / 通过 prepareCompleted 回调自动起播：Prepare() 是异步的，未完成就调 Play()
+                // 会楔死解码线程——拆解时 Stop() 永久阻塞，游戏退出直接卡死。回调在解码器就绪
+                // 后于主线程触发，此时 Play() 恒安全。同时也修掉「视频黑屏直到下次重建」。
+                player.prepareCompleted += OnVideoPrepared;
                 player.Prepare();
 
                 return new Entry
@@ -233,20 +242,30 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             }
         }
 
-        /// <summary>Play once prepared. Prepare is asynchronous, so an immediate Play() throws;
-        /// this is retried on every rebuild and is a no-op once playing. / 就绪后播放。Prepare 是
-        /// 异步的，立刻 Play() 会抛异常；本方法在每次重建时重试，一旦在播就是空操作。</summary>
+        /// <summary>Fires on the main thread when a player finishes preparing; starts playback
+        /// only then, never on an unprepared player. / 播放器完成 Prepare 后于主线程触发；
+        /// 只在就绪后才起播，绝不在未就绪的播放器上调 Play()。</summary>
+        private static void OnVideoPrepared(VideoPlayer source)
+        {
+            try
+            {
+                if (source != null && !source.isPlaying) source.Play();
+            }
+            catch (Exception) { /* a player that died mid-prepare is cleaned up by EndBuild / 准备途中死掉的播放器由 EndBuild 清理 */ }
+        }
+
+        /// <summary>Resume a prepared-but-paused player (reused entries on rebuild). Never calls
+        /// Play() while Prepare() is still running — that wedges the decoder thread and later
+        /// freezes game exit inside Stop(). Unprepared entries auto-play via OnVideoPrepared
+        /// instead. / 恢复已就绪但暂停的播放器（重建时复用的条目）。绝不在 Prepare() 进行中调
+        /// Play()——那会楔死解码线程，之后游戏退出时 Stop() 卡死。未就绪的条目改由
+        /// OnVideoPrepared 自动起播。</summary>
         private static void EnsurePlaying(Entry e)
         {
             if (e == null || e.Player == null || e.Player.isPlaying) return;
             try
             {
-                // Play() is safe to call before Prepare() completes: Unity will auto-prepare
-                // and start playback once ready. Without this, a freshly-built entry that
-                // hasn't finished Prepare() yet stays silent until the next rebuild. /
-                // Play() 在 Prepare() 完成前调用也是安全的：Unity 会自动准备并在就绪后开始
-                // 播放。没有这一步，刚构建完、Prepare() 还没完成的条目会一直静默，直到下次重建。
-                e.Player.Play();
+                if (e.Player.isPrepared) e.Player.Play();
             }
             catch (Exception ex)
             {
@@ -261,6 +280,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 if (e.Player != null)
                 {
+                    // Detach the auto-play handler BEFORE stopping: a late prepareCompleted on a
+                    // half-torn-down player would call Play() on it and wedge the decode thread.
+                    // / 先摘掉自动起播回调再停播：半拆解的播放器若迟到触发 prepareCompleted
+                    // 会对它调 Play()，把解码线程楔死。
+                    e.Player.prepareCompleted -= OnVideoPrepared;
                     e.Player.Stop();
                     e.Player.targetTexture = null;
                 }
