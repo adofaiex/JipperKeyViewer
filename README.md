@@ -2,8 +2,8 @@
 
 ![C#](https://img.shields.io/badge/Lang-Csharp-c9c8e4.svg?&logo=c#)
 ![Visual Studio 2022](https://img.shields.io/badge/IDE-Visual%20Studio%202022-5C2D91?logo=visualstudio&logoColor=white)
-[![Downloads](https://img.shields.io/github/downloads/2228293026/JipperKeyViewer/total)](https://github.com/2228293026/JipperKeyViewer/releases/latest)
-[![Build](https://github.com/2228293026/JipperKeyViewer/actions/workflows/build.yml/badge.svg)](https://github.com/2228293026/JipperKeyViewer/actions/workflows/build.yml)
+[![Downloads](https://img.shields.io/github/downloads/adofaiex/JipperKeyViewer/total)](https://github.com/adofaiex/JipperKeyViewer/releases/latest)
+[![Build](https://github.com/adofaiex/JipperKeyViewer/actions/workflows/build.yml/badge.svg)](https://github.com/adofaiex/JipperKeyViewer/actions/workflows/build.yml)
 
 > 一款适用于《A Dance of Fire and Ice》的按键显示 Mod：实时按键、KPS 统计、雨滴特效，以及完整的 FreeMake 自定义布局编辑器。
 > A keyboard overlay mod for **A Dance of Fire and Ice**: real-time key display, KPS counters, rain effects, and a full FreeMake custom-layout editor.
@@ -14,7 +14,8 @@
 
 - 单一变体 Mod（默认资源 DEFLATE 内嵌 DLL，首启自释放），支持 UnityModManager 与 MelonLoader 双加载器 / single variant with DLL-embedded default assets, UnityModManager & MelonLoader
 - 固定布局按键显示（8K–24K / 108 键全键盘 / 脚键 2K–16K）/ fixed layouts (8K–24K, 108-key, foot keys 2K–16K)
-- FreeMake 自定义布局编辑器（节点式、IMGUI 独立弹窗、内置预设、图层组）/ FreeMake node editor (IMGUI window, presets, layer groups)
+- FreeMake 自定义布局编辑器（节点式、IMGUI 独立弹窗、内置预设、图层组、排列/分布/阵列）/ FreeMake node editor (IMGUI window, presets, layer groups, align/distribute/array)
+- 视频按键/装饰节点（VideoPlayer → RenderTexture，跨重建存活）与 `.jkv` 分享包（配置+图片+视频+自定义字体一键导出导入）/ video key & decoration nodes (VideoPlayer → RenderTexture, survives rebuilds) and `.jkv` share packages (profile + images + videos + custom fonts in one archive)
 - 合并网格渲染的按键框与雨滴系统（对象池、热路径零 GC）/ merged-mesh rendering with pooling, zero hot-path GC
 
 核心信息 / Key facts:
@@ -61,6 +62,8 @@ JipperKeyViewer/
 │     │  ├─ KeyViewerInput.cs          # Input polling, KPS/Total pipelines (per-group) / 输入轮询、KPS/Total 管线（按组）
 │     │  ├─ KeyViewerLayout.cs         # Overlay construction, fixed layouts, 108K geometry / 覆盖层构建、固定布局、108K 几何
 │     │  ├─ CustomLayout.cs            # FreeMake runtime: per-node input/count/rain, groups, caps / FreeMake 运行时
+│     │  ├─ KeyViewerPackages.cs       # .jkv share packages: export/import, zip-slip guard, aspect rescale / .jkv 分享包
+│     │  ├─ KeySource.cs               # Unified key source (physical + replay shim) / 统一按键源（物理 + 回放垫片）
 │     │  └─ Key.cs                     # Per-key runtime state / 每键运行时状态
 │     ├─ Settings/                     # Data model / 数据模型
 │     │  ├─ KeyViewerSettings.cs       # ProfileData/FmNode/FmLayerGroup + Newtonsoft persistence / 数据模型与持久化
@@ -72,8 +75,10 @@ JipperKeyViewer/
 │     ├─ GUI/                          # Settings window partials / 设置窗口各页
 │     │  └─ KeyViewerGUI.cs / KeyViewerSettingsGUI / KeyViewerColorGUI / KeyViewerRainGUI / KeyViewerBindingGUI
 │     ├─ Rendering/                    # Merged meshes / 合并网格渲染
-│     │  ├─ KeyShapeLayer.cs           # Key-box meshes (bg + outline) / 按键框 mesh
-│     │  └─ RainLayer.cs               # Rain meshes (quads + ghost sprite) / 雨滴 mesh
+│     │  ├─ KeyShapeLayer.cs           # Key-box meshes (bg + outline, rounded/square) / 按键框 mesh
+│     │  ├─ RainLayer.cs               # Rain meshes (quads + ghost sprite) / 雨滴 mesh
+│     │  ├─ KvVideoTextureManager.cs   # VideoPlayer → RenderTexture lifecycle (generation-stamped) / 视频纹理生命周期
+│     │  └─ KvTextStyle.cs             # TMP outline/shadow resolve + material cache / 文字样式解析与材质缓存
 │     ├─ Rain/                         # Rain simulation / 雨滴模拟
 │     │  ├─ RainSystem.cs              # Pooled simulation, per-node overrides / 对象池模拟、逐节点覆盖
 │     │  └─ RawRain.cs                 # Per-drop data record & kinematics / 单滴数据与运动学
@@ -82,6 +87,7 @@ JipperKeyViewer/
 │     │  └─ KeyViewerResources.cs      # Unified resource loading + embedded-asset self-extract / 统一资源加载与内嵌资源自释放
 │     └─ Util/                         # Shared utilities / 共享工具
 │        ├─ I18n.cs                    # EN/ZH/KO strings / 三语词条
+│        ├─ KvEasing.cs                # 27 named easings for press/counter animations / 27 种命名缓动
 │        └─ KvImageLoader.cs           # Reflection PNG loader (shared) / 反射 PNG 加载器
 ├─ JipperKeyViewer/                    # 主工程（源码树 + 内嵌默认资源 + Info.json） / the mod project
 ├─ JipperKeyViewer.Loader.UMM/         # UMM loader entry / UMM 加载入口
@@ -202,7 +208,7 @@ flowchart LR
 | `Editor/KeyViewerEditor.cs` | 画布手势、预设生成、属性面板、图层组管理 / canvas gestures, presets, property panel, groups | 最大单文件 / largest file |
 | `Core/KeyViewerLayout.cs` | 覆盖层构建、108K 槽位表、CreateKey 管线 / overlay build, 108K slot table | 105 项槽位表 |
 | `Core/CustomLayout.cs` | FreeMake 运行时全部逻辑 / full FreeMake runtime | partial |
-| `Settings/KeyViewerSettings.cs` | 数据模型 + 序列化 / data model + serialization | FmNode 79 字段 / fields |
+| `Settings/KeyViewerSettings.cs` | 数据模型 + 序列化 / data model + serialization | FmNode 81 字段 / fields |
 | `Rain/RainSystem.cs` | 雨滴池/模拟/参数覆盖 / rain pool, sim, overrides | — |
 | `Editor/EditorHistory.cs` | 撤销栈 / undo stack | ~100 行 / lines |
 
@@ -215,11 +221,13 @@ flowchart LR
 | 画布 / Canvas | 拖拽/框选/Ctrl多选/双击循环/八向缩放/小地图/滚轮缩放/右键平移/方向键微调 / drag, marquee, Ctrl multi-select, double-click cycle, 8-way resize, minimap, wheel zoom, RMB pan, arrow nudge |
 | 吸附 / Snapping | 节点边/中心 + 屏幕边/中心，屏幕恒定阈值；Alt 临时关闭 / node & screen edges/centers, screen-constant; Alt disables |
 | 撤销 / Undo | Ctrl+Z/Y，含属性修改；连续调整按 0.4s 窗口合并为一步 / includes property edits; bursts coalesce |
+| **排列条 / Arrange toolbar** | 左/中/右、顶/中/底对齐（≥2 选，**保留按键间原有间距**）+ 横/纵等距分布（≥3 选，两端钉死）+ 阵列复制（数量 × 间距，守按组预算） / L/C/R + T/C/B align (gap-preserving), even distribution, array stamping |
 | **内置预设 / Presets** | 12K/16K/20K/10K/8K/14K/24K/108K；「保存为新配置」（默认）或**追加进当前画布**；继承键位/计数/文本；自动建图层组 / save as new profile (default) or add into current canvas; inherits bindings/counts/texts; auto-creates a layer group |
 | **图层组 / Layer groups** | 整组显隐（隐藏=不渲染不响应不计数）；**按组 KPS/Total**；每组一对面板；**按组预算 112 键类 + 8 图片**；空组自动清理；组名复用最小空闲编号 / group visibility gates everything; per-group KPS/Total; one panel pair per group; per-group budgets 112+8; empty groups pruned; names reuse free numbers |
-| **节点级覆盖 / Per-node overrides** | 配色六件套、文本、雨滴形状、雨滴样式、**鬼雨独立三组**、动画、面板文本布局、杂项 / colors ×6, text, rain shape, rain style, ghost rain ×3 sets, animations, panel text layout, misc |
+| **节点级覆盖 / Per-node overrides** | 配色六件套、文本、文字描边/阴影、**计数格式（千分位）**、盒子形状（圆角/边框厚度）、雨滴形状、雨滴样式、**鬼雨独立三组**、动画、面板文本布局、杂项 / colors ×6, text, text outline/shadow, count format (thousands sep), box shape (radius/border), rain shape, rain style, ghost rain ×3 sets, animations, panel text layout, misc |
 | 多选编辑 / Multi-select | 字段显示活动节点值（青色框标注），改动应用全选；混合值显示 `—` / shows active node (cyan frame), applies to all; mixed values show `—` |
-| 图片 / Images | `CustomImages/` 或绝对路径；窗口内导入；按压图切换 / from `CustomImages/` or absolute; in-window import; pressed-image swap |
+| 图片/视频 / Images & video | `CustomImages/` 或绝对路径；窗口内导入；按压图切换；**视频节点**（工具栏按钮或图片节点填视频路径，mp4/mov/webm/avi/wmv/m4v，循环开关，自动起播） / from `CustomImages/` or absolute; in-window import; pressed-image swap; **video nodes** (toolbar button or a video path on an image node, auto-play + loop toggle) |
+| **分享包 / Share packages (.jkv)** | 设置页「配置」折叠区内导出/导入：配置 + 全部图片视频 + 自定义字体打包为 ZIP，导入永远新建配置并按本机宽高比重缩放 / export/import inside the Profile foldout: profile + all assets + custom font as one ZIP; import always creates a NEW profile and rescales to the local aspect ratio |
 
 ## 9. 安装布局 / Installation Layouts
 
@@ -243,7 +251,7 @@ Mods/JipperKeyViewer/
 
 不再随包分发资源文件：默认贴图/字体 DEFLATE 内嵌于主 DLL，首次启动自动释放到 `assets/`（已存在的文件——包括用户替换过的——永不覆盖）。 / No asset files ship with the package: default sprites/fonts are deflated inside the main DLL and self-extract to `assets/` on first launch (existing files — including user replacements — are never overwritten).
 
-首次启动后创建 `config/`（`settings.json` + `profiles/` 每配置一个 JSON，游戏内切换）；`CustomFont/` 放字体，`CustomImages/` 放 FreeMake 图片。/ First launch creates `config/` (meta + one JSON per profile, switchable in-game); fonts in `CustomFont/`, FreeMake images in `CustomImages/`.
+首次启动后创建 `config/`（`settings.json` + `profiles/` 每配置一个 JSON，游戏内切换）；`CustomFont/` 放字体，`CustomImages/` 放 FreeMake 图片/视频，`Packages/` 存导出的 `.jkv` 分享包（导入的图片视频落到 `CustomImages/`、自定义字体落到 `CustomFont/`，均不覆盖同名文件）。/ First launch creates `config/` (meta + one JSON per profile, switchable in-game); fonts in `CustomFont/`, FreeMake images/videos in `CustomImages/`, exported `.jkv` packages in `Packages/` (imported assets land in `CustomImages/` and custom fonts in `CustomFont/`, never overwriting same-named files).
 
 ## 10. 常见问题排查 / FAQ
 
