@@ -1085,8 +1085,20 @@ namespace JipperKeyViewer.KeyViewer
                     if (k == null || k.CustomNode == null) continue;
                     k.KpsLog.Clear();
                     k.LastShownKps = int.MinValue;
+                    // Stat-panel compare-skip caches must be invalidated too, or the per-frame
+                    // writer keeps skipping while the live rate equals the pre-reset cached
+                    // value — a steady-rate player's KPS panel stuck on "0" after reset.
+                    // 统计面板的比较跳过缓存也须失效，否则实时速率等于重置前缓存值时
+                    // 逐帧写入方会一直跳过刷新——匀速游玩者的 KPS 面板会卡在"0"上。
+                    k.LastShownStatKps = int.MinValue;
+                    k.LastShownTotal = long.MinValue;
                 }
             }
+            // The per-GROUP queues feed the custom KPS panels — uncleared, CustomGroupKps
+            // keeps counting pre-reset presses for up to 1s after "Reset Counts". /
+            // 按组队列喂着自定义 KPS 面板——不清空时，点「重置计数」后最多 1 秒内
+            // CustomGroupKps 仍在统计重置前的按压。
+            customGroupPresses.Clear();
             lastKps = -1;
             _hasKeyPressActivity = false;
         }
