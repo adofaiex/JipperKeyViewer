@@ -1796,6 +1796,14 @@ namespace JipperKeyViewer.KeyViewer
             return Settings.Data.EnableCountFormatting ? count.ToString("N0") : count.ToString();
         }
 
+        /// <summary>Node-aware variant: a custom node with UseCustomCountFormat opts out of the
+        /// global setting. A null node (fixed layouts) resolves to the global. / 节点感知变体：
+        /// 开启 UseCustomCountFormat 的自定义节点退出全局设置；null 节点（固定布局）取全局。</summary>
+        private static string FormatCount(int count, Settings.FmNode node)
+        {
+            return NodeThousands(node) ? count.ToString("N0") : count.ToString();
+        }
+
         /// <summary>Refresh all key value displays (count or per-key KPS) / 刷新所有按键数值显示（计数或每键 KPS）</summary>
         public void RefreshAllCountDisplay()
         {

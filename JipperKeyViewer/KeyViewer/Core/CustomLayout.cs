@@ -94,14 +94,25 @@ namespace JipperKeyViewer.KeyViewer
                 long now = Stopwatch != null ? Stopwatch.ElapsedMilliseconds : 0L;
                 int kps = CustomGroupKps(g, now);
                 key.LastShownStatKps = kps;
-                SetKpsTotalDisplay(key, "KPS", FormatStatNumber(kps));
+                SetKpsTotalDisplay(key, "KPS", FormatStatNumber(kps, key.CustomNode));
             }
             else if (key.CustomNode.NodeType == 2)
             {
                 long total = CustomGroupTotal(g);
                 key.LastShownTotal = total;
-                SetKpsTotalDisplay(key, "Total", FormatStatNumber(total));
+                SetKpsTotalDisplay(key, "Total", FormatStatNumber(total, key.CustomNode));
             }
+        }
+
+        /// <summary>Resolve the thousands-separator flag for one node: the node's override when
+        /// it opted in, otherwise the global setting. Fixed-layout callers never come through
+        /// here — they pass a null node and take the global. / 解析某节点的千分位开关：节点
+        /// 已接管时用节点值，否则用全局设置。固定布局调用方不经过此处——传 null 节点即取全局。</summary>
+        internal static bool NodeThousands(FmNode node)
+        {
+            return node != null && node.UseCustomCountFormat
+                ? node.CountThousandsSeparator
+                : Settings.Data.EnableCountFormatting;
         }
 
         /// <summary>Refresh every custom KPS/Total panel from its own group. / 按各自所属组
@@ -795,7 +806,7 @@ namespace JipperKeyViewer.KeyViewer
                     : KeyToString(CustomNodeKeyCode(node));
             key.text.text = label;
             if (key.value != null)
-                key.value.text = FormatCount(node.Count);
+                key.value.text = FormatCount(node.Count, node);
         }
 
         internal static KeyCode CustomNodeKeyCode(FmNode node)
@@ -868,7 +879,7 @@ namespace JipperKeyViewer.KeyViewer
                         if (key.LastShownKps != kps)
                         {
                             key.LastShownKps = kps;
-                            NumBuffer.Format(kps, d.EnableCountFormatting, out var buf, out int off, out int len);
+                            NumBuffer.Format(kps, NodeThousands(node), out var buf, out int off, out int len);
                             key.value.SetText(buf, off, len);
                         }
                     }
@@ -963,7 +974,7 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (key.value != null && !node.PerKeyKps)
             {
-                NumBuffer.Format(node.Count, d.EnableCountFormatting, out var buf, out int off, out int len);
+                NumBuffer.Format(node.Count, NodeThousands(node), out var buf, out int off, out int len);
                 key.value.SetText(buf, off, len);
             }
             if (d.EnableRainEffect && node.RainEnabled)
@@ -997,7 +1008,7 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     else
                     {
-                        key.value.text = FormatCount(node.Count);
+                        key.value.text = FormatCount(node.Count, node);
                     }
                 }
             }

@@ -376,14 +376,14 @@ namespace JipperKeyViewer.KeyViewer
                     int kps = CustomGroupKps(k.CustomNode.GroupId ?? "", elapsedMilliseconds);
                     if (k.LastShownStatKps == kps) continue;
                     k.LastShownStatKps = kps;
-                    SetKpsTotalDisplay(k, "KPS", FormatStatNumber(kps));
+                    SetKpsTotalDisplay(k, "KPS", FormatStatNumber(kps, k.CustomNode));
                 }
                 foreach (Key k in StatKeys(2))
                 {
                     long total = CustomGroupTotal(k.CustomNode.GroupId ?? "");
                     if (k.LastShownTotal == total) continue;
                     k.LastShownTotal = total;
-                    SetKpsTotalDisplay(k, "Total", FormatStatNumber(total));
+                    SetKpsTotalDisplay(k, "Total", FormatStatNumber(total, k.CustomNode));
                 }
                 lastKps = currentKps;   // keep the global cache in step for the forced refresh /
                                         // 同步全局缓存，供强制刷新路径使用
@@ -429,6 +429,16 @@ namespace JipperKeyViewer.KeyViewer
         private string FormatStatNumber(long value)
         {
             NumBuffer.Format((int)System.Math.Min(value, int.MaxValue), Settings.Data.EnableCountFormatting,
+                out var buf, out int off, out int len);
+            return new string(buf, off, len);
+        }
+
+        /// <summary>Node-aware variant for custom stat panels: the panel node's count-format
+        /// override wins over the global toggle. / 自定义统计面板的节点感知变体：面板节点的
+        /// 计数格式覆盖优先于全局开关。</summary>
+        private string FormatStatNumber(long value, Settings.FmNode node)
+        {
+            NumBuffer.Format((int)System.Math.Min(value, int.MaxValue), NodeThousands(node),
                 out var buf, out int off, out int len);
             return new string(buf, off, len);
         }

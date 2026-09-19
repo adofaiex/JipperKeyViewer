@@ -773,6 +773,14 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // Per-node count hiding (independent of the global HideMainKeyCount). /
         // 逐节点隐藏计数（独立于全局「隐藏主按键计数」）。
         public bool HideCount;
+        // Per-node count formatting: off = follow the global EnableCountFormatting; opting in
+        // seeds the flag from the CURRENT global so the enabling action itself never changes
+        // the rendered number. Applies to the node's own count AND, on stat nodes, the panel's
+        // KPS/Total value. / 节点级计数格式：关 = 跟随全局 EnableCountFormatting；开启时从
+        // 当前全局值播种，使开启动作本身不改变已显示的数字。作用于节点自身的计数，且在统计
+        // 节点上作用于面板的 KPS/Total 数值。
+        public bool UseCustomCountFormat;
+        public bool CountThousandsSeparator;
         // Per-node box shape: corner radius in px (0 = the square 9-slice box) and border
         // thickness in px (0 = follow the sprite's own 9-slice border). A radius > 0 switches the
         // slot to the procedural rounded mesh, which is the only way to round a 9-sliced corner.

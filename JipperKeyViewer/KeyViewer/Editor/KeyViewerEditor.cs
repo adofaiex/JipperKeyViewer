@@ -2302,6 +2302,30 @@ namespace JipperKeyViewer.KeyViewer
 
             DrawEditorTextStyleSection(first);
 
+            // Per-node count formatting (thousands separator): off = follow the global toggle;
+            // opting in seeds the flag from the CURRENT global so enabling never changes the
+            // rendered number. Applies to this node's own count, and on KPS/Total nodes to the
+            // panel value. / 节点级计数格式（千分位）：关 = 跟随全局开关；开启时从当前全局值
+            // 播种，使开启动作本身不改变已显示的数字。作用于本节点计数；KPS/Total 节点上
+            // 作用于面板数值。
+            DrawEditorToggle(I18n.Tr("fm_count_format_custom"), first.UseCustomCountFormat, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UseCustomCountFormat = v;
+                    if (v) n.CountThousandsSeparator = Settings.Data.EnableCountFormatting;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UseCustomCountFormat)
+            {
+                DrawEditorToggle(I18n.Tr("count_formatting"), first.CountThousandsSeparator, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountThousandsSeparator = v;
+                    EditorPropertyChanged();
+                });
+            }
+
             // Press-animation easing, per node / 节点级按压动画缓动
             DrawEditorToggle(I18n.Tr("fm_press_easing_custom"), first.UseCustomPressEasing, v =>
             {
