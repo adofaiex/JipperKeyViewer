@@ -352,6 +352,24 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return new Vector2((tr.x + tr.width * 0.5f) / tex.width, (tr.y + tr.height * 0.5f) / tex.height);
         }
 
+        /// <summary>Sample point for the procedural OUTLINE ring. The outline sprite
+        /// (KeyOutline.png) is a thin FRAME: only its outer ~4px band is opaque, the centre
+        /// texel is alpha-0 — a centre-sampled ring multiplies the vertex colour by transparent
+        /// and renders invisible (the "border vanishes" bug). Sample 2 texels inside the LEFT
+        /// edge instead: inside the opaque frame band, vertically centred. /
+        /// 程序化描边环的采样点。描边贴图（KeyOutline.png）是一个细框：只有最外约 4px 带
+        /// 不透明，中心 texel 为 alpha-0——按中心采样的环会被乘以透明而渲染成隐形（即
+        /// 「边框消失」bug）。改为采样左缘内侧 2 texel：落在不透明框带内、垂直居中。</summary>
+        private Vector2 RingUV()
+        {
+            if (Sprite == null) return new Vector2(0.5f, 0.5f);
+            Rect tr = Sprite.textureRect;
+            Texture tex = Sprite.texture;
+            if (tex == null || tex.width <= 0 || tex.height <= 0) return new Vector2(0.5f, 0.5f);
+            float x = Mathf.Clamp(tr.x + 2f, tr.xMin, tr.xMax - 0.5f);
+            return new Vector2(x / tex.width, (tr.y + tr.height * 0.5f) / tex.height);
+        }
+
         /// <summary>Rounded-rect mesh: the background layer fills the shape, the outline layer
         /// draws a border-thick ring just inside the edge. A 9-slice sprite cannot round a corner,
         /// so radius &gt; 0 slots bypass DrawSliced entirely. / 圆角矩形 mesh：背景层填充形状，
@@ -361,11 +379,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
             Vector2 uv = RoundedUV();
+            // The ring MUST sample the opaque frame band, not the centre — see RingUV. /
+            // 描边环必须采不透明框带而非中心——见 RingUV。
+            Vector2 ringUv = isOutline ? RingUV() : uv;
             if (rad <= 0f)
             {
                 // A radius that collapsed (sub-pixel box) still renders as a plain quad rather
                 // than vanishing. / 半径被压缩到 0（亚像素盒子）时仍画成普通矩形而非消失。
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, uv.x, uv.x, uv.y, uv.y, color);
+                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, color);
                 return;
             }
             int n = FillRoundedPoints(r, rad, scratchRoundX, scratchRoundY);
@@ -420,7 +441,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     new Vector2(scratchRoundX[j], scratchRoundY[j]),
                     new Vector2(scratchInnerX[j], scratchInnerY[j]),
                     new Vector2(scratchInnerX[i], scratchInnerY[i]),
-                    uv, color);
+                    ringUv, color);
             }
         }
 
@@ -435,7 +456,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             float b = Mathf.Min(border, Mathf.Min(r.width, r.height) * 0.5f);
             if (b <= 0f) return;
-            Vector2 uv = RoundedUV();
+            Vector2 uv = RingUV();
             AddQuad(vh, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, color); // top
             AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, color); // bottom
             AddQuad(vh, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, color); // left
