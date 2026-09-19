@@ -1,4 +1,14 @@
 ## 1.7.2
+
+### 🔀 Two variants merged into a single JipperKeyViewer
+
+- **The AB-bundle and FileBased variants are now one mod**: this mod previously shipped as two variants — `JipperKeyViewer` (AssetBundle-packed resources) and `JipperKeyViewer-FileBased` (resources loaded from files on disk). As of this version they merge into a **single JipperKeyViewer**: one package, one codebase.
+- **Resource pipeline unified to runtime construction** (the former FileBased mechanism): sprites load from PNG and fonts from OTF/TTF at runtime, fully **decoupled from the game's Unity version** — a game engine upgrade no longer requires repacking resources or re-shipping the mod. The default resources (3 PNGs + 2 fonts) are DEFLATE-embedded inside the main DLL and self-extract to `assets\` on first launch: only missing files are written (**user-replaced files are never overwritten**), via a temp-file + atomic-rename write with crash-leftover self-healing.
+- **Upgrading / migration**:
+  - **Coming from the AB-bundle variant**: extract the new package **over your existing folder in place** — that's the whole upgrade.
+  - **Coming from the FileBased variant**: move `config\`, `CustomFont\`, `CustomImages\` (plus any `assets\` files you replaced yourself) from the old folder (`JipperKeyViewer-FileBased`) **into the new `JipperKeyViewer` folder**, then **delete the old variant's folder**. ⚠️ **Having both installed at once double-loads the mod and stacks two overlays** — remove the old one.
+- Project-side changes: loader entries renamed `JipperKeyViewer.Loader.UMM / .Loader.Melon`; all AB-variant artifacts (incl. the 23.5 MB bundle) and both Unity packing projects removed; CI now produces a single-variant single zip (`JipperKeyViewer.zip`).
+
 ### 🚀 New Features
 
 #### FreeMake custom-layout editor
