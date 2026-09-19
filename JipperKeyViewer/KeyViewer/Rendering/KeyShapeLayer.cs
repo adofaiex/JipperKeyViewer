@@ -205,6 +205,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     float border = src.borderThicknesses[i];
                     DrawRounded(vh, r, colors[i], radius, border);
                 }
+                else if (src.borderThicknesses[i] > 0f && isOutline)
+                {
+                    // Custom border thickness on a SQUARE key: an explicit ring replaces the
+                    // sprite's baked 11px 9-slice border on the outline layer. Without this
+                    // branch the BorderThickness setting changed nothing at all for square
+                    // keys — only the rounded path ever read it. The background layer keeps
+                    // its full 9-slice fill; the ring draws over its outer edge. /
+                    // 直角键的自定义边框厚度：描边层改画指定厚度的直角环，取代贴图自带的
+                    // 11px 九宫格边框。没有这个分支时 BorderThickness 对直角键完全无效——
+                    // 只有圆角路径读它。背景层保持整块九宫格填充；环画在其外缘之上。
+                    DrawSquareRing(vh, r, colors[i], src.borderThicknesses[i]);
+                }
                 else
                 {
                     DrawSliced(vh, r, colors[i], Sprite);
@@ -410,6 +422,24 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     new Vector2(scratchInnerX[i], scratchInnerY[i]),
                     uv, color);
             }
+        }
+
+        /// <summary>Square ring of an explicit thickness — the square-key counterpart of the
+        /// rounded outline ring. Four axis-aligned strips (horizontal ones span the full width,
+        /// vertical ones only the middle) so corners never double-draw. Thickness 0 never
+        /// reaches here — the legacy 9-slice path keeps the sprite's baked border. /
+        /// 指定厚度的直角描边环——圆角描边环在直角键上的对应物。四条轴向边（横条占满全宽、
+        /// 竖条只占中段），角上不会重复绘制。厚度 0 不会走到这里——旧九宫格路径保留贴图
+        /// 自带边框。</summary>
+        private void DrawSquareRing(VertexHelper vh, Rect r, Color color, float border)
+        {
+            float b = Mathf.Min(border, Mathf.Min(r.width, r.height) * 0.5f);
+            if (b <= 0f) return;
+            Vector2 uv = RoundedUV();
+            AddQuad(vh, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, color); // top
+            AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, color); // bottom
+            AddQuad(vh, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, color); // left
+            AddQuad(vh, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, color); // right
         }
 
         /// <summary>Arbitrary quad — the ring segments are not axis-aligned. / 任意四边形——环段

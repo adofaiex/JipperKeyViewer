@@ -2062,8 +2062,12 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 else
                 {
+                    // Mirror the runtime square-ring border: custom thickness when set, the
+                    // legacy 1.5px marker otherwise. / 复刻运行时直角描边环：有自定义厚度
+                    // 用自定义值，否则沿用 1.5px 标记线。
+                    float sq = node.BorderThickness > 0f ? node.BorderThickness * fmZoom : 1.5f;
                     GUIUtils.DrawRect(clipped, WithAlpha(bg, dim));
-                    DrawRectOutline(clipped, WithAlpha(ol, dim), 1.5f);
+                    DrawRectOutline(clipped, WithAlpha(ol, dim), sq);
                 }
                 string label = node.NodeType == 1
                     ? (string.IsNullOrEmpty(node.CustomText) ? "KPS" : node.CustomText)
