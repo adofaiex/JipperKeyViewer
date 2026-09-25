@@ -207,23 +207,34 @@ namespace JipperKeyViewer.KeyViewer
             try
             {
                 Font font = new Font(path);
-                if (font != null)
+                if (font == null) { Loader.Error($"KeyViewer: failed to create font from '{fileName}'"); return; }
+                // CreateFontAsset bakes the glyph atlas immediately and does not keep a reference to
+                // the source Font, so the legacy Font object can be released right away. It was
+                // never destroyed, which leaked the native font face plus a file copy on every
+                // font-set reload. / CreateFontAsset 会立即烘焙字形图集且不持有源 Font 引用，
+                // 因此 legacy Font 对象可立即释放。此前从不销毁，每次字体集重载都泄漏一份原生
+                // 字体面与文件副本。
+                try
                 {
                     target = TMP_FontAsset.CreateFontAsset(font);
-                    // CreateFontAsset can return null (unreadable font) — a null entry would render
-                    // as an empty row in the font list; skip it like ScanCustomFonts does.
-                    // CreateFontAsset 可能返回 null(不可读字体)——null 条目会在字体列表中渲染成
-                    // 空行;与 ScanCustomFonts 一致地跳过。
-                    if (target != null)
-                    {
-                        var entry = new FontEntry(entryName, target);
-                        entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
-                        fontList.Add(entry);
-                    }
-                    else
-                    {
-                        Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for '{fileName}'");
-                    }
+                }
+                finally
+                {
+                    UnityEngine.Object.Destroy(font);
+                }
+                // CreateFontAsset can return null (unreadable font) — a null entry would render
+                // as an empty row in the font list; skip it like ScanCustomFonts does.
+                // CreateFontAsset 可能返回 null(不可读字体)——null 条目会在字体列表中渲染成
+                // 空行;与 ScanCustomFonts 一致地跳过。
+                if (target != null)
+                {
+                    var entry = new FontEntry(entryName, target);
+                    entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
+                    fontList.Add(entry);
+                }
+                else
+                {
+                    Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for '{fileName}'");
                 }
             }
             catch (Exception e)
@@ -245,23 +256,32 @@ namespace JipperKeyViewer.KeyViewer
             try
             {
                 Font font = new Font(path);
-                if (font != null)
+                if (font == null) { Loader.Error($"KeyViewer: failed to create CJK font from '{fileName}'"); return; }
+                TMP_FontAsset cjkFont;
+                // Same as LoadFontFromFile: the source Font is released right after the atlas is
+                // baked, so a font-set reload no longer leaks a native face per attempt.
+                // 与 LoadFontFromFile 相同：图集烘焙后立即释放源 Font，字体集重载不再每次泄漏。
+                try
                 {
-                    var cjkFont = TMP_FontAsset.CreateFontAsset(font);
-                    // Null CJK font breaks the whole fallback chain; don't insert the entry when
-                    // creation failed — Insert(0) would occupy the default slot with a dead font.
-                    // CJK 字体为 null 会破坏整条后备链;创建失败时不要插入条目——Insert(0) 会把
-                    // 默认槽位让给死字体。
-                    if (cjkFont != null)
-                    {
-                        var entry = new FontEntry(entryName, cjkFont);
-                        entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
-                        fontList.Insert(0, entry);
-                    }
-                    else
-                    {
-                        Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for CJK font '{fileName}' (CJK labels render as boxes)");
-                    }
+                    cjkFont = TMP_FontAsset.CreateFontAsset(font);
+                }
+                finally
+                {
+                    UnityEngine.Object.Destroy(font);
+                }
+                // Null CJK font breaks the whole fallback chain; don't insert the entry when
+                // creation failed — Insert(0) would occupy the default slot with a dead font.
+                // CJK 字体为 null 会破坏整条后备链;创建失败时不要插入条目——Insert(0) 会把
+                // 默认槽位让给死字体。
+                if (cjkFont != null)
+                {
+                    var entry = new FontEntry(entryName, cjkFont);
+                    entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
+                    fontList.Insert(0, entry);
+                }
+                else
+                {
+                    Loader.Error($"KeyViewer: TMP_FontAsset.CreateFontAsset failed for CJK font '{fileName}' (CJK labels render as boxes)");
                 }
             }
             catch (Exception e)
@@ -456,6 +476,10 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         static MemberInfo cachedMaterialMember;
+        /// <summary>Type the cached member was resolved from — a MemberInfo is only valid for the
+        /// type it came from, so a different font type forces a re-resolve. / 缓存成员所属的类型
+        /// ——MemberInfo 只对其来源类型有效，字体类型不同时必须重新解析。</summary>
+        static Type cachedMaterialType;
         static bool cachedMaterialLogged;
 
         /// <summary>
@@ -463,34 +487,64 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         static Material GetFontMaterial(TMP_FontAsset font)
         {
-            if (cachedMaterialMember == null)
+            if (font == null) return null;
+            try
             {
-                var t = font.GetType();
-                const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
-                cachedMaterialMember = (MemberInfo)t.GetProperty("material", flags) ?? t.GetField("material", flags);
-            }
+                // The cached MemberInfo comes from the FIRST font's runtime type and is then reused
+                // unconditionally. TMP_FontAsset is not sealed, so a subclassed asset would make
+                // GetValue throw TargetException — and neither this method nor its callers guard
+                // that, so the exception escaped into the overlay build. Re-resolve on a type
+                // mismatch and never let the lookup break the caller.
+                // 缓存的 MemberInfo 来自**首个**字体的运行时类型，之后被无条件复用。TMP_FontAsset
+                // 并非 sealed，子类资产会让 GetValue 抛 TargetException——而本方法与调用方都没有
+                // 防护，异常会逃逸进覆盖层构建。类型不匹配时重新解析，且绝不让查找失败影响调用方。
+                Type fontType = font.GetType();
+                if (cachedMaterialMember == null || cachedMaterialType != fontType)
+                {
+                    const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
+                    cachedMaterialMember = (MemberInfo)fontType.GetProperty("material", flags) ?? fontType.GetField("material", flags);
+                    cachedMaterialType = fontType;
+                }
 
-            Material result = null;
-            if (cachedMaterialMember is PropertyInfo pi)
-            {
-                var val = pi.GetValue(font);
-                if (val != null) result = (Material)val;
-            }
-            else if (cachedMaterialMember is FieldInfo fi)
-            {
-                var val = fi.GetValue(font);
-                if (val != null) result = (Material)val;
-            }
+                Material result = null;
+                if (cachedMaterialMember is PropertyInfo pi)
+                {
+                    var val = pi.GetValue(font);
+                    if (val is Material mat) result = mat;
+                }
+                else if (cachedMaterialMember is FieldInfo fi)
+                {
+                    var val = fi.GetValue(font);
+                    if (val is Material mat) result = mat;
+                }
 
-            if (!cachedMaterialLogged)
-            {
-                cachedMaterialLogged = true;
-                string foundBy = cachedMaterialMember != null
-                    ? $"{cachedMaterialMember.MemberType} \"{cachedMaterialMember.Name}\""
-                    : "none";
-                Loader.Log($"KeyViewer: Font material resolved via {foundBy}");
+                if (!cachedMaterialLogged)
+                {
+                    cachedMaterialLogged = true;
+                    string foundBy = cachedMaterialMember != null
+                        ? $"{cachedMaterialMember.MemberType} \"{cachedMaterialMember.Name}\""
+                        : "none";
+                    if (cachedMaterialMember == null)
+                        // This used to be Loader.Log, so a font asset whose material member cannot
+                        // be resolved showed up as one Info line — the visible symptom is outlines
+                        // and shadows silently doing nothing. It is a build problem, so say so.
+                        // 此前是 Loader.Log：解析不到材质成员时只输出一行 Info——可见症状是描边
+                        // 与阴影静默失效。这是构建问题，应当报错。
+                        Loader.Error("KeyViewer: font material member not found — text outline/shadow will not render");
+                    else
+                        Loader.Log($"KeyViewer: Font material resolved via {foundBy}");
+                }
+                return result;
             }
-            return result;
+            catch (Exception e)
+            {
+                if (!cachedMaterialLogged)
+                {
+                    cachedMaterialLogged = true;
+                    Loader.Error($"KeyViewer: reading the font material failed: {e.GetType().Name}: {e.Message}");
+                }
+                return null;
+            }
         }
 
         /// <summary>
@@ -520,19 +574,36 @@ namespace JipperKeyViewer.KeyViewer
         {
             string modPath = Loader.ModPath;
             string customFontDir = Path.Combine(modPath, "CustomFont");
-
-            if (!Directory.Exists(customFontDir))
+            string[] fontFiles;
+            // Every directory operation is guarded: this method runs inside the overlay build
+            // (TryLoadResources → EnableKeyViewer → OnEnable), so an UnauthorizedAccessException or
+            // a directory that is actually a file used to escape and abort the WHOLE overlay — the
+            // key display simply never appeared, with the exception only in the Unity log. Custom
+            // fonts are an optional extra; failing to find them must not take the keys down.
+            // 目录操作全部加保护：本方法运行在覆盖层构建流程中（TryLoadResources →
+            // EnableKeyViewer → OnEnable），权限异常或该路径其实是文件时异常会逃逸并中断**整个**
+            // 覆盖层——按键显示根本不出现，异常只留在 Unity 日志里。自定义字体是可选附加项，
+            // 找不到它绝不能把按键一起带倒。
+            try
             {
-                Directory.CreateDirectory(customFontDir);
-                Loader.Log($"KeyViewer: Created CustomFont directory at {customFontDir}");
+                if (!Directory.Exists(customFontDir))
+                {
+                    Directory.CreateDirectory(customFontDir);
+                    Loader.Log($"KeyViewer: Created CustomFont directory at {customFontDir}");
+                    return;
+                }
+
+                string[] ttfFiles = Directory.GetFiles(customFontDir, "*.ttf", SearchOption.TopDirectoryOnly);
+                string[] otfFiles = Directory.GetFiles(customFontDir, "*.otf", SearchOption.TopDirectoryOnly);
+                fontFiles = new string[ttfFiles.Length + otfFiles.Length];
+                Array.Copy(ttfFiles, fontFiles, ttfFiles.Length);
+                Array.Copy(otfFiles, 0, fontFiles, ttfFiles.Length, otfFiles.Length);
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: could not read the CustomFont directory '{customFontDir}': {e.Message}");
                 return;
             }
-
-            string[] ttfFiles = Directory.GetFiles(customFontDir, "*.ttf", SearchOption.TopDirectoryOnly);
-            string[] otfFiles = Directory.GetFiles(customFontDir, "*.otf", SearchOption.TopDirectoryOnly);
-            string[] fontFiles = new string[ttfFiles.Length + otfFiles.Length];
-            Array.Copy(ttfFiles, fontFiles, ttfFiles.Length);
-            Array.Copy(otfFiles, 0, fontFiles, ttfFiles.Length, otfFiles.Length);
 
             if (fontFiles.Length == 0)
             {

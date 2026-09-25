@@ -208,6 +208,58 @@
   槽位上——**脚键计数加载后恒为 0**。现把 v3→v4 脚键平移抽成幂等的 `MigrateFootSlots`，
   由版本升级流程与 `LoadProfile` 共用；新增回归测试（含二次调用幂等性）。Harness 增至 98 项。
 
+### 资源层与持久化深审修复（2026-09-26，第 38 轮下半）
+资源层（视频/图片/字体）：
+- **装饰视频回退贴图漏登记 → 每次布局重建泄漏一张 GPU 贴图**：`UpdateCustomVideoFallbacks`
+  为无键装饰节点加载静态回退图后直接赋给 `raw.texture`，没有加入 `customDecorationTextures`，
+  而 `ReleaseCustomTextures` 只遍历 Keys 数组与该列表。现已登记。
+- **解码失败的视频每次重建都被销毁重建**：复用快路径排除 `Failed` 条目，于是拖一次节点或调一次
+  颜色就会销毁死播放器+RT、重新创建、重新解码、再次失败、再次刷日志——永久的
+  "分配→失败→释放→再分配"循环。现已确认失败的文件不再重试（直接返回 null 走静态图），
+  并在 `OnVideoError` 里立刻 `Pause()` + 断开 `targetTexture`。
+- **`BeginBuild`/`EndBuild` 之间没有 try/finally**：中间任一处抛异常都会让代次已自增而回收
+  未执行，本轮与上一轮创建的播放器全部继续解码、屏幕上却什么都没有。现已加 finally。
+- **`new Font(path)` 从不销毁**：`CreateFontAsset` 烘焙完图集即不持有源 Font，现两条加载路径
+  都在 finally 中 `Destroy(font)`，字体集重载不再每次泄漏一份原生字体面。
+- **`ScanCustomFonts` 的目录 IO 在 try 之外**：权限拒绝/路径其实是文件时异常从
+  `TryLoadResources → EnableKeyViewer → OnEnable` 逃出，**整个覆盖层构建中断**、按键根本不出现。
+  现整个目录段包 try/catch + 明确报错。
+- **`GetFontMaterial` 反射无防护**：缓存的 MemberInfo 来自首个字体类型且无条件复用，
+  `GetValue`/强转都可能抛异常并逃逸进覆盖层构建。现按类型重解析 + 整体 try/catch，
+  解析不到成员时改为 `Loader.Error`（此前只有一行 Info，症状是描边阴影静默失效）。
+- **`KvImageLoader` 磁盘加载零防护**：路径来自用户可编辑配置且接受任意绝对路径，而
+  `LoadImage` 按 PNG 头部声明的尺寸分配——65535×65535 索要约 17 GB 显存，OOM 被通用 catch
+  吞掉后"加载成功"却得到损坏贴图；他人分享的 .jkv 就能携带这种文件。现加 16 MB 文件上限、
+  4096×4096 尺寸上限（读 PNG IHDR）、以及反射异常的 `TargetInvocationException` 内层解包
+  （此前日志永远是"Exception has been thrown by the target of an invocation."）。
+  另修：反射查找失败被永久负缓存（查找前置位）、`GetMethods` 顺序依赖（只接受 2/3 参）、
+  九宫格边框硬编码 22（改为从 border 推导）、`Destroy` 后再读 `tex.width`。
+- **编辑器 `fmTexCache.Clear()` 不销毁贴图**：每次导入图片把此前全部贴图变孤儿泄漏显存；
+  且 null 也进缓存，导致损坏文件在**每个** OnGUI 重绘被重新读盘并刷一条日志。现销毁 +
+  独立负缓存 `fmTexFailures`。
+
+持久化/迁移（续）：
+- **写盘失败被当成"配置损坏"→ 全量重置并覆盖用户文件**：`LoadSettings` 的 catch-all 不区分
+  解析失败与 `IOException`。迁移链里的 `SaveCurrentProfile` 抛异常（磁盘满/只读/被占用）时，
+  内存被重置为默认值，随后的 `SaveSettings`（每次场景加载都跑）就把默认值覆盖进用户真实配置，
+  并废掉迁移的"回滚 meta 版本号以便重试"记账。现按 `IsStorageFailure` 分流：IO 类失败保留
+  已加载状态并显示失败横幅。
+- **"Profile not found" 分支把默认值写回刚判定不存在的那个路径**：`File.Exists` 对被占用/
+  云端占位符同样返回 false，一次临时文件锁就会造成不可感知的配置销毁。该分支现只在内存中
+  启用默认值，不写盘。
+- **`Version` 字段缺失被当成 v1**：JsonUtility 不运行字段初始化器，缺 `Version` 即为 0，会让
+  整条迁移链从 v1 重跑，而 `MigrateV2toV3` 会重置配置列表。现 `Version<=0` 视为"未知"，
+  按当前版本（`KeyViewerSettings.CurrentVersion`）处理。
+- **`MigrateV2toV3`/`MigrateV4toV5` 缺失败回滚**，且 V2toV3 无条件重置 `CurrentProfile`/
+  `ProfileNames`——重试时反而主动破坏用户配置列表。现补回滚 + 仅在列表为空时补建 Default。
+- **批量迁移遇"文件缺失"仍推进 meta 版本门**：当时读不到（云盘/未挂载/权限）的 Profile 永远
+  不会被回访，脚键计数恒 0、KPS 面板旧约定。现计为失败让 meta 门回滚重试。
+- **`Contains("FullKpsPosition")` 整文件子串嗅探**：FreeMake 节点的自定义文字/图片路径/按键名
+  中出现该字面量时，真正 v4 形态的文件会被判成 v5，其**构造默认值**被翻转并盖上
+  `DataVersion=6`——不可逆的静默错位。现改为 `JObject` 根对象属性判定（解析失败才回退子串）。
+- **`LoadProfile` 补 v5→v6 惰性修复**：与 `MigrateFootSlots` 对称——meta 早已升级后才到达的
+  v5 形态 Profile 原本永远看不到那次翻转，随后还会被盖上 `DataVersion=6` 永久锁死旧约定。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

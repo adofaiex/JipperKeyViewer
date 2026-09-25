@@ -170,6 +170,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 return existing.Texture;
             }
 
+            // A file that already failed to decode is not retried. The reuse test above excludes
+            // FAILED entries, so before this fix EVERY rebuild (dragging a node, nudging a colour
+            // slider) destroyed the dead player + RT, re-created them, re-ran the decoder, failed
+            // again and logged again — a permanent allocate→fail→free→allocate cycle plus a
+            // repeating warning. Return null so the caller immediately takes the static-image path,
+            // and keep the dead entry until EndBuild retires it.
+            // 已确认解码失败的文件不再重试。复用判定排除 FAILED 条目，此前每次重建（拖节点、调色
+            // 滑杆）都会销毁死的播放器与 RT、重新创建、重新解码、再次失败、再次刷日志——形成
+            // 永久的"分配→失败→释放→再分配"循环与重复告警。返回 null 让调用方立即走静态图
+            // 路径，死条目留到 EndBuild 统一回收。
+            if (existing != null && existing.Failed
+                && string.Equals(existing.ResolvedPath, resolved, StringComparison.OrdinalIgnoreCase))
+            {
+                existing.LastGeneration = generation;
+                return null;
+            }
+
             if (existing != null)
             {
                 DestroyEntry(existing);
@@ -298,6 +315,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 if (pair.Value == null || pair.Value.Player != source) continue;
                 pair.Value.Failed = true;
+                // Stop the decoder and drop the render texture immediately instead of leaving a
+                // dead player decoding into a RT nobody will ever draw. The objects themselves are
+                // still destroyed by the manager (main thread) — only the work stops now.
+                // 立刻停掉解码器并断开渲染贴图，而不是让一个死播放器继续往无人绘制的 RT 里解码。
+                // 对象本身仍由管理器（主线程）销毁——这里只是立刻停止工作。
+                try
+                {
+                    source.Pause();
+                    source.targetTexture = null;
+                }
+                catch (Exception) { /* a player destroyed mid-callback needs no cleanup */ }
                 Loader.Warning($"KeyViewer: video decode failed for node {pair.Key}: {message}");
                 break;
             }

@@ -1106,7 +1106,13 @@ namespace JipperKeyViewer.KeyViewer.Settings
     public class KeyViewerSettings
     {        // v6: full-keyboard KPS/Total position Y flipped to the mod-wide convention (0=top, 1=bottom).
         // / v6:全键盘 KPS/Total 位置 Y 翻转为全 Mod 约定(0=顶,1=底)。
-        public int Version = 6;
+        /// <summary>Current settings schema version. Read by the migration chain and by
+        /// LoadSettings' "missing Version means unknown, not v1" guard, which cannot use the field
+        /// initializer because JsonUtility does not run those. / 当前设置 schema 版本号。供迁移链
+        /// 与 LoadSettings 的「版本号缺失=未知而非 v1」守卫使用——后者不能用字段初始化器，因为
+        /// JsonUtility 不运行它们。</summary>
+        public const int CurrentVersion = 6;
+        public int Version = CurrentVersion;
         public string CurrentProfile = "Default";
         public string[] ProfileNames = new[] { "Default" };
         public string Language = "en";

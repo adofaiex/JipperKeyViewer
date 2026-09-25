@@ -561,6 +561,17 @@ namespace JipperKeyViewer.KeyViewer
                 // 磁盘上的原始 meta 版本号,先于任何迁移提升。v5→v6 据此判断 Profile 文件是否
                 // 早于全键盘 KPS/Total 功能(字段缺失 → 构造默认值,不可翻转)。
                 int metaVersionOnDisk = Settings.Version;
+                // JsonUtility does not run field initializers, so a settings.json that is missing
+                // "Version" (hand-edited, truncated, renamed field) deserializes it as 0 — which
+                // would re-run the ENTIRE migration chain from v1, and MigrateV2toV3 resets the
+                // profile list. A missing version means "unknown", not "v1": treat it as current
+                // and let the per-profile DataVersion guards handle whatever actually needs work.
+                // JsonUtility 不运行字段初始化器，因此缺 "Version" 的 settings.json（手改、截断、
+                // 字段改名）会反序列化为 0——那会让整条迁移链从 v1 重跑，而 MigrateV2toV3 会重置
+                // 配置列表。缺版本号意味着"未知"而非"v1"：按当前版本处理，真正的补齐交给逐
+                // Profile 的 DataVersion 守卫。
+                if (metaVersionOnDisk <= 0) metaVersionOnDisk = Settings.Version;
+                if (Settings.Version <= 0) Settings.Version = KeyViewerSettings.CurrentVersion;
 
                 if (Settings.Version < 2) MigrateV1toV2();
                 if (Settings.Version < 3) MigrateV2toV3();
@@ -576,6 +587,24 @@ namespace JipperKeyViewer.KeyViewer
                 SyncProfilesWithDisk();
                 settingsGuiTab = Mathf.Clamp(Settings.UiTab, 0, TabCount - 1);
             }
+            catch (Exception e) when (IsStorageFailure(e))
+            {
+                // A full disk, a read-only profile folder or a file locked by a sync client throws
+                // here just as readily as a corrupt JSON does — the migration chain calls
+                // SaveCurrentProfile/SaveMetaOnly, and those throw IOException. The catch-all used
+                // to treat that as "config is corrupt": it reset Settings to defaults, so the very
+                // next SaveSettings (on every scene load) overwrote the user's real profile with
+                // default values, and it discarded the "roll the meta version back so we retry"
+                // bookkeeping the migrations rely on. Keep whatever loaded successfully, surface the
+                // failure, and retry the save later.
+                // 磁盘满、Profile 目录只读或文件被同步软件占用时，迁移链里的
+                // SaveCurrentProfile/SaveMetaOnly 抛出的 IOException 会和配置损坏一样到达这里。
+                // 此前 catch-all 一律当成"配置损坏"：把 Settings 重置为默认值，于是下一次
+                // SaveSettings（每次场景加载都跑）就用默认值覆盖用户的真实配置，并且废掉了迁移
+                // 依赖的"回滚 meta 版本号以便重试"记账。现保留已加载的状态、显示失败并稍后重试。
+                Loader.Error($"Settings load hit a storage error (kept the loaded state): {e.Message}");
+                lastSaveError = e.Message;
+            }
             catch (Exception e)
             {
                 Loader.Error($"Failed to load settings: {e.Message}");
@@ -587,6 +616,21 @@ namespace JipperKeyViewer.KeyViewer
                 BackupCorruptConfig();
                 Settings = new KeyViewerSettings();
             }
+        }
+
+        /// <summary>Storage-layer failure (disk full, permissions, sharing violation, a sync client
+        /// holding the file) rather than a malformed document. These must never be treated as
+        /// "the user's config is corrupt" — the files are fine, the machine just could not read or
+        /// write them right now. / 存储层故障（磁盘满、权限、共享冲突、同步软件占用），而不是文档
+        /// 格式损坏。绝不能当成"用户配置损坏"——文件本身没问题，只是这台机器此刻读写不了。</summary>
+        private static bool IsStorageFailure(Exception e)
+        {
+            for (Exception cur = e; cur != null; cur = cur.InnerException)
+            {
+                if (cur is IOException || cur is UnauthorizedAccessException
+                    || cur is System.Security.SecurityException) return true;
+            }
+            return false;
         }
 
         /// <summary>Copy the config meta + current profile to *.corrupt backups before falling back to defaults / 回退默认前把配置元数据与当前 Profile 备份为 *.corrupt</summary>
@@ -637,12 +681,34 @@ namespace JipperKeyViewer.KeyViewer
         {
             Loader.Log("Migrating settings v2 → v3: creating Default profile");
             Settings.Version = 3;
-            Settings.CurrentProfile = "Default";
-            Settings.ProfileNames = new[] { "Default" };
+            // Only synthesize the profile list when there is none. Unconditionally overwriting it
+            // meant that any later failure (a full disk makes SaveMetaOnly throw) made the next
+            // launch re-run this migration and wipe the user's profile list — the exact damage a
+            // retry is supposed to avoid.
+            // 仅在列表为空时补建。此前无条件覆盖：一旦后续失败（磁盘满时 SaveMetaOnly 抛异常），
+            // 下次启动重跑本迁移就会清空用户的配置列表——而重试本该避免这种破坏。
+            if (Settings.ProfileNames == null || Settings.ProfileNames.Length == 0)
+            {
+                Settings.CurrentProfile = "Default";
+                Settings.ProfileNames = new[] { "Default" };
+            }
             EnsureSettingsArrays();
             if (Settings.Data.DataVersion < 3) Settings.Data.DataVersion = 3;
-            SaveCurrentProfile();
-            SaveMetaOnly();
+            try
+            {
+                SaveCurrentProfile();
+                SaveMetaOnly();
+            }
+            catch (Exception e)
+            {
+                // Roll the meta gate back so the whole migration retries next launch, exactly like
+                // MigrateV3toV4/MigrateV5toV6 do. Version was already bumped in memory above.
+                // 回滚 meta 版本门使整个迁移下次启动重跑，与 MigrateV3toV4/MigrateV5toV6 一致。
+                // 上方已在内存中提升了 Version。
+                Settings.Version = 2;
+                Loader.Error($"Migration v2→v3 failed, will retry next launch: {e.Message}");
+                return;
+            }
             Loader.Log("Migration v2→v3 complete");
         }
 
@@ -750,13 +816,48 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Version = 5;
             EnsureSettingsArrays();
             if (Settings.Data.DataVersion < 5) Settings.Data.DataVersion = 5;
-            SaveCurrentProfile();
-            SaveMetaOnly();
+            try
+            {
+                SaveCurrentProfile();
+                SaveMetaOnly();
+            }
+            catch (Exception e)
+            {
+                // Same rollback as the other migrations: a failed write must not leave the meta gate
+                // at 5, or the profile would never be re-stamped.
+                // 与其它迁移同样的回滚：写盘失败不能把 meta 门留在 5，否则该 Profile 永远不会被
+                // 重新打戳。
+                Settings.Version = 4;
+                Loader.Error($"Migration v4→v5 failed, will retry next launch: {e.Message}");
+                return;
+            }
             Loader.Log("Migration v4→v5 complete");
         }
 
         /// <summary>Flip a normalized position to the mod-wide Y convention (0=top, 1=bottom). / 将归一化位置翻转为全 Mod 的 Y 约定(0=顶,1=底)。</summary>
         private static Vector2 FlipYConvention(Vector2 v) => new Vector2(v.x, Mathf.Clamp01(1f - v.y));
+
+        /// <summary>Does the profile JSON carry this field as a property of the ROOT object? A
+        /// substring search over the whole file also matches node text, image paths and key binds,
+        /// which can make a pre-field profile look like a post-field one and get its constructor
+        /// defaults flipped (irreversibly). Falls back to a substring check only when the document
+        /// will not parse, so a merely malformed file still gets the old lenient treatment. /
+        /// Profile JSON 的**根对象**是否带有该字段？对整份文件做子串搜索还会命中节点文字、图片
+        /// 路径与按键名，可能让字段出现前的配置看起来像出现后的，进而把构造默认值翻转（不可逆）。
+        /// 仅在文档无法解析时回退到子串判断，使"仅仅是格式损坏"的文件仍走原有的宽松处理。</summary>
+        private static bool HasRootProperty(string json, string propertyName)
+        {
+            if (string.IsNullOrEmpty(json)) return false;
+            try
+            {
+                var root = Newtonsoft.Json.Linq.JObject.Parse(json);
+                return root[propertyName] != null;
+            }
+            catch (Exception)
+            {
+                return json.IndexOf(propertyName, StringComparison.Ordinal) >= 0;
+            }
+        }
 
         private void MigrateV5toV6(int metaVersionOnDisk)
         {
@@ -811,9 +912,30 @@ namespace JipperKeyViewer.KeyViewer
                     try
                     {
                         string path = GetProfilePath(name);
-                        if (!File.Exists(path)) continue;
+                        // A file that is merely unreadable RIGHT NOW (cloud placeholder, unplugged
+                        // drive, permissions) must count as a failure: advancing the meta gate with
+                        // it still un-migrated means it is never revisited — its foot counters stay
+                        // on the pre-v4 slots and its KPS panel keeps the old Y convention forever,
+                        // with no compensating path.
+                        // 此刻"读不到"的文件（云盘占位、移动硬盘未挂载、权限）必须计为失败：若带着
+                        // 未迁移的文件推进 meta 门，它就再也不会被回访——脚键计数永远留在 v4 之前
+                        // 的槽位上、KPS 面板永远是旧 Y 约定，且没有任何补偿路径。
+                        if (!File.Exists(path))
+                        {
+                            allProfilesSucceeded = false;
+                            Loader.Warning($"Profile '{name}' is missing or inaccessible; v6 migration will retry next launch");
+                            continue;
+                        }
                         string raw = File.ReadAllText(path);
-                        if (!raw.Contains("FullKpsPosition")) continue; // dormant v4-form file / 休眠的 v4 形态文件
+                        // Root-object property check, not a substring search. A FreeMake node's
+                        // custom label, image path or key bind containing the literal text
+                        // "FullKpsPosition" used to make a genuinely v4-form file look like v5, and
+                        // its CONSTRUCTOR DEFAULTS were then flipped and stamped DataVersion=6 —
+                        // an irreversible, silent misplacement.
+                        // 必须判断根对象属性而非子串。FreeMake 节点的自定义文字、图片路径或按键名
+                        // 中出现字面量 "FullKpsPosition" 时，真正 v4 形态的文件会被误判为 v5，
+                        // 其**构造默认值**被翻转并盖上 DataVersion=6——不可逆且静默的错位。
+                        if (!HasRootProperty(raw, "FullKpsPosition")) continue; // dormant v4-form file / 休眠的 v4 形态文件
                         var pd = new ProfileData();
                         JsonConvert.PopulateObject(raw, pd, ProfileData.ProfileSerializer);
                         pd.SyncArraysFromLists();
@@ -938,7 +1060,17 @@ namespace JipperKeyViewer.KeyViewer
                 try
                 {
                     string path = GetProfilePath(name);
-                    if (!File.Exists(path)) continue;
+                    // Unreadable-right-now is a FAILURE, not a skip: advancing the meta gate with a
+                    // still-unmigrated profile means it is never revisited and its foot-key counts
+                    // stay on the pre-v4 slots (reading as zero) for good.
+                    // 此刻"读不到"必须计为失败而非跳过：带着未迁移的配置推进 meta 门意味着它再也
+                    // 不会被回访，脚键计数会永远留在 v4 之前的槽位上（读出来是 0）。
+                    if (!File.Exists(path))
+                    {
+                        allSucceeded = false;
+                        Loader.Warning($"Profile '{name}' is missing or inaccessible; v4 migration will retry next launch");
+                        continue;
+                    }
                     string json = File.ReadAllText(path);
                     var pd = new ProfileData();
                     JsonConvert.PopulateObject(json, pd, ProfileData.ProfileSerializer);
@@ -985,12 +1117,23 @@ namespace JipperKeyViewer.KeyViewer
             }
             else
             {
-                Loader.Warning($"Profile '{profileName}' not found, creating new profile");
+                // File.Exists returns FALSE for a path that exists but is temporarily inaccessible
+                // (locked by a sync client, a permissions change, an OneDrive placeholder that has
+                // not materialised). This branch used to write a default profile straight back to
+                // that very path — and since SaveSettings runs on every scene load, the first
+                // successful write after the lock cleared overwrote the user's real config with
+                // defaults, with nothing but a log line to show for it. Bring the session up with
+                // defaults in memory only and let a later save decide.
+                // File.Exists 对"存在但暂时不可访问"的路径同样返回 false（被同步软件锁定、权限
+                // 变化、OneDrive 占位文件未落地）。此前该分支会把一份默认 Profile 直接写回同一
+                // 路径——而 SaveSettings 每次场景加载都跑，锁一解除的首次成功写入就会用默认值
+                // 覆盖用户真实配置，全程只有一行日志。现只在内存中启用默认值，交由后续保存决定。
+                Loader.Warning($"Profile '{profileName}' not found (or not accessible); running with defaults in memory until it can be written");
+                lastSaveError = $"Profile file for '{profileName}' is not accessible";
                 Settings.CurrentProfile = profileName;
                 if (Settings.ProfileNames == null || Settings.ProfileNames.Length == 0)
                     Settings.ProfileNames = new[] { profileName };
                 EnsureSettingsArrays();
-                SaveCurrentProfile();
             }
         }
 
@@ -1393,7 +1536,22 @@ namespace JipperKeyViewer.KeyViewer
                 // Record field presence ONLY on the fully-successful path — the v5→v6 flip may
                 // touch stored values, never rebuild/ctor defaults. / 仅在完全成功路径记录字段
                 // 存在性——v5→v6 翻转只可作用于存储值,绝不可作用于重建/构造默认值。
-                curProfileHasFullKpsPos = json.Contains("FullKpsPosition");
+                curProfileHasFullKpsPos = HasRootProperty(json, "FullKpsPosition");
+                // Same story for the v5→v6 Y-convention flip, and symmetric with MigrateFootSlots
+                // above: a v5-form profile arriving after the meta was upgraded would never see the
+                // one-shot version pass, and SaveCurrentProfile would then stamp DataVersion=6 onto
+                // it — permanently locking in the OLD KPS/Total Y convention. Only flip when the
+                // field is genuinely present, so constructor defaults are never touched.
+                // v5→v6 的 Y 约定翻转同理，且与上面的 MigrateFootSlots 完全对称：meta 升级后才
+                // 到达的 v5 形态配置永远看不到那次一次性升级，而 SaveCurrentProfile 随后会给它盖上
+                // DataVersion=6——把旧的 KPS/Total Y 约定永久锁死。仅在字段确实存在时翻转，
+                // 绝不触碰构造默认值。
+                if (pd.DataVersion < 6 && curProfileHasFullKpsPos)
+                {
+                    pd.FullKpsPosition = FlipYConvention(pd.FullKpsPosition);
+                    pd.FullTotalPosition = FlipYConvention(pd.FullTotalPosition);
+                    pd.DataVersion = 6;
+                }
                 return true;
             }
             catch (Exception e)

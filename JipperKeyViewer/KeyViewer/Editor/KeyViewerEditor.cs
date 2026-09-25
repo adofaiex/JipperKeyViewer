@@ -130,6 +130,10 @@ namespace JipperKeyViewer.KeyViewer
         private string fmEasingPicker;
         private GUIStyle fmHintStyle;
         private readonly Dictionary<string, Texture2D> fmTexCache = new Dictionary<string, Texture2D>();
+        /// <summary>Paths whose load already failed — kept apart from fmTexCache so a null result
+        /// does not need to live in the texture map (see EditorNodeTexture). / 加载已失败的路径，
+        /// 与 fmTexCache 分开存放，使 null 结果不必混在贴图表里（见 EditorNodeTexture）。</summary>
+        private readonly HashSet<string> fmTexFailures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> fmScratchKeys = new List<string>();
         private readonly List<FmNode> fmOrderBuffer = new List<FmNode>();
         private bool fmGroupsExpanded;
@@ -2579,9 +2583,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             string path = ResolveCustomImagePath(node.ImagePath);
             if (path == null) return null;
+            // Negative cache, kept OUT of the texture dictionary. Caching a failed load in the same
+            // map meant a corrupt or oversized file was re-read from disk and re-logged on EVERY
+            // OnGUI repaint (2-3 times a frame, forever).
+            // 负缓存与贴图字典分开。此前把加载失败也缓存进同一张表：损坏或超规格的文件会在**每个**
+            // OnGUI 重绘（每帧 2-3 次，永远）被重新读盘并重新记一条日志。
+            if (fmTexFailures.Contains(path)) return null;
             if (fmTexCache.TryGetValue(path, out Texture2D cached) && cached != null) return cached;
             Texture2D tex = KvImageLoader.LoadTexture(path);
-            fmTexCache[path] = tex;
+            if (tex == null) fmTexFailures.Add(path);
+            else fmTexCache[path] = tex;
             return tex;
         }
 
@@ -4620,11 +4631,21 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             // Importing overwrites files under CustomImages\ — drop the canvas texture cache or
-            // the editor keeps drawing the PRE-import image until restart. /
-            // 导入会覆盖 CustomImages\ 下的文件——清掉画布贴图缓存，否则编辑器到重启前
-            // 一直画的是导入前的旧图。
-            fmTexCache.Clear();
+            // the editor keeps drawing the PRE-import image until restart. The cached Texture2Ds
+            // are ours, so they must be destroyed: Clear() alone orphaned every one of them and
+            // leaked the GPU memory, once per import. / 导入会覆盖 CustomImages\ 下的文件——清掉
+            // 画布贴图缓存，否则编辑器到重启前一直画的是导入前的旧图。这些 Texture2D 归我们所有，
+            // 必须销毁：仅 Clear() 会把每一张变成孤儿并泄漏显存，每次导入一次。
+            DestroyEditorTextures();
             EditorPropertyChanged();
+        }
+
+        private void DestroyEditorTextures()
+        {
+            foreach (Texture2D tex in fmTexCache.Values)
+                if (tex != null) UnityEngine.Object.Destroy(tex);
+            fmTexCache.Clear();
+            fmTexFailures.Clear();
         }
 
         private void OpenCustomImagesDir()

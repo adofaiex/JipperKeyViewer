@@ -578,6 +578,8 @@ namespace JipperKeyViewer.KeyViewer
             // / 一次视频构建：本次用到的播放器全部打标，上一次构建遗留的（节点被删/隐藏/改路径）
             // 在末尾释放。
             KvVideoTextureManager.BeginBuild();
+            try
+            {
             // Stat panels draw after the key slots, one shape slot each. /
             // 面板排在按键槽位之后绘制，各占一个形状槽。
             customStatSlotCursor = Keys.Length;
@@ -619,8 +621,18 @@ namespace JipperKeyViewer.KeyViewer
                     ApplyCustomGlow(node, false);
                 }
             OrderCustomImageRects();
-            // Release every video player this pass did not touch. / 释放本次构建未触及的所有视频播放器。
-            KvVideoTextureManager.EndBuild();
+            }
+            finally
+            {
+                // EndBuild retires the players this pass did not stamp. Without the finally, any
+                // throw between BeginBuild and here (a malformed node, a failed texture load) left
+                // the generation bumped but the sweep un-run: every player created in this pass and
+                // every player from the previous one stayed alive decoding with nothing on screen.
+                // EndBuild 回收本次未打标的播放器。没有 finally 时，BeginBuild 与此处之间的任何
+                // 异常（节点数据异常、贴图加载失败）都会让代次已自增而回收未执行：本轮创建的与
+                // 上一轮遗留的播放器全部继续解码，屏幕上却什么都没有。
+                KvVideoTextureManager.EndBuild();
+            }
         }
 
         private void ApplyCustomGlow(FmNode node, bool pressed)
@@ -1447,7 +1459,18 @@ namespace JipperKeyViewer.KeyViewer
                 if (key != null) key.CustomVideoTexture = null;
                 Texture normal = key != null ? key.CustomTexNormal : null;
                 if (normal == null)
-                    normal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                {
+                    Texture2D loaded = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                    normal = loaded;
+                    // A DECORATION video node (no key) owns whatever it loads. Without registering
+                    // it, ReleaseCustomTextures — which only walks the Keys array and this list —
+                    // never destroyed it, leaking one GPU Texture2D per rebuild for the rest of
+                    // the session. The key-bound branch stores its textures on the Key instead.
+                    // 无键的**装饰**视频节点独占它加载的贴图。未登记时，ReleaseCustomTextures
+                    // （只遍历 Keys 数组与该列表）永远不会销毁它——此后每次布局重建都泄漏一张
+                    // GPU 贴图。带键分支则把贴图存在 Key 上。
+                    if (key == null && loaded != null) customDecorationTextures.Add(loaded);
+                }
                 Texture fallback = key != null && key.isPressed && key.CustomTexPressed != null
                     ? key.CustomTexPressed : normal;
                 if (fallback != null)
