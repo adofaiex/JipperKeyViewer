@@ -830,7 +830,7 @@ namespace JipperKeyViewer.KeyViewer
         /// 宽度。两者都必须是**实例**字段：静态 GUILayoutOption 会把 UnityEngine.IMGUIModule 拖进
         /// 本类型的静态构造，使每个调用方都需要该程序集（Harness 会立刻加载失败）。
         /// </summary>
-        private readonly PerKeyTextSizeBtnLabel[] perKeyTextSizeBtnLabels = new PerKeyTextSizeBtnLabel[MaxKeySlots + 2];
+        private readonly PerKeyTextSizeBtnLabel[] perKeyTextSizeBtnLabels = new PerKeyTextSizeBtnLabel[PerKeySlotCount];
         private GUILayoutOption perKeyTextSizeMinWidth;
         bool perKeyTextExpanded = false;
 
@@ -851,7 +851,7 @@ namespace JipperKeyViewer.KeyViewer
                 Settings.Data.EnablePerKeyTextSize = pk;
                 if (!pk)
                 {
-                    int n = KeyViewer.MaxKeySlots + 2;
+                    int n = PerKeySlotCount;
                     if (Settings.Data.PerKeyFontSize != null)
                         for (int i = 0; i < n && i < Settings.Data.PerKeyFontSize.Length; i++)
                             Settings.Data.PerKeyFontSize[i] = 0f;
@@ -935,12 +935,12 @@ namespace JipperKeyViewer.KeyViewer
                 DrawPerKeyTextSizeBtn(MaxKeySlots + 1, "Total");
                 GUILayout.EndHorizontal();
 
-                if (perKeyTextSelected >= 0 && perKeyTextSelected < MaxKeySlots + 2)
+                if (perKeyTextSelected >= 0 && perKeyTextSelected < PerKeySlotCount)
                     DrawPerKeyTextSizeEditor(perKeyTextSelected);
 
                 if (GUILayout.Button(I18n.Tr("per_key_color_reset")))
                 {
-                    int n = MaxKeySlots + 2;
+                    int n = PerKeySlotCount;
                     if (Settings.Data.PerKeyFontSize != null)
                         for (int i = 0; i < n && i < Settings.Data.PerKeyFontSize.Length; i++)
                             Settings.Data.PerKeyFontSize[i] = 0f;

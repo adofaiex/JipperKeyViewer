@@ -446,7 +446,7 @@ namespace JipperKeyViewer.KeyViewer
             DrawPerKeyColorBtn(MaxKeySlots + 1, "Total");
             GUILayout.EndHorizontal();
 
-            if (perKeyColorSelected >= 0 && perKeyColorSelected < MaxKeySlots + 2)
+            if (perKeyColorSelected >= 0 && perKeyColorSelected < PerKeySlotCount)
                 DrawPerKeyColorEditor(perKeyColorSelected);
 
             if (GUILayout.Button(I18n.Tr("per_key_color_reset")))

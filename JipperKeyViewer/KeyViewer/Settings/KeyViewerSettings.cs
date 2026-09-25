@@ -756,7 +756,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
             GhostKey20 = GhostKey20 ?? new KeyCode[20];
             GhostKey24 = GhostKey24 ?? new KeyCode[24];
             Count = Count ?? new int[KeyViewer.MaxKeySlots];
-            int n = KeyViewer.MaxKeySlots + 2;
+            int n = KeyViewer.PerKeySlotCount;
             PerKeyBackground = SafeEnsure(PerKeyBackground, n, KeyViewer.Background);
             PerKeyBackgroundClicked = SafeEnsure(PerKeyBackgroundClicked, n, KeyViewer.BackgroundClicked);
             PerKeyOutline = SafeEnsure(PerKeyOutline, n, KeyViewer.Outline);
@@ -861,7 +861,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
 
         public void InitPerKeyColors()
         {
-            int n = KeyViewer.MaxKeySlots + 2;
+            int n = KeyViewer.PerKeySlotCount;
             int footBase = KeyViewer.FootKeyBase;
 
             var oldBg = PerKeyBackground;

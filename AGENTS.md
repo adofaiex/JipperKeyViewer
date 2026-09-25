@@ -1052,6 +1052,21 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   真正占了槽位的节点——故在那里两种写法等价，不动。
 - Harness 增至 **147** 项（未绑定图片的 40 不计入、已绑定图片的 7 与按键的 5 计入）。
 
+### 脚键文本助手收敛 + 映射一致性测试（2026-09-26，第 66 轮）
+- **编辑器里第四份 `FootKeyviewerStyle` switch 的回退分支与正典不一致**：它返回 `null`，而正典
+  `GetFootKeyText()` 返回 `new string[0]`。之所以没出事，只是因为紧接着那行恰好判了空——
+  将来不判空的调用方就会 NRE。现改用 `GetFootKeyText()`。至此 `FootKeyviewerStyle → 键数`
+  只剩三份**合法**拷贝（`FootKeySize`/`GetFootKeyCode`/`GetFootKeyText`，返回类型本就不同）。
+- **`MaxKeySlots + 2` 的最后几处也收敛到 `PerKeySlotCount`**（`ProfileData` 构造函数与
+  `InitPerKeyColors`、每键字号面板的缓存数组与两处上界、每键颜色面板的一处上界）。
+  `PerKeySlotCount` 的注释已相应更新为准确描述：现在仍可能与它不一致的是**下标的产生方式**
+  （`KeyIndex` 相对 `Keys.Length` vs `CreateKeyText` 写死 `MaxKeySlots`），而那两条路径上今天都不可编辑。
+- **新增「三个脚键助手对每个已定义样式都一致」的测试**，使新增样式变成测试失败而不是线上 bug。
+  注：这三个助手**不接收参数**、自己读 `Settings.Data`，所以测试必须逐个迭代把样式写进设置——
+  本测试首版就是漏了这步，于是循环把同一个样式重复测了 N 遍并假报失败。写这类「对枚举全量
+  断言」的测试时，务必先确认被测函数真的按参数分派。
+- Harness 增至 **148** 项。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

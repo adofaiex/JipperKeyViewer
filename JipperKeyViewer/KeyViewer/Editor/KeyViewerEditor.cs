@@ -596,18 +596,15 @@ namespace JipperKeyViewer.KeyViewer
             if (footSize > 0)
             {
                 KeyCode[] footBinds = GetFootKeyCode();
-                string[] footTexts = Settings.Data.FootKeyViewerStyle switch
-                {
-                    FootKeyviewerStyle.Key2 => Settings.Data.footkey2Text,
-                    FootKeyviewerStyle.Key4 => Settings.Data.footkey4Text,
-                    FootKeyviewerStyle.Key6 => Settings.Data.footkey6Text,
-                    FootKeyviewerStyle.Key8 => Settings.Data.footkey8Text,
-                    FootKeyviewerStyle.Key10 => Settings.Data.footkey10Text,
-                    FootKeyviewerStyle.Key12 => Settings.Data.footkey12Text,
-                    FootKeyviewerStyle.Key14 => Settings.Data.footkey14Text,
-                    FootKeyviewerStyle.Key16 => Settings.Data.footkey16Text,
-                    _ => null,
-                };
+                // GetFootKeyText(), not a fourth inline copy of the same style switch. The two
+                // copies disagreed on the fallback arm: this one returned null where the canonical
+                // returns new string[0]. Nothing crashed only because the very next line happened to
+                // null-check the result — a new caller that did not would have NRE'd, and a new
+                // FootKeyviewerStyle would have had to be taught to each copy separately.
+                // 用 GetFootKeyText()，而非同一份样式 switch 的第四份内联拷贝。两份拷贝的回退分支
+                // 并不一致：这里返回 null、正典返回 new string[0]。之所以没出事，只是因为紧接着那
+                // 行恰好判了空——将来不判空的调用方就会 NRE；而新增样式则必须分别教给每一份拷贝。
+                string[] footTexts = GetFootKeyText();
                 for (int i = 0; i < footSize && i < footBinds.Length; i++)
                 {
                     int col = footSize <= 8 || i < 8 ? i : i - 8;
