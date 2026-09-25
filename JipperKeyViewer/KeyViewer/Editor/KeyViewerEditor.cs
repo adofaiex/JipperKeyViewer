@@ -4910,11 +4910,14 @@ namespace JipperKeyViewer.KeyViewer
             UpdateAllFonts();
             TickTextGradients();
             // Rain drop colours are baked into each drop when it is created, so in-flight drops keep
-            // the old colour. The old rebuild dropped them; clearing just the drops keeps that
-            // behaviour at a fraction of the cost (the next press picks up the new colour).
-            // 雨滴颜色在创建时烙入，在飞的雨滴仍是旧色。旧的重建路径会清空它们；这里只清雨滴，
-            // 成本低得多，且下一次按压即用新颜色。
-            rainSystem.ClearActiveDrops(Keys);
+            // the old colour. This used to CLEAR them, which meant a colour-slider drag (60-120
+            // events/second) walked every key and every live drop 60-120 times AND made the trail
+            // visibly pop in and out while dragging. Repainting in place is the same walk at the
+            // same cost, without the pop.
+            // 雨滴颜色在创建时烙入，在飞的雨滴仍是旧色。此前是**清空**它们——于是一次颜色滑杆拖动
+            // （每秒 60-120 次事件）要把每个键及其每滴存活雨滴走 60-120 遍，且拖动过程中轨迹明显
+            // 反复弹出。就地重绘是同样的遍历、同样的成本，但没有弹出。
+            rainSystem.RefreshDropColors(Keys);
         }
 
         private void EditorPropertyChanged()

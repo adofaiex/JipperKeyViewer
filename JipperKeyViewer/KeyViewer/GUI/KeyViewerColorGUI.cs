@@ -11,6 +11,17 @@ namespace JipperKeyViewer.KeyViewer
 {
     public partial class KeyViewer : MonoBehaviour
     {
+        /// <summary>Repaint the drops already on screen after a global rain colour change. The rain
+        /// system may not exist yet (overlay disabled), and Keys may be mid-rebuild; RefreshDropColors
+        /// handles both. / 全局雨色改动后重绘在屏雨滴。雨滴系统可能尚未创建（覆盖层关闭），Keys 也
+        /// 可能正在重建；RefreshDropColors 两者都能处理。
+        /// </summary>
+        private void RefreshRainDropColors()
+        {
+            var rain = rainSystem;
+            if (rain != null) rain.RefreshDropColors(Keys);
+        }
+
         private void DrawColorSettings()
         {
             GUILayout.BeginVertical("box");
@@ -44,6 +55,14 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         SetColorByIndex(i, newColor);
                         UpdateAllKeyColors();
+                        // Indices 6..11 are the rain / ghost-rain colours. A drop's colour is baked
+                        // in at creation and UpdateAllKeyColors does not touch the rain system, so
+                        // with a tall track and a slow speed the on-screen drops kept the old
+                        // colour for seconds — the control looked broken. Repaint them in place.
+                        // 下标 6..11 是雨滴/鬼雨颜色。雨滴颜色在创建时烙入，而 UpdateAllKeyColors
+                        // 不碰雨滴系统，故高轨道配慢速度时在屏雨滴会保持旧色好几秒——控件看起来像
+                        // 坏了。现就地重绘它们。
+                        if (i >= 6) RefreshRainDropColors();
                         SaveSettingsFromGui();
                     }
                     GUILayout.EndHorizontal();

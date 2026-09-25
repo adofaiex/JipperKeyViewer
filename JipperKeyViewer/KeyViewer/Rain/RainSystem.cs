@@ -479,6 +479,57 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         public Color GetGhostRainColor(byte color) => RainColor(color, true);
 
+        /// <summary>Repaint every drop that is currently on screen after a rain/ghost-rain colour
+        /// change. A drop's colour is baked in at CREATION, so with the default trail (~0.3 s) a
+        /// colour edit was invisible almost immediately — but with a tall track and a slow speed a
+        /// drop lives for many seconds, and the settings colour page then appeared to do nothing
+        /// until every drop happened to expire. The FreeMake editor already worked around this by
+        /// clearing the drops; the settings window had no such call at all. Repainting in place
+        /// keeps the trail continuous instead of popping it away.
+        /// 在雨滴/鬼雨颜色被改动后重绘**当前在屏**的每一滴。雨滴颜色是在**创建**时烙入的，故默认
+        /// 轨迹（~0.3 秒）下颜色改动几乎立刻就看不到了——但高轨道配慢速度时一滴能活好几秒，于是
+        /// 设置页颜色区看起来**毫无作用**，直到所有雨滴恰好过期。FreeMake 编辑器此前用「清空雨滴」
+        /// 绕过了这点，而设置窗口**根本没有**这个调用。现就地重绘，保持轨迹连续而不是把它弹掉。
+        /// </summary>
+        public void RefreshDropColors(Key[] keys)
+        {
+            if (keys == null) return;
+            bool touched = false;
+            for (int i = 0; i < keys.Length; i++)
+            {
+                Key key = keys[i];
+                if (key == null || key.rainList.Count == 0) continue;
+                for (int d = 0; d < key.rainList.Count; d++)
+                {
+                    RawRain rain = key.rainList[d];
+                    if (rain == null || rain.removed) continue;
+                    Color resolved = rain.isGhost
+                        ? (key.CustomNode != null
+                            ? GetGhostRainColor(key.color)
+                            : (settings.Data.EnablePerKeyColors
+                                && i >= 0 && i < settings.Data.PerKeyGhostRainColor.Length
+                                ? settings.Data.PerKeyGhostRainColor[i]
+                                : GetGhostRainColor(key.color)))
+                        : key.rainColor;
+                    // The per-node two-colour body gradient is resolved against the colour the drop
+                    // was born with, so a node using it must be repainted from the node's own
+                    // gradient rather than from the global colour.
+                    // 每节点双色本体渐变是相对雨滴出生时的颜色解析的，故用了它的节点必须从节点自身
+                    // 的渐变重绘，而不是从全局颜色。
+                    if (!rain.isGhost && key.CustomNode != null
+                        && key.CustomNode.UseCustomRainColor && key.CustomNode.RainColorTop != null)
+                    {
+                        resolved = KeyViewer.NodeColor(key.CustomNode.RainColorTop, resolved);
+                        rain.ColorTop = resolved;
+                    }
+                    if (rain.mainColor == resolved) continue;
+                    rain.mainColor = resolved;
+                    touched = true;
+                }
+            }
+            if (touched && Layer != null) Layer.MarkDirty();
+        }
+
         private Color RainColor(byte color, bool ghost)
         {
             return color switch
