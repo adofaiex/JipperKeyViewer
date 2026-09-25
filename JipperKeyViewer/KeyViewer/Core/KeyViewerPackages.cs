@@ -64,7 +64,17 @@ namespace JipperKeyViewer.KeyViewer
         // .jkv 是用户提供的 ZIP，无限制的条目数/展开体积会造成磁盘耗尽和 zip bomb。限制对图片/
         // 视频布局较宽松，但不是无限。
         private const long MaxPackageFileBytes = 512L * 1024L * 1024L;
-        private const long MaxPackageExpandedBytes = 2L * 1024L * 1024L * 1024L;
+        // Import and export both run SYNCHRONOUSLY inside one IMGUI callback on the main thread:
+        // read zip, decompress, write to disk, then rebuild the whole overlay. A 2 GB expanded
+        // package is therefore minutes of hard freeze — the game shows "not responding", the
+        // watchdog may kill it, and nothing can be cancelled or saved meanwhile. 512 MB is still
+        // ~10x a realistic image/video layout and bounds the freeze to a few seconds. Export keeps
+        // the same bound so a package can always be re-imported.
+        // 导入与导出都在**一个** IMGUI 回调里于主线程同步执行：读 zip、解压、落盘、再重建整层
+        // 覆盖层。因此 2 GB 展开体积意味着数分钟的硬冻结——游戏显示"未响应"，看门狗可能杀掉进程，
+        // 期间无法取消也无法保存。512 MB 仍是一个真实图片/视频布局的约 10 倍，把冻结限制在数秒。
+        // 导出用同一上限，保证导出的包总能被重新导入。
+        private const long MaxPackageExpandedBytes = 512L * 1024L * 1024L;
         private const long MaxPackageEntryBytes = 512L * 1024L * 1024L;
         private const long MaxPackageSettingsBytes = 32L * 1024L * 1024L;
         private const int MaxPackageEntries = 4096;
