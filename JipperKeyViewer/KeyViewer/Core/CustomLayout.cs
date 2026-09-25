@@ -32,6 +32,16 @@ namespace JipperKeyViewer.KeyViewer
     {
         /// <summary>Ghost-key press states for Custom nodes, keyed by node Id / 自定义节点鬼键按下态（按节点 Id）</summary>
         private readonly Dictionary<int, bool> customGhostStates = new Dictionary<int, bool>();
+        private readonly Dictionary<FmNode, RectTransform> customImageRects = new Dictionary<FmNode, RectTransform>();
+        private readonly Dictionary<FmNode, RawImage> customImageRaws = new Dictionary<FmNode, RawImage>();
+        private readonly HashSet<int> customVideoFallbackApplied = new HashSet<int>();
+
+        /// <summary>Clear ghost-key edge state when the active document identity changes.
+        /// Do not clear this on every overlay rebuild: holding a ghost key across a normal
+        /// rebuild must not create a second synthetic press. / 文档身份变化时清理鬼键边沿状态。
+        /// 普通覆盖层重建不能清理，否则按住鬼键跨重建会重复触发一次。 </summary>
+        private void ResetCustomGhostStates() => customGhostStates.Clear();
+
         /// <summary>Shape-slot cursor for stat panels during a custom build — each panel gets
         /// its OWN slot (KeyIndex(-1/-2) collapsed them all onto one). /
         /// 自定义构建期间面板形状槽位游标——每块面板独占一槽（KeyIndex(-1/-2) 曾全部压成一槽）。</summary>
@@ -80,6 +90,22 @@ namespace JipperKeyViewer.KeyViewer
                 if (n != null && n.GroupId == g && n.CountInTotal && (n.NodeType == 0 || n.NodeType == 3))
                     sum += n.Count;
             return sum;
+        }
+
+        /// <summary>Recompute the global Custom Total from the node document. CountInTotal is a
+        /// membership switch, so toggling it must reconcile existing node counts rather than
+        /// leaving the old accumulator value behind. / 从节点文档重算 Custom 全局 Total。
+        /// CountInTotal 是成员开关，切换时必须重算已有节点计数，不能留下旧累计值。 </summary>
+        private void RecalculateCustomTotalCount()
+        {
+            long total = 0;
+            foreach (FmNode n in Settings.Data.CustomNodes)
+            {
+                if (n == null || !n.CountInTotal || (n.NodeType != 0 && n.NodeType != 3)) continue;
+                total += Math.Max(0, n.Count);
+                if (total >= int.MaxValue) { total = int.MaxValue; break; }
+            }
+            Settings.Data.TotalCount = (int)total;
         }
 
         /// <summary>Write one custom stat panel with ITS OWN group's value. A panel in group G
@@ -433,6 +459,12 @@ namespace JipperKeyViewer.KeyViewer
             // 面板排在按键槽位之后绘制，各占一个形状槽。
             customStatSlotCursor = Keys.Length;
             customGroupPresses.Clear();
+            customImageRects.Clear();
+            customImageRaws.Clear();
+            customVideoFallbackApplied.Clear();
+            // Normalize a legacy/drifted global Total against the node document before the first
+            // panel refresh. / 首次刷新面板前，按节点文档归一化旧版或漂移的全局 Total。
+            RecalculateCustomTotalCount();
             // The "already shown" caches live on Key (LastShownStatKps/LastShownTotal) and are
             // rebuilt with the overlay — keys are recreated on every rebuild, so nothing to clear.
             // 「已显示」缓存挂在 Key 上（LastShownStatKps/LastShownTotal），随覆盖层重建——
@@ -459,6 +491,7 @@ namespace JipperKeyViewer.KeyViewer
             foreach (FmNode node in nodes)
                 if (node != null && node.NodeType == 3 && !CustomNodeHasKey(node) && CustomNodeVisible(node))
                     CreateCustomImageObject(node);
+            OrderCustomImageRects();
             // Release every video player this pass did not touch. / 释放本次构建未触及的所有视频播放器。
             KvVideoTextureManager.EndBuild();
         }
@@ -571,10 +604,11 @@ namespace JipperKeyViewer.KeyViewer
             rt.pivot = new Vector2(0.5f, 0.5f);
             rt.anchoredPosition = new Vector2(node.X + node.Width * 0.5f, CustomNodeCenterY(node));
             rt.sizeDelta = new Vector2(node.Width, node.Height);
-            // Below the shape layers: children render in order, so slot 0 draws first. /
-            // 置于形状层之下：子物体按顺序渲染，槽位 0 最先画。
-            rt.SetSiblingIndex(0);
+            // Sibling order is normalized after all image nodes are created; setting every image
+            // to slot 0 here reverses their actual draw order. / 图片全部创建后统一规范 sibling
+            // 顺序；这里每次都设为 0 会反转实际绘制顺序。
             RawImage raw = go.AddComponent<RawImage>();
+            customImageRaws[node] = raw;
             raw.raycastTarget = false;
             // A video node renders the VideoPlayer's RenderTexture instead of a PNG. The node stays
             // NodeType 3, so everything else about it (binding, counting, press, rain, layering) is
@@ -591,6 +625,15 @@ namespace JipperKeyViewer.KeyViewer
             {
                 raw.texture = video;
                 raw.color = new Color(1f, 1f, 1f, Mathf.Clamp01(node.Opacity));
+                if (key != null)
+                {
+                    // Keep static textures alongside the video so a configured pressed image can
+                    // overlay the video and the normal image remains available as a fallback.
+                    // 有效视频仍保留静态常态/按压纹理，使按压图片能覆盖视频，正常图片也可回退。
+                    key.CustomVideoTexture = video;
+                    key.CustomTexNormal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                    key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
+                }
             }
             else
             {
@@ -608,6 +651,7 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 if (key != null)
                 {
+                    key.CustomVideoTexture = null;
                     key.CustomTexNormal = normal;
                     key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
                 }
@@ -624,6 +668,24 @@ namespace JipperKeyViewer.KeyViewer
             {
                 key.CustomImageRect = rt;
                 key.CustomImage = raw;
+            }
+            customImageRects[node] = rt;
+        }
+
+        /// <summary>Place all image RawImages below the shape layers in stable Depth order.
+        /// The editor uses the same image-first, Depth-ascending bucket, so hit selection and
+        /// runtime overlap agree. / 将所有图片 RawImage 放在形状层之前，并按 Depth 稳定排序；
+        /// 与编辑器使用相同的图片优先、Depth 升序规则保持一致。 </summary>
+        private void OrderCustomImageRects()
+        {
+            int sibling = 0;
+            foreach (FmNode node in Settings.Data.CustomNodes
+                .Where(n => n != null && customImageRects.ContainsKey(n))
+                .OrderBy(n => n.Depth))
+            {
+                RectTransform rect = customImageRects[node];
+                if (rect == null) continue;
+                rect.SetSiblingIndex(sibling++);
             }
         }
 
@@ -655,11 +717,15 @@ namespace JipperKeyViewer.KeyViewer
                     k.CustomTexPressed = null;
                     k.CustomImage = null;
                     k.CustomImageRect = null;
+                    k.CustomVideoTexture = null;
                 }
             }
             for (int i = 0; i < customDecorationTextures.Count; i++)
                 if (customDecorationTextures[i] != null) Destroy(customDecorationTextures[i]);
             customDecorationTextures.Clear();
+            customImageRects.Clear();
+            customImageRaws.Clear();
+            customVideoFallbackApplied.Clear();
         }
 
         /// <summary>Resolve an image reference: absolute path as-is, otherwise relative to
@@ -815,10 +881,45 @@ namespace JipperKeyViewer.KeyViewer
             return Enum.TryParse(node.KeyBind, true, out KeyCode parsed) ? parsed : KeyCode.None;
         }
 
+        private void UpdateCustomVideoFallbacks()
+        {
+            if (Settings.Data?.CustomNodes == null) return;
+            foreach (FmNode node in Settings.Data.CustomNodes)
+            {
+                if (node == null || node.NodeType != 3 || string.IsNullOrWhiteSpace(node.VideoPath)
+                    || customVideoFallbackApplied.Contains(node.Id)
+                    || !KvVideoTextureManager.HasFailed(node.Id)) continue;
+                RawImage raw;
+                if (!customImageRaws.TryGetValue(node, out raw) || raw == null) continue;
+
+                // Key-bound images already retained their static normal texture during creation;
+                // unbound decoration images load theirs only after a decoder failure.
+                Key key = node.RuntimeKey;
+                if (key != null) key.CustomVideoTexture = null;
+                Texture normal = key != null ? key.CustomTexNormal : null;
+                if (normal == null)
+                    normal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                Texture fallback = key != null && key.isPressed && key.CustomTexPressed != null
+                    ? key.CustomTexPressed : normal;
+                if (fallback != null)
+                {
+                    raw.texture = fallback;
+                    raw.color = new Color(1f, 1f, 1f, Mathf.Clamp01(node.Opacity));
+                }
+                else
+                {
+                    raw.texture = null;
+                    raw.color = new Color(0.25f, 0.25f, 0.28f, 0.85f * Mathf.Clamp01(node.Opacity));
+                }
+                customVideoFallbackApplied.Add(node.Id);
+            }
+        }
+
         // ======================== per-frame input / 逐帧输入 ========================
 
         private void ProcessCustomKeysInUpdate(long nowMs)
         {
+            UpdateCustomVideoFallbacks();
             ProfileData d = Settings.Data;
             bool rainEnabled = d.EnableRainEffect;
             for (int i = 0; i < Keys.Length; i++)
@@ -919,11 +1020,14 @@ namespace JipperKeyViewer.KeyViewer
                     StopCoroutine(key.currentAnim);
                 key.currentAnim = StartCoroutine(AnimateKeyScale(key, scaleTarget, PressAnimDurationFor(key)));
             }
-            // Image keys swap to the pressed texture first. /
-            // 图片按键先切换按压贴图（按压语义）。
-            if (key.CustomImage != null && key.CustomTexPressed != null)
+            // Image keys swap to the pressed texture first, while video keys restore their
+            // RenderTexture on release. / 图片按键先切换按压贴图；视频按键松开时恢复视频纹理。
+            if (key.CustomImage != null)
             {
-                key.CustomImage.texture = down ? key.CustomTexPressed : key.CustomTexNormal;
+                Texture target = down
+                    ? (Texture)(key.CustomTexPressed != null ? key.CustomTexPressed : key.CustomVideoTexture)
+                    : (Texture)(key.CustomVideoTexture != null ? key.CustomVideoTexture : key.CustomTexNormal);
+                key.CustomImage.texture = target;
                 // Re-apply the node opacity on the swapped texture — the texture swap above
                 // resets nothing, but the RawImage color was set only at creation; keep it
                 // authoritative here so an opacity edit mid-session holds. / 换贴图后重施节点
@@ -943,10 +1047,11 @@ namespace JipperKeyViewer.KeyViewer
             }
             node.Count++;
             if (node.CountInTotal)
-            {
                 d.TotalCount++;
-                PressTimes.Enqueue(timeMs);
-            }
+            // CountInTotal controls Total membership only. KPS must continue to see every
+            // physical/replay press, including nodes excluded from Total. / CountInTotal 只控制
+            // Total 成员资格；KPS 仍必须看到所有物理/回放按压，包括被排除在 Total 之外的节点。
+            PressTimes.Enqueue(timeMs);
             // KPS group queues must record EVERY press in the group, not just those whose
             // nodes opt into CountInTotal — otherwise a group with CountInTotal=false on all
             // its keys would always show KPS 0. / KPS 组队列必须记录该组的每次按压，而非仅
@@ -990,6 +1095,18 @@ namespace JipperKeyViewer.KeyViewer
                 FmNode node = key.CustomNode;
                 if (node.NodeType == 0 || node.NodeType == 3) ApplyCustomKeyColors(key, node, key.isPressed);
                 else ApplyCustomSpecialColors(key, node, key.isPressed);
+
+                // Global rain color changes must update the cached colors used by the next drop.
+                // Previously only shape/text colors were refreshed, so non-overridden Custom nodes
+                // kept the old color until a full rebuild. / 全局雨色变化要同步下一滴使用的缓存色；
+                // 旧实现只刷新盒子/文字颜色，未覆盖的 Custom 节点要等完整重建才换色。
+                byte rainByte = CustomRainRowByte(node);
+                key.rainColor = node.UseCustomRainColor
+                    ? NodeColor(node.RainColorBottom, rainSystem.GetRainColor(rainByte))
+                    : rainSystem.GetRainColor(rainByte);
+                key.rainColorTop = node.UseCustomRainColor
+                    ? NodeColor(node.RainColorTop, key.rainColor)
+                    : key.rainColor;
             }
         }
 

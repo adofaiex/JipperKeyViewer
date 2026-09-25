@@ -58,8 +58,11 @@ namespace JipperKeyViewer.KeyViewer
 
         /// <summary>Foot key starting index (20 for normal layouts, 24 for 24K) / 脚键起始索引</summary>
         internal static int FootKeyBase => 24;
-        /// <summary>Whether the current layout has a third row of keys / 当前布局是否有第三排按键</summary>
-        internal static bool HasThirdRow => Settings.Data.KeyViewerStyle is KeyviewerStyle.Key20 or KeyviewerStyle.Key24;
+        /// <summary>Whether the current layout exposes the third rain-parameter row / 当前布局是否显示第三排雨滴参数。
+        /// Custom nodes may explicitly select RainRow=2, so their global row-3 controls must be visible;
+        /// Full108 remains excluded by its intentional no-rain behavior. / Custom 节点可选择第三排，
+        /// 因此显示第三排全局控件；Full108 按既定无雨滴行为排除。 </summary>
+        internal static bool HasThirdRow => Settings.Data.KeyViewerStyle is KeyviewerStyle.Key20 or KeyviewerStyle.Key24 or KeyviewerStyle.Custom;
         /// <summary>Maximum key slots (keys can be at indices 0..MaxKeySlots-1) / 最大键位槽数</summary>
         internal const int MaxKeySlots = 40;
         /// <summary>Whether the current layout is the full 108-key keyboard / 当前布局是否为全键盘</summary>
@@ -617,6 +620,7 @@ namespace JipperKeyViewer.KeyViewer
                     1f - Clamp01(p2.y / refH));
             }
             Settings.Version = 2;
+            if (Settings.Data.DataVersion < 2) Settings.Data.DataVersion = 2;
         }
 
         private void MigrateV2toV3()
@@ -626,6 +630,7 @@ namespace JipperKeyViewer.KeyViewer
             Settings.CurrentProfile = "Default";
             Settings.ProfileNames = new[] { "Default" };
             EnsureSettingsArrays();
+            if (Settings.Data.DataVersion < 3) Settings.Data.DataVersion = 3;
             SaveCurrentProfile();
             SaveMetaOnly();
             Loader.Log("Migration v2→v3 complete");
@@ -636,9 +641,10 @@ namespace JipperKeyViewer.KeyViewer
             Loader.Log("Migrating settings v3 → v4: FootKeyBase fixed to 24");
             Settings.Version = 4;
             var d = Settings.Data;
+            bool needsFootShift = d.DataVersion < 4;
             const int oldFootBase = 20;
 
-            if (d.KeyViewerStyle == KeyviewerStyle.Key24)
+            if (d.KeyViewerStyle == KeyviewerStyle.Key24 || !needsFootShift)
             {
                 // The current profile needs no shift, but the OTHER profile files still do — the
                 // early return used to skip MigrateAllProfileFiles entirely, and since the meta
@@ -647,8 +653,13 @@ namespace JipperKeyViewer.KeyViewer
                 // 当前配置无需平移,但其余 Profile 文件仍需要——早退曾整体跳过
                 // MigrateAllProfileFiles,而 meta Version 门控不会再补跑,它们的脚键计数
                 // 永远留在旧的 20 基线槽位(切换后脚键计数永久为零)。
+                if (d.DataVersion < 4) d.DataVersion = 4;
                 SaveCurrentProfile();
-                MigrateAllProfileFiles();
+                if (!MigrateAllProfileFiles())
+                {
+                    Settings.Version = 3; // keep the old meta gate so failed profiles retry next launch
+                    return;
+                }
                 SaveMetaOnly();
                 return;
             }
@@ -667,7 +678,13 @@ namespace JipperKeyViewer.KeyViewer
             };
             if (footSize == 0)
             {
+                if (d.DataVersion < 4) d.DataVersion = 4;
                 SaveCurrentProfile();
+                if (!MigrateAllProfileFiles())
+                {
+                    Settings.Version = 3; // keep the old meta gate so failed profiles retry next launch
+                    return;
+                }
                 SaveMetaOnly();
                 return;
             }
@@ -690,6 +707,8 @@ namespace JipperKeyViewer.KeyViewer
                     arr[from + i] = default;
             }
 
+            if (needsFootShift)
+            {
             Array.Copy(d.Count, oldFootBase, d.Count, FootKeyBase, footSize);
             // Same gap-only clear as ShiftColorArray (full-range clear overlapped the copy).
             // 与 ShiftColorArray 同款"仅清间隙"(全区间清除会与复制重叠)。
@@ -701,9 +720,15 @@ namespace JipperKeyViewer.KeyViewer
             ShiftColorArray(d.PerKeyText, oldFootBase, FootKeyBase, footSize);
             ShiftColorArray(d.PerKeyTextClicked, oldFootBase, FootKeyBase, footSize);
             ShiftColorArray(d.PerKeyRainColor, oldFootBase, FootKeyBase, footSize);
+            }
+            if (d.DataVersion < 4) d.DataVersion = 4;
 
             SaveCurrentProfile();
-            MigrateAllProfileFiles();
+            if (!MigrateAllProfileFiles())
+            {
+                Settings.Version = 3; // keep the old meta gate so failed profiles retry next launch
+                return;
+            }
             SaveMetaOnly();
             Loader.Log("Migration v3→v4 complete");
         }
@@ -714,6 +739,7 @@ namespace JipperKeyViewer.KeyViewer
             // Existing 8K-24K + foot-key profiles load unchanged.
             Settings.Version = 5;
             EnsureSettingsArrays();
+            if (Settings.Data.DataVersion < 5) Settings.Data.DataVersion = 5;
             SaveCurrentProfile();
             SaveMetaOnly();
             Loader.Log("Migration v4→v5 complete");
@@ -752,11 +778,12 @@ namespace JipperKeyViewer.KeyViewer
             // 重建(LoadProfileFromMeta)时,不能翻转这些新鲜默认值。
             Loader.Log("Migrating settings v5 → v6: full-keyboard KPS/Total Y convention flip");
             Settings.Version = 6;
-            if (metaVersionOnDisk >= 5 && curProfileHasFullKpsPos)
+            if (Settings.Data.DataVersion < 6 && metaVersionOnDisk >= 5 && curProfileHasFullKpsPos)
             {
                 Settings.Data.FullKpsPosition = FlipYConvention(Settings.Data.FullKpsPosition);
                 Settings.Data.FullTotalPosition = FlipYConvention(Settings.Data.FullTotalPosition);
             }
+            if (Settings.Data.DataVersion < 6) Settings.Data.DataVersion = 6;
             SaveCurrentProfile();
 
             // Batch-flip the other profile files the same way — the meta Version gate never
@@ -764,6 +791,7 @@ namespace JipperKeyViewer.KeyViewer
             // Y values. Each file is content-checked (a v4-form dormant file is skipped).
             // / 同法批量翻转其余 Profile 文件——meta 版本门控不会重跑本迁移,之后切到它们时
             // 不能让旧约定的 Y 值复活。逐文件检查内容(v4 形态的休眠文件跳过)。
+            bool allProfilesSucceeded = true;
             if (metaVersionOnDisk >= 5 && Settings.ProfileNames != null)
             {
                 string savedProfile = Settings.CurrentProfile;
@@ -777,26 +805,38 @@ namespace JipperKeyViewer.KeyViewer
                         string raw = File.ReadAllText(path);
                         if (!raw.Contains("FullKpsPosition")) continue; // dormant v4-form file / 休眠的 v4 形态文件
                         var pd = new ProfileData();
-                        JsonUtility.FromJsonOverwrite(raw, pd);
+                        JsonConvert.PopulateObject(raw, pd, ProfileData.ProfileSerializer);
                         pd.SyncArraysFromLists();
+                        if (pd.DataVersion >= 6) continue;
                         pd.FullKpsPosition = FlipYConvention(pd.FullKpsPosition);
                         pd.FullTotalPosition = FlipYConvention(pd.FullTotalPosition);
+                        pd.DataVersion = 6;
                         pd.SyncListsToArrays();
                         WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
                     }
                     catch (Exception e)
                     {
+                        allProfilesSucceeded = false;
                         Loader.Warning($"Failed to migrate profile '{name}' to v6: {e.Message}");
                     }
                 }
+            }
+            if (!allProfilesSucceeded)
+            {
+                // Keep the on-disk meta at v5 so failed profiles are retried next launch. The
+                // current profile already has DataVersion=6, so its completed flip is not repeated.
+                // 保持磁盘 meta 为 v5，让失败 Profile 下次启动重试；当前 Profile 已标记 6，不会重复翻转。
+                Settings.Version = 5;
+                return;
             }
             SaveMetaOnly();
             Loader.Log("Migration v5→v6 complete");
         }
 
-        private void MigrateAllProfileFiles()
+        private bool MigrateAllProfileFiles()
         {
-            if (Settings.ProfileNames == null) return;
+            if (Settings.ProfileNames == null) return true;
+            bool allSucceeded = true;
             string savedProfile = Settings.CurrentProfile;
             foreach (string name in Settings.ProfileNames)
             {
@@ -807,8 +847,16 @@ namespace JipperKeyViewer.KeyViewer
                     if (!File.Exists(path)) continue;
                     string json = File.ReadAllText(path);
                     var pd = new ProfileData();
-                    JsonUtility.FromJsonOverwrite(json, pd);
-                    if (pd.KeyViewerStyle == KeyviewerStyle.Key24) continue;
+                    JsonConvert.PopulateObject(json, pd, ProfileData.ProfileSerializer);
+                    pd.SyncArraysFromLists();
+                    if (pd.DataVersion >= 4) continue;
+                    if (pd.KeyViewerStyle == KeyviewerStyle.Key24)
+                    {
+                        pd.DataVersion = 4;
+                        pd.SyncListsToArrays();
+                        WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
+                        continue;
+                    }
                     int fs = pd.FootKeyViewerStyle switch
                     {
                         FootKeyviewerStyle.Key2 => 2,
@@ -821,7 +869,13 @@ namespace JipperKeyViewer.KeyViewer
                         FootKeyviewerStyle.Key16 => 16,
                         _ => 0
                     };
-                    if (fs == 0) continue;
+                    if (fs == 0)
+                    {
+                        pd.DataVersion = 4;
+                        pd.SyncListsToArrays();
+                        WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
+                        continue;
+                    }
                     const int oldBase = 20;
                     // Old builds wrote Count[36]; FromJsonOverwrite restores that shorter array and the
                     // copy below would run past its end (throwing, and the profile would then be
@@ -877,14 +931,17 @@ namespace JipperKeyViewer.KeyViewer
                     Shift(pd.PerKeyText, oldBase, FootKeyBase, fs);
                     Shift(pd.PerKeyTextClicked, oldBase, FootKeyBase, fs);
                     Shift(pd.PerKeyRainColor, oldBase, FootKeyBase, fs);
+                    pd.DataVersion = 4;
                     pd.SyncListsToArrays();
                     WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
                 }
                 catch (Exception e)
                 {
+                    allSucceeded = false;
                     Loader.Warning($"Failed to migrate profile '{name}': {e.Message}");
                 }
             }
+            return allSucceeded;
         }
 
         private void LoadProfileFromMeta()
@@ -935,7 +992,13 @@ namespace JipperKeyViewer.KeyViewer
         private static KeyCode[] EnsureKeyCodeArray(KeyCode[] arr, KeyCode[] defaults)
         {
             if (arr != null && arr.Length == defaults.Length) return arr;
-            return (KeyCode[])defaults.Clone();
+            // Preserve a hand-written/partial binding prefix and fill only the missing tail;
+            // replacing the whole array with defaults silently erased user bindings.
+            // 保留手写/截断绑定的已有前缀，只补缺失尾部；整数组回退默认会静默抹掉用户绑定。
+            KeyCode[] result = (KeyCode[])defaults.Clone();
+            if (arr != null)
+                for (int i = 0; i < result.Length && i < arr.Length; i++) result[i] = arr[i];
+            return result;
         }
 
         /// <summary>Null- AND length-checked string array (keeps existing entries on resize) / 空值与长度双检的字符串数组（重定长度时保留已有条目）</summary>
@@ -972,11 +1035,9 @@ namespace JipperKeyViewer.KeyViewer
 
             // Truncated binding arrays (hand-edited / partially written profiles) are the same gap
             // class as Count below: FromJsonOverwrite restores whatever length the JSON carries and
-            // the binding tab indexes key8[key12 slots] unguarded. A wrong-length array is replaced
-            // with the field initializer defaults from a fresh ProfileData.
-            // 截断的绑定数组(手改/写坏一半的 Profile)与下方 Count 属同类缺口:FromJsonOverwrite
-            // 按 JSON 自带长度还原,而按键页会无守卫地索引 key8[第 12 槽]。长度不对时直接换回
-            // 全新 ProfileData 的字段初始化默认值。
+            // the binding tab indexes key8[key12 slots] unguarded. Preserve the existing prefix and
+            // fill only the missing tail. / 截断的绑定数组与下方 Count 属同类缺口；保留已有前缀，
+            // 只补缺失尾部，避免整组用户绑定被默认数组覆盖。
             ProfileData defaults = new ProfileData();
             Settings.Data.key8 = EnsureKeyCodeArray(Settings.Data.key8, defaults.key8);
             Settings.Data.key10 = EnsureKeyCodeArray(Settings.Data.key10, defaults.key10);
@@ -1206,6 +1267,8 @@ namespace JipperKeyViewer.KeyViewer
             // 先把工作列表刷入持久化数组字段，再用 Newtonsoft（字段模式）序列化——真正的嵌套
             // 数组，无转义内嵌字符串。
             Settings.Data.SyncListsToArrays();
+            if (Settings.Data.DataVersion < Settings.Version)
+                Settings.Data.DataVersion = Settings.Version;
             string profilePath = GetProfilePath(Settings.CurrentProfile);
             string json = JsonConvert.SerializeObject(Settings.Data, ProfileData.ProfileSerializer);
             WriteAllTextSafe(profilePath, json);
@@ -1229,6 +1292,16 @@ namespace JipperKeyViewer.KeyViewer
             try
             {
                 string json = File.ReadAllText(profilePath);
+                // A syntactically valid but truncated object can leave constructor defaults in
+                // place. Count has existed in every supported profile format, so its complete
+                // absence is a reliable structural-failure signal. / 可解析但被截断的对象可能留下
+                // 构造默认值；Count 存在于所有支持版本，完全缺失可作为结构损坏信号。
+                if (json.IndexOf("\"Count\"", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    Loader.Error($"Profile '{name}' failed validation (Count field missing)");
+                    try { File.Copy(profilePath, profilePath + ".corrupt", true); } catch { }
+                    return false;
+                }
                 // Replace the instance first: FromJsonOverwrite only writes fields present in the JSON
                 // and leaves any other field/array entry from the previously loaded profile intact,
                 // which would then leak into (and be saved over) the new profile. A fresh default
@@ -1360,7 +1433,11 @@ namespace JipperKeyViewer.KeyViewer
             }
             catch (Exception e)
             {
+                // Keep the name in ProfileNames when the file could not be removed; otherwise
+                // meta and disk diverge until the next directory scan. / 文件删除失败时保留
+                // ProfileNames，避免元数据与磁盘在下一次扫描前不一致。
                 Loader.Error($"Failed to delete profile file '{name}': {e.Message}");
+                return;
             }
             var list = new List<string>(Settings.ProfileNames);
             list.Remove(name);
@@ -1376,12 +1453,10 @@ namespace JipperKeyViewer.KeyViewer
             if (string.IsNullOrWhiteSpace(newName)) return;
             newName = SanitizeFileName(newName.Trim());
             if (oldName == newName) return;
-            // Case-insensitive duplicate check against OTHER profiles: on NTFS a case variant names
-            // the same file, so the File.Delete below would remove that other profile before the
-            // move. This profile's own old name is excluded — a case-only rename stays allowed.
-            // 对其它 Profile 做大小写不敏感的重名检查：NTFS 上大小写变体指向同一文件，否则下面
-            // 的 File.Delete 会在移动前删掉那个 Profile。本配置自身的旧名除外——仅改大小写的
-            // 重命名仍然允许。
+
+            // Check both the in-memory list and the actual target path. A stale/orphan profile
+            // file must never be deleted merely because its name is absent from ProfileNames.
+            // 同时检查内存列表与真实磁盘路径：内存列表漏掉的孤儿 Profile 不能因此被删除。
             if (Settings.ProfileNames != null)
             {
                 string oldSan = SanitizeFileName(oldName);
@@ -1392,37 +1467,73 @@ namespace JipperKeyViewer.KeyViewer
                     if (string.Equals(ps, newName, StringComparison.OrdinalIgnoreCase)) return;
                 }
             }
+
             string oldPath = GetProfilePath(oldName);
             string newPath = GetProfilePath(newName);
-            if (oldPath != newPath)
+            bool sameFile = string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase);
+            if (!sameFile)
             {
+                if (!File.Exists(oldPath))
+                {
+                    Loader.Error($"Cannot rename missing profile file '{oldName}'");
+                    return;
+                }
+                if (File.Exists(newPath))
+                {
+                    Loader.Error($"Cannot rename profile: target file '{newName}' already exists");
+                    return;
+                }
                 try
                 {
-                    if (File.Exists(oldPath))
-                    {
-                        // Case-only rename: oldPath and newPath name the SAME file on NTFS — deleting
-                        // the target first would delete the source; File.Move alone performs the
-                        // case change. / 仅改大小写：两个路径在 NTFS 上是同一个文件——先删目标
-                        // 等于删源；仅 File.Move 即可完成大小写重命名。
-                        bool sameFile = string.Equals(oldPath, newPath, StringComparison.OrdinalIgnoreCase);
-                        if (!sameFile && File.Exists(newPath))
-                            File.Delete(newPath);
-                        File.Move(oldPath, newPath);
-                    }
+                    File.Move(oldPath, newPath);
                 }
                 catch (Exception e)
                 {
+                    // Do not update ProfileNames/CurrentProfile after a failed move. The old
+                    // profile and the meta file must remain a consistent pair.
+                    // 移动失败时绝不更新 ProfileNames/CurrentProfile，保持旧 Profile 与元数据一致。
                     Loader.Error($"Failed to rename profile file '{oldName}' → '{newName}': {e.Message}");
+                    return;
                 }
             }
-            var list = new List<string>(Settings.ProfileNames);
+
+            string[] previousNames = Settings.ProfileNames == null
+                ? Array.Empty<string>() : (string[])Settings.ProfileNames.Clone();
+            string previousCurrent = Settings.CurrentProfile;
+            var list = new List<string>(previousNames);
             int idx = list.IndexOf(oldName);
             if (idx >= 0) list[idx] = newName;
             else list.Add(newName);
             Settings.ProfileNames = list.ToArray();
-            if (Settings.CurrentProfile == oldName)
+            if (string.Equals(Settings.CurrentProfile, oldName, StringComparison.OrdinalIgnoreCase))
                 Settings.CurrentProfile = newName;
-            SaveSettings();
+            try
+            {
+                // Finish the profile write and metadata write directly so either failure can be
+                // rolled back instead of being swallowed by SaveSettings' broad catch. / 直接完成
+                // Profile 与元数据写入，任一步失败都可回滚，而不是被 SaveSettings 的大范围捕获吞掉。
+                Settings.UiTab = settingsGuiTab;
+                SaveCurrentProfile();
+                SaveMetaOnly();
+            }
+            catch (Exception e)
+            {
+                Settings.ProfileNames = previousNames;
+                Settings.CurrentProfile = previousCurrent;
+                if (!sameFile)
+                {
+                    try
+                    {
+                        if (File.Exists(newPath) && !File.Exists(oldPath)) File.Move(newPath, oldPath);
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        Loader.Error($"Failed to roll back profile rename: {rollbackError.Message}");
+                    }
+                }
+                try { SaveMetaOnly(); } catch { }
+                Loader.Error($"Failed to save renamed profile metadata: {e.Message}");
+            }
         }
 
         /// <summary>

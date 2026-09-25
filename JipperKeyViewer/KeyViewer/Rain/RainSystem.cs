@@ -291,10 +291,11 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public void TriggerRainEffect(int keyIndex, Key key)
         {
             if (key == null) return;
-            // Custom nodes carry their own per-node rain gate. / 自定义节点自带逐节点雨滴开关。
+            // Custom nodes carry both a per-node gate and the global row gate. / Custom 节点同时
+            // 受逐节点开关和全局雨排开关约束。
             if (key.CustomNode != null)
             {
-                if (!key.CustomNode.RainEnabled) return;
+                if (!key.CustomNode.RainEnabled || !IsCustomRainRowEnabled(key.CustomNode, isGhost: false)) return;
                 CreateRainDropForKey(keyIndex, key);
                 return;
             }
@@ -329,7 +330,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             if (key == null) return;
             if (key.CustomNode != null)
             {
-                if (!key.CustomNode.RainEnabled) return;
+                if (!key.CustomNode.RainEnabled || !IsCustomRainRowEnabled(key.CustomNode, isGhost: true)) return;
                 CreateRainDropForKey(keyIndex, key, isGhost: true);
                 return;
             }
@@ -607,6 +608,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rainActiveSet.Add(keyIndex);
                 rainActiveKeys.Add(keyIndex);
             }
+        }
+
+        private bool IsCustomRainRowEnabled(FmNode node, bool isGhost)
+        {
+            if (node == null) return false;
+            int row = Mathf.Clamp(node.RainRow, 0, 2);
+            bool rowEnabled = row == 0 ? settings.Data.EnableRainForRow1
+                : row == 1 ? settings.Data.EnableRainForRow2
+                : settings.Data.EnableRainForRow3;
+            // Ghost rain has one global enable plus the same per-row normal-rain gates; it does
+            // not define separate ghost-row enable switches in ProfileData. / 鬼雨只有一个全局
+            // 开关，并沿用普通雨排开关；ProfileData 没有独立的鬼雨排开关。
+            return rowEnabled && (!isGhost || settings.Data.EnableGhostRain);
         }
 
         private bool IsRainEnabledForKey(int keyIndex)

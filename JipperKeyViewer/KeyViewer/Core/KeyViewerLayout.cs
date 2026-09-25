@@ -1097,15 +1097,20 @@ namespace JipperKeyViewer.KeyViewer
         private void SetKpsTotalDisplay(Key key, string defaultLabel, string valueStr)
         {
             if (key == null) return;
-            bool isKps = defaultLabel == "KPS";
-            string customLabel = isKps ? Settings.Data.KpsLabel : Settings.Data.TotalLabel;
-            string label = customLabel;
+            FmNode node = key.CustomNode;
+            // Custom stat nodes carry their own label in CustomText. Fixed layouts (and legacy
+            // custom nodes with an empty field) fall back to the global labels. / Custom 统计节点
+            // 使用自己的 CustomText；固定布局或空字段回退到全局标签。
+            bool isKps = node != null ? node.NodeType == 1 : defaultLabel == "KPS";
+            string label = node != null && !string.IsNullOrEmpty(node.CustomText)
+                ? node.CustomText
+                : isKps ? Settings.Data.KpsLabel : Settings.Data.TotalLabel;
 
             // One mode resolver for fixed layouts AND custom stat nodes — the node's layout
             // override (UseCustomStatLayout) wins over the global toggles.
             // 固定布局与自定义面板节点共用同一模式解析——节点布局覆盖（UseCustomStatLayout）
             // 优先于全局开关。
-            StatTextMode(key.CustomNode, out bool slim, out bool centered, out bool stacked, out bool hideLabelMode);
+            StatTextMode(node, out bool slim, out bool centered, out bool stacked, out bool hideLabelMode);
 
             // Hide label mode: value hidden, text already centered from CreateKey
             // 隐藏标签模式：隐藏数值，文字已在 CreateKey 中居中

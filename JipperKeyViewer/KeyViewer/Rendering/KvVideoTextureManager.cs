@@ -38,6 +38,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             public int Width;
             public int Height;
             public int LastGeneration;
+            public bool Failed;
         }
 
         private static readonly Dictionary<int, Entry> entries = new Dictionary<int, Entry>();
@@ -88,7 +89,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // 没有这一步，新建的视频节点会保持黑屏直到后续重建（如拖动）再次命中 GetOrCreate。
             foreach (KeyValuePair<int, Entry> pair in entries)
             {
-                if (pair.Value != null && pair.Value.Player != null)
+                if (pair.Value != null && pair.Value.Player != null && !pair.Value.Failed)
                     EnsurePlaying(pair.Value);
             }
         }
@@ -120,6 +121,9 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 entries.Remove(nodeId);
             }
         }
+
+        public static bool HasFailed(int nodeId)
+            => entries.TryGetValue(nodeId, out Entry entry) && entry != null && entry.Failed;
 
         /// <summary>True when the path names a file this platform's VideoPlayer can open. Checks
         /// existence too, so callers can use it as the "is this node a video node" test. /
@@ -156,7 +160,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             int h = BucketSize(height);
 
             if (entries.TryGetValue(nodeId, out Entry existing) && existing != null
-                && existing.Player != null && existing.Texture != null
+                && existing.Player != null && existing.Texture != null && !existing.Failed
                 && string.Equals(existing.ResolvedPath, resolved, StringComparison.OrdinalIgnoreCase)
                 && existing.Loop == loop && existing.Width == w && existing.Height == h)
             {
@@ -181,15 +185,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
 
         private static Entry CreateEntry(int nodeId, string resolvedPath, bool loop, int width, int height)
         {
+            GameObject go = null;
+            RenderTexture texture = null;
+            VideoPlayer player = null;
             try
             {
                 EnsureRoot();
                 if (root == null) return null;
 
-                GameObject go = new GameObject("JipperKV_Video_" + nodeId);
+                go = new GameObject("JipperKV_Video_" + nodeId);
                 go.transform.SetParent(root.transform, false);
 
-                RenderTexture texture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
+                texture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
                 {
                     name = "JipperKVVideo_" + nodeId,
                     filterMode = FilterMode.Bilinear,
@@ -197,7 +204,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 };
                 texture.Create();
 
-                VideoPlayer player = go.AddComponent<VideoPlayer>();
+                player = go.AddComponent<VideoPlayer>();
                 player.playOnAwake = false;
                 // waitForFirstFrame keeps the RT from showing a stale/black frame on the very first
                 // frame; skipOnDrop lets a slow disk drop frames instead of desyncing. /
@@ -222,9 +229,9 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 // 会楔死解码线程——拆解时 Stop() 永久阻塞，游戏退出直接卡死。回调在解码器就绪
                 // 后于主线程触发，此时 Play() 恒安全。同时也修掉「视频黑屏直到下次重建」。
                 player.prepareCompleted += OnVideoPrepared;
-                player.Prepare();
+                player.errorReceived += OnVideoError;
 
-                return new Entry
+                Entry created = new Entry
                 {
                     GameObject = go,
                     Player = player,
@@ -234,10 +241,31 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     Width = width,
                     Height = height,
                 };
+                // Register before Prepare so an immediate decoder error can be associated with
+                // this entry; the error callback marks it failed and the runtime swaps to the
+                // static image on the next frame. / Prepare 前登记，错误回调即可标记条目失败，
+                // 运行时下一帧切换静态图片。
+                entries[nodeId] = created;
+                player.Prepare();
+                return created;
             }
             catch (Exception e)
             {
                 Loader.Error($"KeyViewer: video node {nodeId} failed to start: {e.Message}");
+                if (player != null)
+                {
+                    try { player.prepareCompleted -= OnVideoPrepared; player.errorReceived -= OnVideoError; player.targetTexture = null; } catch { }
+                }
+                if (texture != null)
+                {
+                    try { texture.Release(); UnityEngine.Object.Destroy(texture); } catch { }
+                }
+                if (go != null)
+                {
+                    try { UnityEngine.Object.Destroy(go); } catch { }
+                }
+                if (entries.TryGetValue(nodeId, out Entry failed) && failed != null && failed.GameObject == go)
+                    entries.Remove(nodeId);
                 return null;
             }
         }
@@ -249,9 +277,30 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             try
             {
-                if (source != null && !source.isPlaying) source.Play();
+                if (source == null) return;
+                bool registered = false;
+                foreach (KeyValuePair<int, Entry> pair in entries)
+                {
+                    if (pair.Value == null || pair.Value.Player != source) continue;
+                    registered = true;
+                    if (pair.Value.Failed) return;
+                    break;
+                }
+                if (!registered) return;
+                if (!source.isPlaying) source.Play();
             }
             catch (Exception) { /* a player that died mid-prepare is cleaned up by EndBuild / 准备途中死掉的播放器由 EndBuild 清理 */ }
+        }
+
+        private static void OnVideoError(VideoPlayer source, string message)
+        {
+            foreach (KeyValuePair<int, Entry> pair in entries)
+            {
+                if (pair.Value == null || pair.Value.Player != source) continue;
+                pair.Value.Failed = true;
+                Loader.Warning($"KeyViewer: video decode failed for node {pair.Key}: {message}");
+                break;
+            }
         }
 
         /// <summary>Resume a prepared-but-paused player (reused entries on rebuild). Never calls
@@ -262,7 +311,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// OnVideoPrepared 自动起播。</summary>
         private static void EnsurePlaying(Entry e)
         {
-            if (e == null || e.Player == null || e.Player.isPlaying) return;
+            if (e == null || e.Failed || e.Player == null || e.Player.isPlaying) return;
             try
             {
                 if (e.Player.isPrepared) e.Player.Play();
@@ -285,6 +334,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // / 先摘掉自动起播回调再停播：半拆解的播放器若迟到触发 prepareCompleted
                     // 会对它调 Play()，把解码线程楔死。
                     e.Player.prepareCompleted -= OnVideoPrepared;
+                    e.Player.errorReceived -= OnVideoError;
                     e.Player.Stop();
                     e.Player.targetTexture = null;
                 }

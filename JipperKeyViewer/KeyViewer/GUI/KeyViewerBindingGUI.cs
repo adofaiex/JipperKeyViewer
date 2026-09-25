@@ -343,6 +343,7 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Settings.Data.KpsLabel = newKpsLabel;
                 RefreshKpsTotalLabels();
+                SaveSettingsFromGui();
             }
             if (GUILayout.Button(I18n.Tr("reset"), GUILayout.Width(50)))
             {
@@ -360,6 +361,7 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Settings.Data.TotalLabel = newTotalLabel;
                 RefreshKpsTotalLabels();
+                SaveSettingsFromGui();
             }
             if (GUILayout.Button(I18n.Tr("reset"), GUILayout.Width(50)))
             {

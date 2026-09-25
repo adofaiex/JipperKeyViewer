@@ -58,6 +58,131 @@ namespace JipperKeyViewer.KeyViewer
         private const string PackageAssetsPrefix = "assets/";
         private const string PackageFontsPrefix = "fonts/";
 
+        // Import limits are deliberately checked before extraction. A .jkv is user-supplied ZIP
+        // data, so an unbounded entry count/expanded size is both a disk-exhaustion and zip-bomb
+        // risk. The limits are generous for image/video layouts but finite. / 导入前先检查大小：
+        // .jkv 是用户提供的 ZIP，无限制的条目数/展开体积会造成磁盘耗尽和 zip bomb。限制对图片/
+        // 视频布局较宽松，但不是无限。
+        private const long MaxPackageFileBytes = 512L * 1024L * 1024L;
+        private const long MaxPackageExpandedBytes = 2L * 1024L * 1024L * 1024L;
+        private const long MaxPackageEntryBytes = 512L * 1024L * 1024L;
+        private const long MaxPackageSettingsBytes = 32L * 1024L * 1024L;
+        private const int MaxPackageEntries = 4096;
+
+        private sealed class PackageImportTransaction
+        {
+            private sealed class StagedFile
+            {
+                public string StagedPath;
+                public string FinalPath;
+                public string FinalDirectory;
+            }
+
+            private readonly string stagingRoot;
+            private readonly List<StagedFile> stagedFiles = new List<StagedFile>();
+            private readonly HashSet<string> stagedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            private readonly List<string> committedFiles = new List<string>();
+            private readonly List<string> createdDirectories = new List<string>();
+            private string profilePath;
+
+            public PackageImportTransaction()
+            {
+                string modPath = Loader.ModPath;
+                if (string.IsNullOrEmpty(modPath)) throw new InvalidOperationException("Mod path is unavailable");
+                stagingRoot = Path.Combine(modPath, ".jkv-staging", Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(stagingRoot);
+            }
+
+            public void Stage(ZipArchiveEntry entry, string category, string finalRoot, string prefix)
+            {
+                string relative = GetSafePackageRelativePath(entry.FullName, prefix);
+                string finalPath = GetSafePackageTargetPath(finalRoot, relative);
+                string targetKey = finalPath;
+                if (!stagedTargets.Add(targetKey)) throw new InvalidDataException($"Duplicate package entry target: {entry.FullName}");
+
+                string stagedPath = Path.Combine(stagingRoot, category, relative);
+                string stagedDirectory = Path.GetDirectoryName(stagedPath);
+                if (!string.IsNullOrEmpty(stagedDirectory)) Directory.CreateDirectory(stagedDirectory);
+                using (Stream source = entry.Open())
+                using (FileStream target = new FileStream(stagedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    source.CopyTo(target);
+
+                stagedFiles.Add(new StagedFile
+                {
+                    StagedPath = stagedPath,
+                    FinalPath = finalPath,
+                    FinalDirectory = Path.GetDirectoryName(finalPath)
+                });
+            }
+
+            public void TrackProfile(string path)
+            {
+                if (File.Exists(path)) throw new IOException("Profile target already exists");
+                profilePath = Path.GetFullPath(path);
+            }
+
+            public void CommitFiles()
+            {
+                for (int i = 0; i < stagedFiles.Count; i++)
+                {
+                    StagedFile file = stagedFiles[i];
+                    // Local files win. Stage every entry anyway, so a local file that disappears
+                    // before commit still has a valid staged fallback. / 本地同名文件优先；仍然先
+                    // 暂存每个条目，若本地文件在提交前消失仍有有效备份。
+                    if (File.Exists(file.FinalPath)) continue;
+                    EnsureDirectory(file.FinalDirectory);
+                    File.Move(file.StagedPath, file.FinalPath);
+                    committedFiles.Add(file.FinalPath);
+                }
+            }
+
+            public void Rollback()
+            {
+                for (int i = committedFiles.Count - 1; i >= 0; i--)
+                {
+                    try { if (File.Exists(committedFiles[i])) File.Delete(committedFiles[i]); } catch { }
+                }
+                for (int i = createdDirectories.Count - 1; i >= 0; i--)
+                {
+                    try
+                    {
+                        if (Directory.Exists(createdDirectories[i]) && Directory.GetFileSystemEntries(createdDirectories[i]).Length == 0)
+                            Directory.Delete(createdDirectories[i]);
+                    }
+                    catch { }
+                }
+                try { if (!string.IsNullOrEmpty(profilePath) && File.Exists(profilePath)) File.Delete(profilePath); } catch { }
+                TryDeleteDirectory(stagingRoot);
+            }
+
+            public void Dispose()
+            {
+                TryDeleteDirectory(stagingRoot);
+            }
+
+            private void EnsureDirectory(string directory)
+            {
+                if (string.IsNullOrEmpty(directory) || Directory.Exists(directory)) return;
+                List<string> missing = new List<string>();
+                string current = Path.GetFullPath(directory);
+                while (!string.IsNullOrEmpty(current) && !Directory.Exists(current))
+                {
+                    missing.Add(current);
+                    string parent = Path.GetDirectoryName(current);
+                    if (string.Equals(parent, current, StringComparison.OrdinalIgnoreCase)) break;
+                    current = parent;
+                }
+                Directory.CreateDirectory(directory);
+                for (int i = missing.Count - 1; i >= 0; i--) createdDirectories.Add(missing[i]);
+            }
+
+            private static void TryDeleteDirectory(string path)
+            {
+                if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return;
+                try { Directory.Delete(path, true); } catch { }
+            }
+        }
+
         /// <summary>Export the named profile (plus its assets) into ModPath\Packages\. / 把指定配置
         /// （连同资源）导出到 ModPath\Packages\。</summary>
         private string ExportProfilePackage(string profileName)
@@ -92,16 +217,24 @@ namespace JipperKeyViewer.KeyViewer
             // 实时设置会让用户一按导出，正在运行的覆盖层就指向空。
             Dictionary<string, string> assets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             List<FmNode> nodes = data.CustomNodes;
-            if (nodes != null)
+            try
             {
-                for (int i = 0; i < nodes.Count; i++)
+                if (nodes != null)
                 {
-                    FmNode n = nodes[i];
-                    if (n == null) continue;
-                    n.ImagePath = CollectAsset(n.ImagePath, assets);
-                    n.ImagePathPressed = CollectAsset(n.ImagePathPressed, assets);
-                    n.VideoPath = CollectAsset(n.VideoPath, assets);
+                    for (int i = 0; i < nodes.Count; i++)
+                    {
+                        FmNode n = nodes[i];
+                        if (n == null) continue;
+                        n.ImagePath = CollectAsset(n.ImagePath, assets);
+                        n.ImagePathPressed = CollectAsset(n.ImagePathPressed, assets);
+                        n.VideoPath = CollectAsset(n.VideoPath, assets);
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: cannot collect package assets: {e.Message}");
+                return null;
             }
 
             // Bundle the profile's custom font under fonts/: a "Custom: name" selection exists
@@ -112,13 +245,51 @@ namespace JipperKeyViewer.KeyViewer
             // 会静默回退到别的字体。游戏内字体与内置 CJK/MapleStory 字体每个安装都有，绝不打包。
             string fontSelection = data.FontName;
             if (string.IsNullOrWhiteSpace(fontSelection)
-                && Settings.Data != null && fontList != null
-                && Settings.Data.FontIndex >= 0 && Settings.Data.FontIndex < fontList.Count)
-                fontSelection = fontList[Settings.Data.FontIndex].name; // legacy profiles that never stored FontName / 从未写过 FontName 的旧配置
+                && fontList != null
+                && data.FontIndex >= 0 && data.FontIndex < fontList.Count)
+                fontSelection = fontList[data.FontIndex].name; // legacy profiles that never stored FontName / 从未写过 FontName 的旧配置
             string fontFile = FindCustomFontFile(fontSelection);
+            string settingsJson;
+            string infoJson;
+            try
+            {
+                settingsJson = JsonConvert.SerializeObject(data, ProfileData.ProfileSerializer);
+                if (settingsJson.Length > MaxPackageSettingsBytes)
+                    throw new InvalidDataException("Profile settings exceed the package size limit");
+                KvPackageInfo info = new KvPackageInfo
+                {
+                    Name = profileName,
+                    ModVersion = typeof(KeyViewer).Assembly.GetName().Version?.ToString() ?? "",
+                    CanvasWidth = CanvasWidth,
+                    ScreenWidth = Screen.width,
+                    ScreenHeight = Screen.height,
+                    ExportedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+                };
+                infoJson = JsonConvert.SerializeObject(info, Formatting.Indented);
+                long expandedBytes = settingsJson.Length + infoJson.Length;
+                int entryCount = 2 + assets.Count + (fontFile == null ? 0 : 1);
+                if (entryCount > MaxPackageEntries) throw new InvalidDataException("Profile package has too many entries");
+                foreach (string source in assets.Values)
+                {
+                    long length = new FileInfo(source).Length;
+                    if (length > MaxPackageEntryBytes) throw new InvalidDataException($"Asset is too large to package: {source}");
+                    if (length > MaxPackageExpandedBytes - expandedBytes) throw new InvalidDataException("Package expanded size exceeds the safety limit");
+                    expandedBytes += length;
+                }
+                if (fontFile != null)
+                {
+                    long length = new FileInfo(fontFile).Length;
+                    if (length > MaxPackageEntryBytes) throw new InvalidDataException($"Font is too large to package: {fontFile}");
+                    if (length > MaxPackageExpandedBytes - expandedBytes) throw new InvalidDataException("Package expanded size exceeds the safety limit");
+                }
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: package size validation failed: {e.Message}");
+                return null;
+            }
 
             string packagesDir = PackagesDir;
-            Directory.CreateDirectory(packagesDir);
             string safe = SanitizeFileName(profileName);
             string outputPath = Path.Combine(packagesDir, safe + PackageExtension);
             // Overwriting an existing package is the intent (re-export after a tweak), but a
@@ -129,26 +300,20 @@ namespace JipperKeyViewer.KeyViewer
             string tempPath = outputPath + ".tmp";
             try
             {
+                Directory.CreateDirectory(packagesDir);
                 if (File.Exists(tempPath)) File.Delete(tempPath);
                 using (FileStream stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
                 using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Create))
                 {
-                    WriteEntry(archive, PackageSettingsEntry, JsonConvert.SerializeObject(data, ProfileData.ProfileSerializer));
-                    KvPackageInfo info = new KvPackageInfo
-                    {
-                        Name = profileName,
-                        ModVersion = typeof(KeyViewer).Assembly.GetName().Version?.ToString() ?? "",
-                        CanvasWidth = CanvasWidth,
-                        ScreenWidth = Screen.width,
-                        ScreenHeight = Screen.height,
-                        ExportedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
-                    };
-                    WriteEntry(archive, PackageInfoEntry, JsonConvert.SerializeObject(info, Formatting.Indented));
+                    WriteEntry(archive, PackageSettingsEntry, settingsJson);
+                    WriteEntry(archive, PackageInfoEntry, infoJson);
                     foreach (KeyValuePair<string, string> pair in assets)
                         WriteFileEntry(archive, PackageAssetsPrefix + pair.Key, pair.Value);
                     if (fontFile != null)
                         WriteFileEntry(archive, PackageFontsPrefix + Path.GetFileName(fontFile), fontFile);
                 }
+                if (new FileInfo(tempPath).Length > MaxPackageFileBytes)
+                    throw new InvalidDataException($"Package file exceeds {MaxPackageFileBytes} bytes");
                 if (File.Exists(outputPath)) File.Delete(outputPath);
                 File.Move(tempPath, outputPath);
             }
@@ -173,10 +338,19 @@ namespace JipperKeyViewer.KeyViewer
             if (resolved == null) return path;
             string fileName = Path.GetFileName(resolved);
             if (string.IsNullOrEmpty(fileName)) return path;
-            // First writer wins: the same file referenced by several nodes must not be re-registered
-            // with a different source path. / 先到者胜：同一文件被多个节点引用时不得用不同源路径
-            // 重复登记。
-            if (!assets.ContainsKey(fileName)) assets[fileName] = resolved;
+            // The same file may be referenced through different relative paths; that is safe to
+            // de-duplicate. Two DIFFERENT files with the same basename are not: exporting both
+            // under one entry would make the imported profile point at the wrong resource.
+            // 同一文件经不同相对路径引用可去重；不同文件同名则不能静默合并，否则接收方会引用错资源。
+            if (assets.TryGetValue(fileName, out string existing))
+            {
+                string a = Path.GetFullPath(existing);
+                string b = Path.GetFullPath(resolved);
+                if (!string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"Asset basename collision: {existing} and {resolved}");
+                return fileName;
+            }
+            assets[fileName] = resolved;
             return fileName;
         }
 
@@ -247,9 +421,9 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Import a package as a NEW profile (never overwriting the current one) and switch
-        /// to it. Returns a user-facing message; the profile is only created when the whole archive
-        /// validated. / 把包导入为一个「新配置」（绝不覆盖当前配置）并切换过去。返回面向用户的
-        /// 消息；仅当整个归档通过校验时才创建配置。</summary>
+        /// to it. Assets are staged and committed only after the archive/profile validates; a failed
+        /// activation rolls back the new files and metadata. / 把包导入为新配置并切换。资源先暂存，
+        /// 只有归档和 Profile 验证通过后才提交；激活失败会回滚新文件和元数据。</summary>
         private bool ImportProfilePackage(string packageName, out string message)
         {
             message = null;
@@ -260,37 +434,36 @@ namespace JipperKeyViewer.KeyViewer
                 return false;
             }
 
-            ProfileData imported;
-            KvPackageInfo info;
+            string[] previousNames = Settings.ProfileNames == null
+                ? Array.Empty<string>() : (string[])Settings.ProfileNames.Clone();
+            string previousCurrent = Settings.CurrentProfile;
+            bool metadataChanged = false;
+            bool success = false;
+            PackageImportTransaction transaction = null;
             try
             {
+                FileInfo packageInfo = new FileInfo(packagePath);
+                if (packageInfo.Length > MaxPackageFileBytes)
+                    throw new InvalidDataException($"Package file exceeds {MaxPackageFileBytes} bytes");
+
+                ProfileData imported;
+                KvPackageInfo info;
                 using (FileStream stream = File.OpenRead(packagePath))
                 using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read))
                 {
-                    ZipArchiveEntry settingsEntry = archive.GetEntry(PackageSettingsEntry);
-                    if (settingsEntry == null)
-                    {
-                        message = I18n.Tr("pkg_err_format");
-                        return false;
-                    }
-                    string json;
-                    using (Stream s = settingsEntry.Open())
-                    using (StreamReader r = new StreamReader(s))
-                        json = r.ReadToEnd();
+                    ValidatePackageArchive(archive);
+                    ZipArchiveEntry settingsEntry = archive.Entries.FirstOrDefault(e =>
+                        string.Equals((e.FullName ?? "").Replace('\\', '/'), PackageSettingsEntry, StringComparison.OrdinalIgnoreCase));
+                    if (settingsEntry == null) throw new InvalidDataException("Package settings.json is missing");
+                    string json = ReadPackageEntryText(settingsEntry, MaxPackageSettingsBytes);
+                    if (json.IndexOf("\"Count\"", StringComparison.OrdinalIgnoreCase) < 0)
+                        throw new InvalidDataException("Package settings has no Count field");
 
                     imported = new ProfileData();
                     JsonConvert.PopulateObject(json, imported, ProfileData.ProfileSerializer);
                     imported.SyncArraysFromLists();
-
-                    // Same sanity gate as LoadProfile: only a null or over-long Count cannot come
-                    // from a complete write of any version, so anything else is accepted and
-                    // resized. / 与 LoadProfile 同款健全性闸门：只有 null 或超长的 Count 不可能
-                    // 出自任何版本的完整写入，其余一律接受并重定长度。
                     if (imported.Count == null || imported.Count.Length > MaxKeySlots)
-                    {
-                        message = I18n.Tr("pkg_err_format");
-                        return false;
-                    }
+                        throw new InvalidDataException("Package Count array is invalid");
                     if (imported.Count.Length != MaxKeySlots)
                     {
                         int[] c = new int[MaxKeySlots];
@@ -299,9 +472,38 @@ namespace JipperKeyViewer.KeyViewer
                     }
 
                     info = ReadPackageInfo(archive);
-                    ExtractPackageAssets(archive);
-                    ExtractPackageFonts(archive);
+                    transaction = new PackageImportTransaction();
+                    StagePackageAssets(archive, transaction);
+                    StagePackageFonts(archive, transaction);
                 }
+
+                AdaptPackageToResolution(imported, info);
+                string baseName = string.IsNullOrWhiteSpace(info?.Name) ? packageName : info.Name;
+                string newName = null;
+                for (int attempt = 0; attempt < 1000 && newName == null; attempt++)
+                {
+                    string candidate = MakeUniqueProfileName(attempt == 0 ? baseName
+                        : baseName + " (" + (attempt + 1).ToString(CultureInfo.InvariantCulture) + ")");
+                    if (!File.Exists(GetProfilePath(candidate))) newName = candidate;
+                }
+                if (newName == null) throw new IOException("Could not allocate a unique profile name");
+
+                imported.SyncListsToArrays();
+                if (imported.DataVersion < Settings.Version) imported.DataVersion = Settings.Version;
+                Directory.CreateDirectory(ProfileDir);
+                string profilePath = GetProfilePath(newName);
+                transaction.TrackProfile(profilePath);
+                WriteAllTextSafe(profilePath, JsonConvert.SerializeObject(imported, ProfileData.ProfileSerializer));
+
+                // The profile can only resolve assets after they are in their final directories.
+                transaction.CommitFiles();
+                metadataChanged = true;
+                SyncProfilesWithDisk();
+                if (!SwitchProfile(newName)) throw new IOException($"Imported profile '{newName}' could not be activated");
+
+                success = true;
+                message = string.Format(I18n.Tr("pkg_imported"), newName);
+                return true;
             }
             catch (Exception e)
             {
@@ -309,40 +511,31 @@ namespace JipperKeyViewer.KeyViewer
                 message = string.Format(I18n.Tr("pkg_err_failed"), e.Message);
                 return false;
             }
-
-            AdaptPackageToResolution(imported, info);
-
-            // Unique name: importing the same package twice must produce two profiles, not silently
-            // replace the first. / 唯一名：同一个包导入两次必须产生两个配置，而不是静默替换第一个。
-            string newName = MakeUniqueProfileName(string.IsNullOrWhiteSpace(info?.Name) ? packageName : info.Name);
-            imported.SyncListsToArrays();
-            try
+            finally
             {
-                Directory.CreateDirectory(ProfileDir);
-                WriteAllTextSafe(GetProfilePath(newName), JsonConvert.SerializeObject(imported, ProfileData.ProfileSerializer));
+                if (!success)
+                {
+                    if (metadataChanged)
+                    {
+                        Settings.ProfileNames = previousNames;
+                        Settings.CurrentProfile = previousCurrent;
+                        try { SaveMetaOnly(); } catch { }
+                    }
+                    transaction?.Rollback();
+                }
+                transaction?.Dispose();
             }
-            catch (Exception e)
-            {
-                Loader.Error($"KeyViewer: package profile write failed: {e.Message}");
-                message = string.Format(I18n.Tr("pkg_err_failed"), e.Message);
-                return false;
-            }
-
-            SyncProfilesWithDisk();
-            SwitchProfile(newName);
-            message = string.Format(I18n.Tr("pkg_imported"), newName);
-            return true;
         }
 
         private static KvPackageInfo ReadPackageInfo(ZipArchive archive)
         {
             try
             {
-                ZipArchiveEntry entry = archive.GetEntry(PackageInfoEntry);
+                ZipArchiveEntry entry = archive.Entries.FirstOrDefault(e =>
+                    string.Equals((e.FullName ?? "").Replace('\\', '/'), PackageInfoEntry, StringComparison.OrdinalIgnoreCase));
                 if (entry == null) return null;
-                using (Stream s = entry.Open())
-                using (StreamReader r = new StreamReader(s))
-                    return JsonConvert.DeserializeObject<KvPackageInfo>(r.ReadToEnd());
+                string json = ReadPackageEntryText(entry, 256L * 1024L);
+                return JsonConvert.DeserializeObject<KvPackageInfo>(json);
             }
             catch (Exception)
             {
@@ -353,70 +546,112 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        /// <summary>Extract assets/ entries into CustomImages\. Existing files are NEVER overwritten:
-        /// a package must not be able to replace the user's own image with one of the same name, and
-        /// an already-present file is by definition the one the imported paths will resolve to. /
-        /// 把 assets/ 条目解压到 CustomImages\。绝不覆盖已存在的文件：包不得用同名文件替换用户自己
-        /// 的图片，且已存在的文件按定义就是导入后路径将解析到的那个。</summary>
-        private static void ExtractPackageAssets(ZipArchive archive)
+        private static void ValidatePackageArchive(ZipArchive archive)
         {
-            string assetsDir = Path.Combine(Loader.ModPath, "CustomImages");
-            Directory.CreateDirectory(assetsDir);
+            if (archive == null) throw new InvalidDataException("Package archive is null");
+            if (archive.Entries.Count > MaxPackageEntries)
+                throw new InvalidDataException($"Package contains too many entries ({archive.Entries.Count})");
+
+            HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            long expanded = 0;
+            bool foundSettings = false;
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
-                if (string.IsNullOrEmpty(entry.Name)) continue;
-                string fullName = entry.FullName.Replace('\\', '/');
-                if (!fullName.StartsWith(PackageAssetsPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                string relative = fullName.Substring(PackageAssetsPrefix.Length).Replace('/', Path.DirectorySeparatorChar);
-                if (string.IsNullOrWhiteSpace(relative)) continue;
+                string name = (entry.FullName ?? "").Replace('\\', '/');
+                if (string.IsNullOrEmpty(name) || !names.Add(name))
+                    throw new InvalidDataException($"Package contains an empty or duplicate entry name: {name}");
 
-                string target = Path.GetFullPath(Path.Combine(assetsDir, relative));
-                // Zip-slip guard: a crafted entry name ("../../evil.png") must not escape the assets
-                // folder. / 目录穿越防护：构造的条目名（"../../evil.png"）不得逃出资源目录。
-                string rootFull = Path.GetFullPath(assetsDir) + Path.DirectorySeparatorChar;
-                if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                long length;
+                try { length = entry.Length; }
+                catch (Exception e) { throw new InvalidDataException($"Cannot inspect package entry '{name}': {e.Message}", e); }
+                if (length < 0 || length > MaxPackageEntryBytes)
+                    throw new InvalidDataException($"Package entry is too large: {name}");
+                if (length > MaxPackageExpandedBytes - expanded)
+                    throw new InvalidDataException("Package expanded size exceeds the safety limit");
+                expanded += length;
+
+                if (string.Equals(name, PackageSettingsEntry, StringComparison.OrdinalIgnoreCase))
                 {
-                    Loader.Warning($"KeyViewer: package asset path rejected: {entry.FullName}");
-                    continue;
+                    if (length > MaxPackageSettingsBytes) throw new InvalidDataException("Package settings entry is too large");
+                    foundSettings = true;
                 }
-                if (File.Exists(target)) continue;
+                if (name.StartsWith(PackageAssetsPrefix, StringComparison.OrdinalIgnoreCase)
+                    || name.StartsWith(PackageFontsPrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!string.IsNullOrEmpty(entry.Name))
+                        GetSafePackageRelativePath(name, name.StartsWith(PackageAssetsPrefix, StringComparison.OrdinalIgnoreCase)
+                            ? PackageAssetsPrefix : PackageFontsPrefix);
+                }
+            }
+            if (!foundSettings) throw new InvalidDataException("Package settings.json is missing");
+        }
 
-                string dir = Path.GetDirectoryName(target);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                entry.ExtractToFile(target, false);
+        private static string GetSafePackageRelativePath(string fullName, string prefix)
+        {
+            string normalized = (fullName ?? "").Replace('\\', '/');
+            if (!normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Package entry is outside its resource prefix: {fullName}");
+            string relative = normalized.Substring(prefix.Length);
+            if (string.IsNullOrWhiteSpace(relative) || relative.StartsWith("/", StringComparison.Ordinal))
+                throw new InvalidDataException($"Invalid package entry path: {fullName}");
+
+            string[] parts = relative.Split('/');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string part = parts[i];
+                if (string.IsNullOrEmpty(part) || part == "." || part == ".." || part.IndexOf(':') >= 0 || part.IndexOf('\0') >= 0)
+                    throw new InvalidDataException($"Invalid package entry path: {fullName}");
+            }
+            return string.Join(Path.DirectorySeparatorChar.ToString(), parts);
+        }
+
+        private static string GetSafePackageTargetPath(string root, string relative)
+        {
+            string rootFull = Path.GetFullPath(root);
+            string target = Path.GetFullPath(Path.Combine(rootFull, relative));
+            string rootPrefix = rootFull.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!target.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Package entry escapes its target directory: {relative}");
+            return target;
+        }
+
+        private static string ReadPackageEntryText(ZipArchiveEntry entry, long maxBytes)
+        {
+            if (entry == null) return null;
+            if (entry.Length < 0 || entry.Length > maxBytes)
+                throw new InvalidDataException("Package text entry exceeds the safety limit");
+            using (Stream s = entry.Open())
+            using (StreamReader r = new StreamReader(s))
+            {
+                string text = r.ReadToEnd();
+                if (text.Length > maxBytes) throw new InvalidDataException("Package text entry exceeds the safety limit");
+                return text;
             }
         }
 
-        /// <summary>Extract fonts/ entries into CustomFont\. Same rules as the asset extraction:
-        /// existing files are never overwritten (an already-present same-named font is by
-        /// definition the local winner) and the zip-slip guard applies. Fonts are scanned once at
-        /// init, so an imported font takes effect after the next game start. / 把 fonts/ 条目解压
-        /// 到 CustomFont\。与资源解压同规则：绝不覆盖已存在文件（同名本地字体按定义优先），
-        /// 目录穿越防护同样生效。字体仅在启动时扫描一次，导入的字体下次启动游戏后生效。</summary>
-        private static void ExtractPackageFonts(ZipArchive archive)
+
+        private static void StagePackageAssets(ZipArchive archive, PackageImportTransaction transaction)
         {
-            string fontsDir = Path.Combine(Loader.ModPath, "CustomFont");
-            Directory.CreateDirectory(fontsDir);
+            string assetsDir = Path.Combine(Loader.ModPath, "CustomImages");
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue;
-                string fullName = entry.FullName.Replace('\\', '/');
-                if (!fullName.StartsWith(PackageFontsPrefix, StringComparison.OrdinalIgnoreCase)) continue;
-                string relative = fullName.Substring(PackageFontsPrefix.Length).Replace('/', Path.DirectorySeparatorChar);
-                if (string.IsNullOrWhiteSpace(relative)) continue;
+                string name = entry.FullName.Replace('\\', '/');
+                if (name.StartsWith(PackageAssetsPrefix, StringComparison.OrdinalIgnoreCase))
+                    transaction.Stage(entry, "assets", assetsDir, PackageAssetsPrefix);
+            }
+        }
 
-                string target = Path.GetFullPath(Path.Combine(fontsDir, relative));
-                string rootFull = Path.GetFullPath(fontsDir) + Path.DirectorySeparatorChar;
-                if (!target.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
-                {
-                    Loader.Warning($"KeyViewer: package font path rejected: {entry.FullName}");
-                    continue;
-                }
-                if (File.Exists(target)) continue;
-
-                string dir = Path.GetDirectoryName(target);
-                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                entry.ExtractToFile(target, false);
+        private static void StagePackageFonts(ZipArchive archive, PackageImportTransaction transaction)
+        {
+            string fontsDir = Path.Combine(Loader.ModPath, "CustomFont");
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name)) continue;
+                string name = entry.FullName.Replace('\\', '/');
+                if (name.StartsWith(PackageFontsPrefix, StringComparison.OrdinalIgnoreCase))
+                    transaction.Stage(entry, "fonts", fontsDir, PackageFontsPrefix);
             }
         }
 

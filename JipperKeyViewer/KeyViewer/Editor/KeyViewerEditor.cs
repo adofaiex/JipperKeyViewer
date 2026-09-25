@@ -202,9 +202,11 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.Width(120f));
             if (GUILayout.Button(I18n.Tr("fm_close"), GUILayout.MinWidth(42f)))
             {
-                // Closing the editor flushes any pending debounced changes. /
-                // 关闭编辑器时冲刷挂起的去抖变更。
+                // Closing the editor flushes any pending debounced changes and cancels any
+                // in-progress capture/drag so stale node references cannot eat the next keypress.
+                // 关闭编辑器时冲刷挂起的去抖变更，并取消进行中的捕获/拖拽，避免旧节点引用吞掉下一次按键。
                 editorOpen = false;
+                ClearEditorInteractionState();
                 SaveSettings();
             }
             GUILayout.EndHorizontal();
@@ -355,14 +357,12 @@ namespace JipperKeyViewer.KeyViewer
             Settings.ProfileNames = list.ToArray();
             Settings.Data = pd;
             EnsureCustomNodes();
-            editorSelection.Clear();
-            // Undo snapshots belong to the previous profile — restoring them here would write the
-            // old layout's nodes into the preset profile. Re-seed the baseline so the first edit
-            // in the new profile stays undoable. / 撤销快照属于原配置——在这里恢复会把
-            // 旧布局的节点写进预设配置。重新播种基线，使新配置里的首次编辑仍可撤销。
-            editorHistory.Clear();
-            editorBaselineSeeded = false;
-            SeedEditorHistoryBaseline();
+            // The document identity changed along with the profile. Reuse the same full
+            // transient reset as SwitchProfile so stale selections, clipboard entries, capture
+            // state, gestures, and ghost-key edges cannot cross into the preset profile.
+            // 文档身份已随 Profile 更换；复用与 SwitchProfile 相同的瞬态清理，避免旧选区、
+            // 剪贴板、捕获、手势和鬼键边沿状态进入预设 Profile。
+            ResetEditorHistoryForProfileSwitch();
             EditorMutated();
         }
 
@@ -540,6 +540,10 @@ namespace JipperKeyViewer.KeyViewer
         private void EditorWipeCanvas()
         {
             if (Settings.Data.CustomNodes.Count == 0) return;
+            foreach (FmNode node in Settings.Data.CustomNodes)
+            {
+                ClearCaptureForNode(node);
+            }
             Settings.Data.CustomNodes = new List<FmNode>();
             EnsureCustomNodes(); // wipe every group too — no members survive / 连组一并清——无成员存活
             editorSelection.Clear();
@@ -643,7 +647,7 @@ namespace JipperKeyViewer.KeyViewer
             string targetGroup = fmActiveGroupId;
             if ((type == 1 || type == 2) && GroupHasStat(targetGroup, type)) return;
             if (type != 3 && KeyLikeCountInGroup(targetGroup) >= CustomKeyNodeCap) return;
-            if (type == 3 && Settings.Data.CustomNodes.Count(n => n != null && n.NodeType == 3) >= 8) return;
+            if (type == 3 && UnboundImageCountInGroup(targetGroup) >= 8) return;
             Vector2 center = EditorViewCenter();
             FmNode node = new FmNode
             {
@@ -669,7 +673,11 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (editorSelection.Count == 0) return;
             for (int i = editorSelection.Count - 1; i >= 0; i--)
-                Settings.Data.CustomNodes.Remove(editorSelection[i]);
+            {
+                FmNode removed = editorSelection[i];
+                ClearCaptureForNode(removed);
+                Settings.Data.CustomNodes.Remove(removed);
+            }
             editorSelection.Clear();
             // Prune groups that just lost their last member. /
             // 剔除刚刚失去全部成员的组。
@@ -729,27 +737,40 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Align the selection (modes 0-5: left / horizontal-center / right / top /
-        /// vertical-center / bottom) while preserving the gaps between items. The outermost
-        /// items snap to the target edge/center and the rest keep their relative spacing. /
-        /// 对齐选区（模式 0-5：左 / 水平居中 / 右 / 顶 / 垂直居中 / 底），同时保留项目间的间隙。
-        /// 最外侧项目吸附到目标边/中心，其余项目保持相对间距。</summary>
+        /// vertical-center / bottom). Edge alignment preserves the existing gaps; center
+        /// alignment uses each node's true center so differently-sized nodes are actually
+        /// centered on the selection's center line. /
+        /// 对齐选区（模式 0-5：左 / 水平居中 / 右 / 顶 / 垂直居中 / 底）。边缘对齐保留
+        /// 原有间距；居中对齐按节点真实中心对齐，使不同尺寸的节点也真正位于选区中心线上。
+        /// </summary>
         private void EditorAlignSelection(int mode)
         {
             List<FmNode> sel = new List<FmNode>();
             foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
             if (sel.Count < 2) return;
-            PushEditorHistory();
             if (mode <= 2)
             {
                 sel.Sort((a, b) => a.X.CompareTo(b.X));
                 float minX = sel[0].X;
                 float maxX = float.MinValue;
                 foreach (FmNode n in sel) maxX = Math.Max(maxX, n.X + n.Width);
-                float target = mode == 0 ? minX : mode == 2 ? maxX - sel[sel.Count - 1].Width : minX;
-                sel[0].X = target;
-                float gap = sel[1].X - (sel[0].X + sel[0].Width);
-                for (int i = 1; i < sel.Count; i++)
-                    sel[i].X = sel[i - 1].X + sel[i - 1].Width + gap;
+                if (mode == 1)
+                {
+                    // Center every node on the selection's horizontal midpoint.  The previous
+                    // implementation used minX for this branch, making the button a no-op and
+                    // failing for nodes with different widths. / 每个节点按选区水平中点居中。
+                    // 旧实现此分支误用 minX，按钮实际不生效且无法处理不同宽度。
+                    float center = (minX + maxX) * 0.5f;
+                    foreach (FmNode n in sel) n.X = center - n.Width * 0.5f;
+                }
+                else
+                {
+                    float target = mode == 0 ? minX : maxX - sel[sel.Count - 1].Width;
+                    sel[0].X = target;
+                    float gap = sel[1].X - (sel[0].X + sel[0].Width);
+                    for (int i = 1; i < sel.Count; i++)
+                        sel[i].X = sel[i - 1].X + sel[i - 1].Width + gap;
+                }
             }
             else
             {
@@ -757,14 +778,25 @@ namespace JipperKeyViewer.KeyViewer
                 float minY = sel[0].Y;
                 float maxY = float.MinValue;
                 foreach (FmNode n in sel) maxY = Math.Max(maxY, n.Y + n.Height);
-                float target = mode == 3 ? minY : mode == 5 ? maxY - sel[sel.Count - 1].Height : minY;
-                sel[0].Y = target;
-                float gap = sel[1].Y - (sel[0].Y + sel[0].Height);
-                for (int i = 1; i < sel.Count; i++)
-                    sel[i].Y = sel[i - 1].Y + sel[i - 1].Height + gap;
+                if (mode == 4)
+                {
+                    // Same true-center rule vertically. / 垂直方向使用同样的真实中心规则。
+                    float center = (minY + maxY) * 0.5f;
+                    foreach (FmNode n in sel) n.Y = center - n.Height * 0.5f;
+                }
+                else
+                {
+                    float target = mode == 3 ? minY : maxY - sel[sel.Count - 1].Height;
+                    sel[0].Y = target;
+                    float gap = sel[1].Y - (sel[0].Y + sel[0].Height);
+                    for (int i = 1; i < sel.Count; i++)
+                        sel[i].Y = sel[i - 1].Y + sel[i - 1].Height + gap;
+                }
             }
+            // EditorPropertyChanged records the post-change state, saves, and rebuilds the
+            // overlay. Do not push a second snapshot here: doing so creates a no-op undo step.
+            // EditorPropertyChanged 已负责后置快照、保存和重建；不要再压第二条快照，否则会多出空撤销。
             EditorPropertyChanged();
-            PushEditorHistory(false);
         }
 
         /// <summary>Distribute the selection evenly along one axis: the OUTERMOST nodes stay
@@ -795,8 +827,10 @@ namespace JipperKeyViewer.KeyViewer
                 for (int i = 1; i < sel.Count - 1; i++)
                     sel[i].Y = first + step * i - sel[i].Height * 0.5f;
             }
+            // EditorPropertyChanged already records the post-change state and rebuilds the
+            // overlay; a second Push here would add a duplicate/no-op undo entry.
+            // EditorPropertyChanged 已负责后置快照和重建；再次 Push 会制造重复/空撤销。
             EditorPropertyChanged();
-            PushEditorHistory(false);
         }
 
         /// <summary>Stamp `count` copies of the selection along one axis, each offset by the
@@ -852,6 +886,9 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorMutated()
         {
+            // Keep the custom global Total derived from the document after any structural edit.
+            // 任何结构编辑后都让 Custom 全局 Total 重新跟随节点文档。
+            if (IsCustomLayout) RecalculateCustomTotalCount();
             // Structural changes save IMMEDIATELY (they are discrete, low-rate events and the
             // user's layout must survive a crash). / 结构性变更立即落盘（离散低频事件，布局必须
             // 在崩溃后存活）。
@@ -888,8 +925,10 @@ namespace JipperKeyViewer.KeyViewer
         internal void SeedEditorHistoryBaseline()
         {
             if (editorBaselineSeeded) return;
-            editorBaselineSeeded = true;
-            PushEditorHistory(false);
+            // Mark the baseline only after the snapshot call. If serialization fails, a later
+            // open/retry can seed it instead of leaving CanUndo permanently disabled.
+            // 只有快照成功后才标记基线；序列化失败时后续仍可重试，而不是永久禁用撤销。
+            editorBaselineSeeded = PushEditorHistory(false);
         }
 
         /// <summary>A profile switch swaps the whole document out from under the editor: drop the
@@ -904,11 +943,60 @@ namespace JipperKeyViewer.KeyViewer
             // The old selection/active-node/group references point into the previous document. /
             // 旧的选中项/活动节点/组引用指向上一份文档。
             editorSelection.Clear();
+            editorClipboard.Clear();
+            editorPasteSerial = 0;
             fmActiveNode = null;
             fmActiveGroupId = "";
+            ClearEditorInteractionState();
+            fmEasingPicker = null;
+            fmPropsScroll = Vector2.zero;
+            fmPresetStripOpen = false;
+            fmArrangeStripOpen = false;
+            editorNeedsCentre = true;
+            // Identity changed, so ghost edge state must not survive into the new document.
+            ResetCustomGhostStates();
+            SeedEditorHistoryBaseline();
+        }
+
+        private void ClearCaptureForNode(FmNode node)
+        {
+            if (node == null) return;
+            if (fmCaptureNode == node) fmCaptureNode = null;
+            if (fmCaptureGhostNode == node) fmCaptureGhostNode = null;
+        }
+
+        /// <summary>Cancel editor input/gesture state that belongs to the current document.
+        /// This is intentionally separate from the undo timeline: closing the window should
+        /// abort a capture/drag, while Profile/document replacement additionally clears the
+        /// timeline, selection, and clipboard. / 取消属于当前文档的编辑器输入与手势状态。
+        /// 关闭窗口只需中止捕获/拖拽；切换配置或替换文档时还会清理时间线、选区和剪贴板。 </summary>
+        private void ClearEditorInteractionState()
+        {
+            fmHasKeyFocus = false;
+            fmPointerDown = false;
+            fmGesture = FmGesture.None;
+            fmDragArmed = false;
+            fmDragMoved = false;
+            fmAxisLocked = false;
+            fmLockToX = false;
+            fmDragTotalX = 0f;
+            fmDragTotalY = 0f;
+            fmPressScreen = Vector2.zero;
+            fmPressCanvas = Vector2.zero;
+            fmMarqueeStart = Vector2.zero;
+            fmMarqueeCur = Vector2.zero;
+            fmDragStart.Clear();
+            editorSelectionAtPress.Clear();
+            fmHitBuffer.Clear();
+            fmAlignLines.Clear();
+            fmResizeHandle = -1;
+            fmResizeOrig.Clear();
+            fmResizeMoved = false;
+            fmResizeHistoryPushed = false;
+            fmSiblingW.Clear();
+            fmSiblingH.Clear();
             fmCaptureNode = null;
             fmCaptureGhostNode = null;
-            SeedEditorHistoryBaseline();
         }
 
         private string SnapshotEditorDocument()
@@ -928,7 +1016,7 @@ namespace JipperKeyViewer.KeyViewer
         /// path, true for discrete structural edits. / 把当前文档状态记为一条时间线记录。
         /// 连续编辑（滑杆/文本突发，已走 GUI 去抖保存）传 allowSave=false；离散的结构编辑传
         /// true。</summary>
-        private void PushEditorHistory(bool allowSave = true)
+        private bool PushEditorHistory(bool allowSave = true)
         {
             try
             {
@@ -937,9 +1025,10 @@ namespace JipperKeyViewer.KeyViewer
             catch (Exception e)
             {
                 Loader.Warning($"KeyViewer: editor snapshot failed: {e.Message}");
-                return;
+                return false;
             }
             if (allowSave) SaveSettings();
+            return true;
         }
 
         /// <summary>Nudge variant: coalesces a burst of continuous edits into one entry. /
@@ -2486,7 +2575,18 @@ namespace JipperKeyViewer.KeyViewer
             // CountInTotal and PerKeyKps identically). / 自定义/按压文案 + 计数开关：按键与
             // 绑定了按键的图片按键通用（图片按键与按键同样渲染标签/计数——运行时对
             // CustomText、PressedText、CountInTotal、PerKeyKps 的消费完全一致）。
-            if (first.NodeType == 0 || (first.NodeType == 3 && !string.IsNullOrWhiteSpace(first.KeyBind)))
+            if (first.NodeType == 1 || first.NodeType == 2)
+            {
+                // Stat panels have their own runtime label; unlike key nodes they do not use
+                // PressedText/CountInTotal/PerKeyKps. / 统计面板拥有独立运行时标签；不同于按键节点，
+                // 不显示按压文案、CountInTotal 或 PerKeyKps。
+                DrawEditorTextField(I18n.Tr("fm_custom_text"), "fme_ct_" + first.Id, first.CustomText, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.CustomText = v;
+                    EditorPropertyChanged();
+                }, "fm_help_custom_text");
+            }
+            else if (first.NodeType == 0 || (first.NodeType == 3 && !string.IsNullOrWhiteSpace(first.KeyBind)))
             {
                 DrawEditorTextField(I18n.Tr("fm_custom_text"), "fme_ct_" + first.Id, first.CustomText, v =>
                 {
@@ -2928,10 +3028,9 @@ namespace JipperKeyViewer.KeyViewer
             if (anyCountable)
             {
                 // Manual count entry: set the selected counting nodes' Count to ANY value, not
-                // just zero. The global TotalCount follows by each node's exact delta so the
-                // Total panels stay truthful; unselected keys are never touched.
-                // 手动输入计数：把选中计数节点的 Count 设为任意值，而非只能清零。全局
-                // TotalCount 按各节点的增减差额同步，Total 面板保持真实；未选中的按键绝不受影响。
+                // just zero. Recompute the global Total from the whole document so CountInTotal
+                // membership and existing counts cannot drift. / 手动输入计数：把选中计数节点
+                // 的 Count 设为任意值，而非只能清零；重算整份文档的全局 Total，避免开关与历史计数漂移。
                 int seedCount = 0;
                 bool hasSeed = false, countMixed = false;
                 foreach (FmNode n in editorSelection)
@@ -2951,10 +3050,9 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection)
                     {
                         if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
-                        if (n.CountInTotal) Settings.Data.TotalCount += typedCount - n.Count;
                         n.Count = typedCount;
                     }
-                    if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
+                    RecalculateCustomTotalCount();
                     RefreshAllCountDisplay();
                     PushEditorHistoryNudge();
                     SaveSettingsFromGui();
@@ -2968,16 +3066,9 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection)
                     {
                         if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
-                        // A CountInTotal key contributed exactly n.Count presses to the global
-                        // TotalCount — take only those back, never other keys' share. The clamp
-                        // guards profiles where the two counters drifted apart (hand edits).
-                        // CountInTotal 的按键恰好向全局 TotalCount 贡献了 n.Count 次——只扣回这部分，
-                        // 绝不动其它按键的份额。钳制防两个计数器失配的手改配置。
-                        if (n.CountInTotal)
-                        {
-                            Settings.Data.TotalCount -= n.Count;
-                            if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
-                        }
+                        // Recompute after the reset rather than subtracting only the currently
+                        // flagged nodes; this also repairs an already-drifted profile.
+                        // 重置后从整份文档重算，而不是只扣当前开关为 true 的节点；也能修复既有漂移。
                         n.Count = 0;
                         if (n.RuntimeKey != null)
                         {
@@ -2988,6 +3079,7 @@ namespace JipperKeyViewer.KeyViewer
                             n.RuntimeKey.LastShownKps = int.MinValue;
                         }
                     }
+                    RecalculateCustomTotalCount();
                     RefreshAllCountDisplay();
                     PushEditorHistory(false);
                     SaveSettingsFromGui();
@@ -3436,6 +3528,10 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorPropertyChanged()
         {
+            // CountInTotal is a membership switch; reconcile the global accumulator before the
+            // post-change snapshot so a toggle cannot leave Total/KPS state inconsistent.
+            // CountInTotal 是成员开关；先重算全局累计值，再记录后置快照，避免切换后 Total 状态漂移。
+            RecalculateCustomTotalCount();
             // Property edits are undoable too: record the POST-change state once per change burst
             // (the 0.4s nudge window coalesces slider drags), so Ctrl+Z steps back to the value
             // the edit started from. Without this, Ctrl+Z after a color tweak didn't revert it —
@@ -3445,18 +3541,12 @@ namespace JipperKeyViewer.KeyViewer
             // 上一个结构性操作，破坏无关改动。
             PushEditorHistoryNudge();
             SaveSettingsFromGui();
-            // If the selection contains a video node whose path was just changed, force the
-            // video texture manager to drop any stale entry for that node before the rebuild —
-            // otherwise the next GetOrCreate can reuse an old player that never prepared or
-            // played, and the video only appears after a later drag/rebuild. /
-            // 如果选中节点包含刚修改过路径的视频节点，在重建前强制视频纹理管理器丢弃该节
-            // 点的旧 entry——否则下次 GetOrCreate 可能复用一个从未 prepared/played 的旧播放器，
-            // 导致视频直到后续拖动/重建才出现。
-            foreach (FmNode n in editorSelection)
-            {
-                if (n == null || string.IsNullOrWhiteSpace(n.VideoPath)) continue;
-                KvVideoTextureManager.Release(n.Id);
-            }
+            // Video entries are generation-stamped and GetOrCreate compares path, loop and
+            // bucketed size. Do not release every selected video on unrelated property edits:
+            // that needlessly restarts the decoder for opacity/position/color changes. Path and
+            // loop changes still force replacement inside GetOrCreate. / 视频条目按代次标记管理，
+            // GetOrCreate 会比较路径、循环和分桶尺寸；不要因无关属性修改就释放选中视频，否则
+            // 透明度/位置/颜色调整都会重启解码器。路径和循环变化仍会由 GetOrCreate 自动替换。
             RequestEditorRebuild();
         }
 

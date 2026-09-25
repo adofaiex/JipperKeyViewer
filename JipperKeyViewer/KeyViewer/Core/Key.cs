@@ -75,5 +75,9 @@ namespace JipperKeyViewer.KeyViewer
         public RawImage CustomImage;
         public Texture2D CustomTexNormal;
         public Texture2D CustomTexPressed;
+        /// <summary>Active video texture for this image key, owned by KvVideoTextureManager.
+        /// Static normal/pressed textures remain available for the press overlay and fallback. /
+        /// 图片键当前视频纹理由 KvVideoTextureManager 管理；静态常态/按压纹理仍保留用于按压覆盖和回退。</summary>
+        public RenderTexture CustomVideoTexture;
     }
 }

@@ -84,6 +84,11 @@ namespace JipperKeyViewer.KeyViewer.Settings
 
         public int[] Count = new int[KeyViewer.MaxKeySlots];
         public int TotalCount;
+        /// <summary>Per-profile schema marker used to make migrations idempotent across a crash.
+        /// Older files default to 0; normal saves advance it to the current meta version. /
+        /// 单 Profile 架构标记，用于让迁移在崩溃后仍可幂等恢复。旧文件默认为 0，正常保存时
+        /// 更新到当前 meta 版本。</summary>
+        public int DataVersion;
 
         // Custom label text for KPS and Total displays / KPS 和 Total 显示的自定义标签文本
         // Default to the standard English labels. The GUI detects "user kept the default"
@@ -386,16 +391,21 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// 数组字段为空时一次性导入过渡构建的转义字符串载体；随后清空字符串，绝不再序列化。</summary>
         private void ImportLegacyCarriers()
         {
+            bool customImported = true;
+            bool groupsImported = true;
             if (!string.IsNullOrEmpty(LegacyCustomNodesJson)
                 && (CustomNodesData == null || CustomNodesData.Length == 0))
             {
                 try
                 {
-                    CustomNodesData = JsonConvert.DeserializeObject<List<FmNode>>(
-                        LegacyCustomNodesJson, ProfileSerializer)?.ToArray() ?? new FmNode[0];
+                    List<FmNode> parsed = JsonConvert.DeserializeObject<List<FmNode>>(
+                        LegacyCustomNodesJson, ProfileSerializer);
+                    if (parsed == null) throw new JsonSerializationException("legacy CustomNodesJson is null");
+                    CustomNodesData = parsed.ToArray();
                 }
                 catch (Exception e)
                 {
+                    customImported = false;
                     Loader.Warning($"KeyViewer: legacy CustomNodesJson import failed: {e.Message}");
                 }
             }
@@ -404,16 +414,22 @@ namespace JipperKeyViewer.KeyViewer.Settings
             {
                 try
                 {
-                    LayerGroupsData = JsonConvert.DeserializeObject<List<FmLayerGroup>>(
-                        LegacyLayerGroupsJson, ProfileSerializer)?.ToArray() ?? new FmLayerGroup[0];
+                    List<FmLayerGroup> parsed = JsonConvert.DeserializeObject<List<FmLayerGroup>>(
+                        LegacyLayerGroupsJson, ProfileSerializer);
+                    if (parsed == null) throw new JsonSerializationException("legacy LayerGroupsJson is null");
+                    LayerGroupsData = parsed.ToArray();
                 }
                 catch (Exception e)
                 {
+                    groupsImported = false;
                     Loader.Warning($"KeyViewer: legacy LayerGroupsJson import failed: {e.Message}");
                 }
             }
-            LegacyCustomNodesJson = null;
-            LegacyLayerGroupsJson = null;
+            // Keep a malformed carrier in the file so a later load can retry it; clearing it
+            // after only a warning would turn a recoverable parse error into silent data loss.
+            // 解析失败时保留原载体，后续加载仍可重试；只警告后清空会把可恢复错误变成静默丢失。
+            if (customImported) LegacyCustomNodesJson = null;
+            if (groupsImported) LegacyLayerGroupsJson = null;
         }
 
         /// <summary>Shared Newtonsoft settings for ProfileData. Unity struct types (Color /
