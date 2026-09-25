@@ -153,6 +153,32 @@
   （Destroy 延迟到帧末，清理器这一帧看不到）；`ApplyCustomBackgroundGradient` 对 `slot<0` 的
   死调用；节点颜色数组净化回归测试。Harness 增至 94 项。
 
+### 剩余审查项修复（2026-09-26，第 36 轮）
+- **鬼雨贴图永久改写共享贴图的 wrapMode**：`SetSprite` 把独立贴图的 wrapMode 翻成 Repeat 后
+  从不还原；同一张 PNG 若还被自定义图片节点使用，就会一直保持 Repeat 并在边缘拉色。
+  现在换精灵时还原原值。
+- **雨排映射三处各写一份**：起始 Y 按颜色字节、速度/高度按槽位或节点 RainRow、宽度又按颜色
+  字节——三者今天恰好一致，但任何一处单独改动都会变成"第 2 排速度配第 1 排宽度"。
+  现统一为 `RowFromRainByte` 一个映射。
+- **`RawRain` 逐帧回访 `KeyViewer.Settings`**：宽度在热路径上通过静态组件反向引用取值
+  （Settings 为 null 时还会 NRE），且绕过 `SyncCachedSpeeds` 缓存。现改为创建时把该排宽度解析
+  进 `NodeWidth`。
+- **`removed` 标志是死代码**：`ReturnRawRain` 把它清成 false，而它正是在同一次调用前由
+  `ReturnRawRainAndRemove` 置位的。任何"只回收、不从 rainList 移除"的调用方都会把已回收雨滴
+  当幽灵雨滴交回渲染器。现在只有从池中取出的 `GetRawRain` 才复活它。
+- **拖动任意颜色滑杆 → 每个 MouseDrag 事件（60-120/秒）重建整层覆盖层**：
+  `DrawEditorColorField` 走的是 `EditorPropertyChanged` → `RequestEditorRebuild` →
+  `ResetKeyViewer`，即销毁重建所有按键 GameObject、重置两层形状 mesh、清空全部雨滴。
+  现在实色也走就地刷新（与光效/渐变/文字渐变同款）：按键色、光效、背景/描边渐变就地重算，
+  文字样式走 `UpdateAllFonts`，雨滴只清雨滴（下一次按压即用新颜色）。
+- **拖拽吸附每帧分配**：`EditorSnapDrag`/`EmitAlignLine` 每个被拖节点每帧新建 List 与
+  float[3]（112 节点全选拖动 = 每帧数百个短命数组）。现改为复用暂存。
+- **「视频」按钮与「图片」按钮完全等价**：产出既无 ImagePath 也无 VideoPath 的未绑定节点，
+  画布上是灰色占位框，还白占该组 8 个未绑定图片名额之一。现创建后自动聚焦视频路径输入框。
+- **节点改键捕获不解除设置页的武装态**：两边同时武装时同一次物理按键会被
+  `ProcessKeySelection` 与节点捕获同时消费，顺带改掉固定布局槽位绑定。现武装前显式解除。
+- **另存为可能覆盖磁盘同名文件**（与预设新建同一类问题），现一并检查 `GetProfilePath`。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

@@ -184,7 +184,7 @@ namespace JipperKeyViewer.KeyViewer
             if (GUILayout.Button(I18n.Tr("fm_add_kps"), GUILayout.MinWidth(42f))) EditorAddNode(1);
             if (GUILayout.Button(I18n.Tr("fm_add_total"), GUILayout.MinWidth(48f))) EditorAddNode(2);
             if (GUILayout.Button(I18n.Tr("fm_add_image"), GUILayout.MinWidth(48f))) EditorAddNode(3);
-            if (GUILayout.Button(I18n.Tr("fm_add_video"), GUILayout.MinWidth(48f))) EditorAddNode(3);
+            if (GUILayout.Button(I18n.Tr("fm_add_video"), GUILayout.MinWidth(48f))) EditorAddNode(3, focusVideoPath: true);
             GUILayout.Space(6f);
             if (GUILayout.Button(I18n.Tr("fm_copy"), GUILayout.MinWidth(42f))) EditorCopySelection();
             if (GUILayout.Button(I18n.Tr("fm_paste"), GUILayout.MinWidth(42f))) EditorPaste();
@@ -656,7 +656,14 @@ namespace JipperKeyViewer.KeyViewer
                 && n.NodeType == statType && n.GroupId == groupId);
         }
 
-        private void EditorAddNode(int type)
+        /// <param name="focusVideoPath">After creating an image node, focus the video-path field so
+        /// the user can type the file straight away. The toolbar's "video" button used to call this
+        /// with the exact same arguments as the "image" button, so it produced an unbound image
+        /// node with neither ImagePath nor VideoPath — a grey placeholder that still consumed one
+        /// of the group's 8 unbound-image slots. / 创建图片节点后聚焦视频路径输入框。工具栏的
+        /// 「视频」按钮此前与「图片」按钮参数完全相同，产出的是既无 ImagePath 也无 VideoPath
+        /// 的未绑定节点——一个灰色占位框，还白占该组 8 个未绑定图片名额之一。</param>
+        private void EditorAddNode(int type, bool focusVideoPath = false)
         {
             string targetGroup = fmActiveGroupId;
             if ((type == 1 || type == 2) && GroupHasStat(targetGroup, type)) return;
@@ -679,6 +686,11 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Data.CustomNodes.Add(node);
             editorSelection.Clear();
             editorSelection.Add(node);
+            // Keep the new node the ACTIVE one so the panel (which shows the active node) and the
+            // focus target are the one just created. / 保持新节点为活动节点，使面板显示与聚焦
+            // 目标都是刚创建的这个。
+            fmActiveNode = node;
+            if (focusVideoPath) fmFocusVideoPathNextPass = true;
             PushEditorHistory(false);
             EditorMutated();
         }
@@ -1025,6 +1037,10 @@ namespace JipperKeyViewer.KeyViewer
             fmResizing = false;
             fmMinimapDrag = false;
             fmMinimapMoved = false;
+            // A pending focus request belongs to the node that was about to be typed into; after a
+            // document swap that field no longer exists. / 待处理的聚焦请求属于原本要输入的节点；
+            // 文档被替换后该字段已不存在。
+            fmFocusVideoPathNextPass = false;
             fmSiblingW.Clear();
             fmSiblingH.Clear();
             fmCaptureNode = null;
@@ -1937,12 +1953,25 @@ namespace JipperKeyViewer.KeyViewer
         /// actually aligned after the correction. / 对其它节点的左/中/右、上/中/下以及真实
         /// 屏幕三条线（左缘/中心/右缘）做对齐吸附。阈值屏幕恒定（5px/zoom）。对齐线只在
         /// 修正后确实对齐的边上输出。</summary>
+        /// <summary>Reusable scratch for EditorSnapDrag and EmitAlignLine. Both ran once per dragged
+        /// node PER FRAME and allocated a List plus several float[3] each time — with every node
+        /// selected on a 112-node document that is hundreds of short-lived arrays per frame.
+        /// EditorSnapDrag 与 EmitAlignLine 的复用暂存：二者此前每个被拖节点、每帧都要新建
+        /// List 与若干 float[3]——112 节点全选拖动时每帧数百个短命数组。</summary>
+        private readonly List<FmNode> fmSnapRefs = new List<FmNode>();
+        private readonly float[] fmSnapEdgesX = new float[3];
+        private readonly float[] fmSnapEdgesY = new float[3];
+        /// <summary>Set by the toolbar's "video" button; consumed on the next Repaint once the
+        /// video-path field exists. / 工具栏「视频」按钮置位；下次 Repaint 字段绘出后即消费。</summary>
+        private bool fmFocusVideoPathNextPass;
+
         private void EditorSnapDrag(float dx, float dy, out float corrX, out float corrY)
         {
             corrX = 0f;
             corrY = 0f;
             float snapLimit = 5f / Mathf.Max(0.05f, fmZoom);
-            List<FmNode> refs = new List<FmNode>();
+            List<FmNode> refs = fmSnapRefs;
+            refs.Clear();
             foreach (FmNode node in Settings.Data.CustomNodes)
                 if (node != null && !fmDragStart.ContainsKey(node)) refs.Add(node);
 
@@ -1954,8 +1983,10 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Vector2 start = fmDragStart[node];
                 float w = node.Width, h = node.Height;
-                float[] edgesX = { start.x + dx, start.x + dx + w * 0.5f, start.x + dx + w };
-                float[] edgesY = { start.y + dy, start.y + dy + h * 0.5f, start.y + dy + h };
+                float[] edgesX = fmSnapEdgesX;
+                float[] edgesY = fmSnapEdgesY;
+                edgesX[0] = start.x + dx; edgesX[1] = edgesX[0] + w * 0.5f; edgesX[2] = edgesX[0] + w;
+                edgesY[0] = start.y + dy; edgesY[1] = edgesY[0] + h * 0.5f; edgesY[2] = edgesY[0] + h;
 
                 void TryX(float candidate, FmNode owner)
                 {
@@ -2025,14 +2056,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             float min = float.MaxValue, max = float.MinValue;
             bool aligned = false;
+            // Reused 3-slot buffer instead of a fresh float[3] per selected node per frame.
+            // 复用 3 元素暂存数组，不再每个选中节点每帧新建。
+            float[] edges = fmSnapEdgesX;
             foreach (KeyValuePair<FmNode, Vector2> kv in fmDragStart)
             {
                 FmNode node = kv.Key;
                 float w = node.Width, h = node.Height;
                 float x = kv.Value.x + fx, y = kv.Value.y + fy;
-                float[] edges = vertical
-                    ? new[] { x, x + w * 0.5f, x + w }
-                    : new[] { y, y + h * 0.5f, y + h };
+                if (vertical) { edges[0] = x; edges[1] = x + w * 0.5f; edges[2] = x + w; }
+                else { edges[0] = y; edges[1] = y + h * 0.5f; edges[2] = y + h; }
                 foreach (float edge in edges)
                 {
                     if (Math.Abs(edge - coord) < 0.01f)
@@ -2834,7 +2867,18 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.ImagePathPressed = v;
                     EditorPropertyChanged();
                 }, "fm_help_pressed_image");
-                DrawEditorTextField(I18n.Tr("fm_video_path"), "fme_vid_" + first.Id, first.VideoPath, v =>
+                string videoCtrl = "fme_vid_" + first.Id;
+                // The toolbar's "video" button asks for focus here so the user can type the file
+                // immediately instead of hunting for the field in a long property panel. Only on
+                // the Repaint pass after creation, and only while the user is not typing.
+                // 工具栏的「视频」按钮会请求在此聚焦，让用户直接输入文件而不必在长属性面板里
+                // 找该字段。仅在创建后的下一次 Repaint 生效，且用户未在输入其它字段时。
+                if (fmFocusVideoPathNextPass && Event.current.type == EventType.Repaint && !EditorHasFocusedTextField())
+                {
+                    GUI.FocusControl(videoCtrl);
+                    fmFocusVideoPathNextPass = false;
+                }
+                DrawEditorTextField(I18n.Tr("fm_video_path"), videoCtrl, first.VideoPath, v =>
                 {
                     foreach (FmNode n in editorSelection) n.VideoPath = v;
                     EditorPropertyChanged();
@@ -3886,7 +3930,16 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.Label(I18n.Tr("fm_bind") + ": " + bound, GUILayout.Width(160f));
             bool capturing = fmCaptureNode == node;
             if (GUILayout.Button(capturing ? I18n.Tr("fm_wait_key") : I18n.Tr("fm_bind"), GUILayout.MinWidth(90f)))
+            {
+                // Arming a node capture while the SETTINGS window still has a rebind armed means one
+                // physical press is consumed by both: ProcessKeySelection polls in Update and would
+                // rebind a fixed-layout slot as well. Disarm the settings side explicitly.
+                // 在设置窗口仍处于改键捕获态时又武装节点捕获，同一次物理按键会被两边同时消费：
+                // ProcessKeySelection 在 Update 里轮询，会顺带改掉固定布局的槽位绑定。
+                SelectedKey = -1;
+                changeState = 0;
                 fmCaptureNode = capturing ? null : node;
+            }
             if (GUILayout.Button(I18n.Tr("fm_clear"), GUILayout.MinWidth(60f)))
             {
                 node.KeyBind = "";
@@ -4196,7 +4249,9 @@ namespace JipperKeyViewer.KeyViewer
             if (next != cur)
             {
                 apply(new[] { next.r, next.g, next.b, next.a });
-                EditorPropertyChanged();
+                // Colours never need the overlay rebuilt — see EditorColorPropertyChanged.
+                // 颜色永远不需要重建覆盖层——见 EditorColorPropertyChanged。
+                EditorColorPropertyChanged();
             }
         }
 
@@ -4410,6 +4465,46 @@ namespace JipperKeyViewer.KeyViewer
                 ApplyCustomBackgroundGradient(node, pressed);
                 ApplyCustomOutlineGradient(node, pressed);
             }
+        }
+
+        /// <summary>Colour-only property change: refresh every affected visual IN PLACE instead of
+        /// rebuilding the whole overlay. Dragging an R/G/B/A slider fires this on every MouseDrag
+        /// event (60-120/s), and each one used to run ResetKeyViewer — destroy and recreate every
+        /// key GameObject, re-init both shape layers and clear every rain drop. The glow, gradient
+        /// and text-gradient fields already had in-place paths; this covers the solid colours too. /
+        /// 仅颜色变更：就地刷新受影响的视觉，不再重建整层覆盖层。拖动 R/G/B/A 滑杆时每个
+        /// MouseDrag 事件都会触发它（每秒 60-120 次），此前每次都跑一遍 ResetKeyViewer——
+        /// 销毁重建所有按键 GameObject、重置两层形状 mesh 并清空全部雨滴。光效、渐变与文字
+        /// 渐变字段已有就地路径，此处把实色也纳入。</summary>
+        private void EditorColorPropertyChanged()
+        {
+            RecalculateCustomTotalCount();
+            PushEditorHistoryNudge();
+            SaveSettingsFromGui();
+            foreach (FmNode node in editorSelection)
+            {
+                if (node == null) continue;
+                bool pressed = node.RuntimeKey != null && node.RuntimeKey.isPressed;
+                if (node.RuntimeKey != null)
+                {
+                    if (node.NodeType == 0 || node.NodeType == 3) ApplyCustomKeyColors(node.RuntimeKey, node, pressed);
+                    else ApplyCustomSpecialColors(node.RuntimeKey, node, pressed);
+                }
+                ApplyCustomGlow(node, pressed);
+                ApplyCustomBackgroundGradient(node, pressed);
+                ApplyCustomOutlineGradient(node, pressed);
+            }
+            // Text outline/shadow colours live in the cached font materials (same path the
+            // outline-width/softness sliders use). / 文字描边/阴影颜色走缓存字体材质
+            // （与描边宽度/柔和度滑杆同一条路径）。
+            UpdateAllFonts();
+            TickTextGradients();
+            // Rain drop colours are baked into each drop when it is created, so in-flight drops keep
+            // the old colour. The old rebuild dropped them; clearing just the drops keeps that
+            // behaviour at a fraction of the cost (the next press picks up the new colour).
+            // 雨滴颜色在创建时烙入，在飞的雨滴仍是旧色。旧的重建路径会清空它们；这里只清雨滴，
+            // 成本低得多，且下一次按压即用新颜色。
+            rainSystem.ClearActiveDrops(Keys);
         }
 
         private void EditorPropertyChanged()

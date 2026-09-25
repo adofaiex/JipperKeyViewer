@@ -237,6 +237,13 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 计算雨滴的图层空间矩形（含雨滴跟随按压缩放）与轨迹渐变参数。起始 Y 与鬼雨偏移实时读取
         /// 设置，GUI 滑块直接作用于现有雨滴，无需容器簿记。
         /// </summary>
+        /// <summary>The single mapping from a drop's colour byte to its 0-based row. Start-Y,
+        /// width and the per-row switches must all agree, and this is the one place that decides
+        /// it — a second, independently edited copy is exactly how "row 2 speed with row 1 width"
+        /// bugs happen. / 雨滴颜色字节→0 基排号的唯一定义：起始 Y、宽度与各排开关必须一致，
+        /// 而独立维护第二份拷贝正是"第 2 排速度配第 1 排宽度"这类 bug 的成因。</summary>
+        private static int RowFromRainByte(byte color) => color == 0 ? 0 : color == 3 ? 2 : 1;
+
         private void UpdateRectAndTrail(RawRain rain, Key key, int keyIndex, Vector2 keyPos, float speed, float height)
         {
             float trailEdgeDist = rain.elapsedMs * speed;
@@ -263,7 +270,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 旧布局：275px 容器锚在按键矩形左下角，雨滴挂在容器顶中锚点上——X 以容器列居中，
             // Y 从（键底边 + 起始 Y + 容器高）起算。起始 Y（普通与鬼雨）在此实时读取，
             // 创建时烙入的 startY 被减回。
-            int ri = rain.color == 0 ? 0 : rain.color == 3 ? 2 : 1;
+            int ri = RowFromRainByte(rain.color);
             float baseStart = rain.HasTrackBase
                 ? rain.TrackBaseY + rain.StartOffsetY
                 : (rain.isGhost ? ghostRowStartYs[ri] : rowStartYs[ri]) + rain.StartOffsetY;
@@ -468,7 +475,15 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public void ReturnRawRain(RawRain r)
         {
             if (rawRainPool.Count >= MAX_RAWRAIN_POOL_SIZE) return;
-            r.removed = false;
+            // `removed` is deliberately NOT cleared here. It is set by ReturnRawRainAndRemove just
+            // before this call, and the renderers skip flagged records; clearing it made the flag
+            // dead, so any future caller that recycles WITHOUT removing the record from the key's
+            // rainList would hand a recycled drop back to the renderer as a ghost drop. Only
+            // GetRawRain — which takes the record OUT of the pool — revives it.
+            // 此处刻意不清 `removed`：它由 ReturnRawRainAndRemove 在调用前设置，渲染器会跳过
+            // 被标记的记录；清掉它等于让该标志变成死代码，将来任何"只回收、不从 rainList 移除"
+            // 的调用方都会把已回收的雨滴当幽灵雨滴交回渲染器。只有把它从池中取出的
+            // GetRawRain 才负责复活。
             r.sizeDelta = null;
             r.anchoredPosition = null;
             r.isGhost = false;
@@ -666,6 +681,23 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rawRain.StartOffsetY = g.GhostRainOffsetY;
                 rawRain.HasOffsetX = true;
                 rawRain.OffsetXOverride = g.GhostRainOffsetX;
+            }
+
+            // Resolve the row's width HERE, at creation, instead of letting RawRain reach back into
+            // the KeyViewer.Settings component on the per-frame hot path (a static back-reference
+            // that also NREs whenever Settings is null). RowFromRainByte is the single mapping from
+            // the drop's colour byte to its row, shared with the start-Y lookup in
+            // UpdateRectAndTrail so the two can never drift apart.
+            // 在创建时就解析好该排的宽度，而不是让 RawRain 在逐帧热路径上回访
+            // KeyViewer.Settings 组件（静态反向引用，Settings 为 null 时还会 NRE）。
+            // RowFromRainByte 是"颜色字节→排"的唯一定义，与 UpdateRectAndTrail 里的起始 Y
+            // 查询共用，二者不会各自漂移。
+            if (rawRain.NodeWidth <= 0f)
+            {
+                int widthRow = RowFromRainByte(key.color);
+                rawRain.NodeWidth = isGhost
+                    ? (widthRow == 0 ? settings.Data.GhostRainWidthRow1 : widthRow == 1 ? settings.Data.GhostRainWidthRow2 : settings.Data.GhostRainWidthRow3)
+                    : (widthRow == 0 ? settings.Data.RainWidthRow1 : widthRow == 1 ? settings.Data.RainWidthRow2 : settings.Data.RainWidthRow3);
             }
 
             rawRain.isGhost = isGhost;

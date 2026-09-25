@@ -92,15 +92,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 // Width floor mirrors the speed/height floors in RainSystem: typed widths are
                 // stored unclamped, and a zero/negative width drop is skipped by the renderers
                 // but would otherwise never be recycled — floor keeps it recyclable and sane.
+                // RainSystem resolves the row's global width into NodeWidth at CREATION time; this
+                // hot path therefore never reads KeyViewer.Settings (a static back-reference that
+                // also NREs when Settings is null).
                 // 宽度下限与 RainSystem 的速度/高度下限同理:键入宽度不钳制,零/负宽度雨滴
                 // 被渲染器跳过但若不设下限将永不回收——下限保证可回收且尺寸正常。
-                float w = Mathf.Max(NodeWidth > 0f ? NodeWidth : color switch
-                {
-                    0 => isGhost ? KeyViewer.Settings.Data.GhostRainWidthRow1 : KeyViewer.Settings.Data.RainWidthRow1,
-                    3 => isGhost ? KeyViewer.Settings.Data.GhostRainWidthRow3 : KeyViewer.Settings.Data.RainWidthRow3,
-                    _ => isGhost ? KeyViewer.Settings.Data.GhostRainWidthRow2 : KeyViewer.Settings.Data.RainWidthRow2
-                }, 1f);
-                FinalSize = new Vector2(w, y);
+                // 该排的全局宽度在 RainSystem 创建雨滴时就解析进 NodeWidth，因此本热路径不再
+                // 访问 KeyViewer.Settings。
+                FinalSize = new Vector2(Mathf.Max(NodeWidth, 1f), y);
             }
             if (dropY > height)
             {

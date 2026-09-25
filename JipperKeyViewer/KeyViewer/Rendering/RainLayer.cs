@@ -48,6 +48,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             MarkDirty();
         }
 
+        /// <summary>Texture whose wrapMode this layer changed to Repeat, and its original value —
+        /// restoring it on sprite change keeps a shared texture from staying mutated forever. /
+        /// 本层把 wrapMode 改成 Repeat 的贴图及其原值——换精灵时还原，避免共用贴图被永久改写。</summary>
+        private Texture wrapModeOwner;
+        private TextureWrapMode wrapModeOriginal;
+
         /// <summary>Set the ghost layer's sprite (null = ghost bodies hidden) / 设置鬼雨层贴图（null = 鬼雨本体不显示）</summary>
         public void SetSprite(Sprite sprite)
         {
@@ -55,8 +61,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // packed/atlas sprite keeps its wrap mode and falls back to per-tile quads.
             // 单四边形 UV 平铺需要 Repeat——仅在独立贴图上翻转才安全；打包/图集贴图保持原 wrap，
             // 渲染时回退为逐平铺四边形。
+            //
+            // The flip mutates a SHARED Texture2D. It used to be one-way, so a texture used
+            // elsewhere (a custom image node pointing at the same PNG, say) stayed Repeat for the
+            // rest of the session and started bleeding at its edges. Restore the previous value
+            // whenever the sprite changes.
+            // 该翻转会修改**共享** Texture2D。此前是单向的：同一张 PNG 若还被自定义图片节点使用，
+            // 就会一直保持 Repeat 并在边缘出现拉色。现在换精灵时还原上一次的值。
+            RestoreWrapMode();
             if (sprite != null && sprite.texture != null && IsStandaloneRect(sprite))
+            {
+                wrapModeOwner = sprite.texture;
+                wrapModeOriginal = sprite.texture.wrapMode;
                 sprite.texture.wrapMode = TextureWrapMode.Repeat;
+            }
             if (ghostLayer != null) ghostLayer.Sprite = sprite;
             SetVerticesDirty();
             SetMaterialDirty();
@@ -67,9 +85,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             }
         }
 
+        private void RestoreWrapMode()
+        {
+            if (wrapModeOwner == null) return;
+            if (wrapModeOwner.wrapMode == TextureWrapMode.Repeat)
+                wrapModeOwner.wrapMode = wrapModeOriginal;
+            wrapModeOwner = null;
+        }
+
         /// <summary>Whether the sprite's rect covers its whole texture (no atlas packing) / 贴图矩形是否覆盖整张贴图（无图集打包）</summary>
         internal static bool IsStandaloneRect(Sprite sprite)
         {
+            if (sprite == null || sprite.texture == null) return false;
             Rect tr = sprite.textureRect;
             Texture tex = sprite.texture;
             return tr.x <= 0.01f && tr.y <= 0.01f && tr.xMax >= tex.width - 0.01f && tr.yMax >= tex.height - 0.01f;

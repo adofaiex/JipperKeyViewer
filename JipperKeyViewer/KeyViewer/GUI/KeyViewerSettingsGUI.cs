@@ -148,11 +148,18 @@ namespace JipperKeyViewer.KeyViewer
             {
                 string name = SanitizeFileName(profileSaveAsBuffer.Trim());
                 if (string.IsNullOrEmpty(name)) return;
+                bool exists = File.Exists(GetProfilePath(name));
                 if (Settings.ProfileNames != null)
                     // Case-insensitive: on NTFS "MyProfile"/"myprofile" are the same file / 大小写不敏感:
                     // NTFS 上 "MyProfile"/"myprofile" 是同一个文件
                     foreach (var p in Settings.ProfileNames)
                         if (string.Equals(SanitizeFileName(p), name, System.StringComparison.OrdinalIgnoreCase)) return;
+                // Also refuse when the file is already on disk: ProfileNames only syncs when the
+                // list is expanded, so a manually copied (or orphaned) Profiles\*.json is invisible
+                // here and Save-As would overwrite it with the current profile's settings.
+                // 磁盘上已存在时同样拒绝：ProfileNames 只在展开列表时同步，手动拷入（或孤儿）的
+                // Profiles\*.json 在此不可见，另存为会直接用当前配置覆盖它。
+                if (exists) return;
                 var list = new List<string>(Settings.ProfileNames ?? new string[0]) { name };
                 Settings.ProfileNames = list.ToArray();
                 Settings.CurrentProfile = name;
