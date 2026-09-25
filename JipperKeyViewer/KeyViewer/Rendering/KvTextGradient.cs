@@ -61,7 +61,29 @@ namespace JipperKeyViewer.KeyViewer
 
         private void TickTextGradients()
         {
-            if (Keys == null || !HasTextGradientSettings()) return;
+            if (Keys == null) return;
+            if (!HasTextGradientSettings())
+            {
+                // No gradient anywhere, but states may still be recorded — the FreeMake editor's
+                // in-place refresh path deliberately does NOT rebuild the overlay, so turning the
+                // LAST gradient off left every affected label stuck on the white base colour that
+                // was forced while it was active. Nothing else writes the solid colour back: the
+                // press path only runs on a key edge, so the labels stayed white until the user
+                // happened to press something. Restore them here so every path that removes the
+                // last gradient (editor toggle, node delete, profile switch) is covered, not just
+                // the one that happens to rebuild.
+                // 全局已无渐变，但状态可能仍有记录——FreeMake 编辑器的就地刷新路径**刻意**不重建
+                // 覆盖层，于是关掉**最后一个**渐变会把受影响的标签永久留在「渐变生效期间强制」的
+                // 白色基色上。没有别处会写回实色：按压路径只在按键边沿跑，故标签会一直白到用户
+                // 碰巧按了某个键。在此处恢复，使「移除最后一个渐变」的所有路径（编辑器开关、
+                // 删除节点、切换配置）都被覆盖，而不只是碰巧会重建的那一条。
+                if (textGradientStates.Count == 0) return;
+                textGradientStates.Clear();
+                for (int i = 0; i < Keys.Length; i++) RestoreSolidTextColor(Keys[i]);
+                RestoreSolidTextColor(Kps);
+                RestoreSolidTextColor(Total);
+                return;
+            }
             // Drop entries whose TMP_Text was destroyed (foot-key reset, node deletion). Keeping
             // them both pins a managed reference to a dead component and keeps HasTextGradientSettings
             // true forever, so Tick would walk every key every frame with nothing to draw. / 清理已
@@ -85,6 +107,28 @@ namespace JipperKeyViewer.KeyViewer
             ApplyTextGradientToKey(Total);
         }
 
+        /// <summary>Put a key's label and count back on their solid colours, undoing the white base
+        /// that a gradient forces. Shared by the "no gradients left" sweep above and the
+        /// per-text restore when a single gradient is switched off.
+        /// 把某个按键的标签与计数恢复到实色，抵消渐变强制写入的白色基色。「全局无渐变」的清扫与
+        /// 单个渐变关闭时的逐文本恢复共用。
+        /// </summary>
+        private void RestoreSolidTextColor(Key key)
+        {
+            if (key == null) return;
+            ApplySolidTextColor(key, key.text, false);
+            ApplySolidTextColor(key, key.value, true);
+        }
+
+        private void ApplySolidTextColor(Key key, TMP_Text text, bool count)
+        {
+            if (text == null) return;
+            Color restored = ResolveSolidTextColor(key, count);
+            if (IsCustomLayout && key?.CustomNode != null)
+                restored.a *= count ? key.CustomNode.CountTextOpacity : key.CustomNode.TextOpacity;
+            text.color = restored;
+        }
+
         private void ApplyTextGradientToKey(Key key)
         {
             if (key == null) return;
@@ -100,13 +144,7 @@ namespace JipperKeyViewer.KeyViewer
             if (text == null) return;
             if (!enabled)
             {
-                if (textGradientStates.Remove(text))
-                {
-                    Color restored = ResolveSolidTextColor(key, count);
-                    if (IsCustomLayout && key?.CustomNode != null)
-                        restored.a *= count ? key.CustomNode.CountTextOpacity : key.CustomNode.TextOpacity;
-                    text.color = restored;
-                }
+                if (textGradientStates.Remove(text)) ApplySolidTextColor(key, text, count);
                 return;
             }
 
