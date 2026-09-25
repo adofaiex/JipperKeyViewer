@@ -26,6 +26,7 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using Newtonsoft.Json;
 using UnityEngine;
 
@@ -926,18 +927,60 @@ namespace JipperKeyViewer.KeyViewer
             return target;
         }
 
+        /// <summary>Read a text entry with a HARD byte ceiling that is enforced *while* reading.
+        ///
+        /// The previous version checked `entry.Length` (the central-directory value the package
+        /// itself declares) and then called ReadToEnd(), only testing `text.Length` afterwards — too
+        /// late, because the whole thing is already materialised. An entry declaring 1 byte and
+        /// inflating to 2 GB therefore passed the check and took ~4 GB of managed heap (UTF-16)
+        /// before anything noticed. The settings entry is read FIRST, before any asset is staged,
+        /// so this was the cheapest way to kill the process.
+        ///
+        /// Note the old post-hoc comparison was also off by up to 2x: it compared a CHARACTER
+        /// count against a BYTE limit.
+        /// 读取文本条目，且在**读取过程中**强制字节上限。
+        ///
+        /// 旧版先检查 `entry.Length`（由包自身声明的中央目录值），再 `ReadToEnd()`，事后才测
+        /// `text.Length`——为时已晚，因为整份内容此时已物化。一个声明 1 字节、膨胀出 2GB 的条目
+        /// 因此能通过检查，并在任何人察觉之前占用约 4GB 托管堆（UTF-16）。settings 条目是**最先**
+        /// 读取的（早于任何资源落盘），故这是最廉价的进程击杀路径。
+        ///
+        /// 注：旧的事后比较还最多差 2 倍——拿**字符**数去比**字节**上限。
+        /// </summary>
         private static string ReadPackageEntryText(ZipArchiveEntry entry, long maxBytes)
         {
             if (entry == null) return null;
             if (entry.Length < 0 || entry.Length > maxBytes)
                 throw new InvalidDataException("Package text entry exceeds the safety limit");
+            byte[] buffer = new byte[64 * 1024];
+            using (MemoryStream sink = new MemoryStream())
             using (Stream s = entry.Open())
-            using (StreamReader r = new StreamReader(s))
             {
-                string text = r.ReadToEnd();
-                if (text.Length > maxBytes) throw new InvalidDataException("Package text entry exceeds the safety limit");
-                return text;
+                long total = 0;
+                int read;
+                while ((read = s.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    total += read;
+                    if (total > maxBytes)
+                        throw new InvalidDataException("Package text entry exceeds the safety limit");
+                    sink.Write(buffer, 0, read);
+                }
+                return DecodePackageText(sink.ToArray());
             }
+        }
+
+        private static string DecodePackageText(byte[] bytes)
+        {
+            if (bytes.Length == 0) return string.Empty;
+            // Match StreamReader's default: detect and strip a UTF-8/UTF-16 BOM, otherwise UTF-8.
+            // 与 StreamReader 默认一致：识别并去掉 UTF-8/UTF-16 BOM，否则按 UTF-8 解码。
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+                return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+                return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+            return Encoding.UTF8.GetString(bytes);
         }
 
 
