@@ -1935,15 +1935,35 @@ namespace JipperKeyViewer.KeyViewer
             // anyway and left meta pointing at a deleted name until memory state re-created it.
             // 删除当前配置时先切到第一个可用项。切换失败则中止：旧代码照删正在使用的配置,
             // meta 会指向已删除的名字,直到内存状态把它重建出来为止。
-            bool wasCurrent = Settings.CurrentProfile == name;
+            // OrdinalIgnoreCase, not `==`. Everything else that compares profile names does — the
+            // rename collision check, the .jkv export, and the `seen` / `nameSeen` sets inside
+            // SyncProfilesWithDisk, which already treat case-variant names as ONE profile. Getting
+            // this one wrong in the `false` direction is destructive rather than cosmetic: the
+            // switch-away below is skipped, the in-use profile's file is unlinked while the meta
+            // still names it, and the next launch takes the "Profile not found" path and writes a
+            // fresh default — the user's layout appears to have vanished.
+            //
+            // 用 OrdinalIgnoreCase 而非 `==`。其它所有比较配置名的地方都是这样：重名检查、`.jkv`
+            // 导出、以及 SyncProfilesWithDisk 内部的 `seen` / `nameSeen` 集合——它们都把仅大小写
+            // 不同的名字视为**同一个**配置。这一处若朝 `false` 方向判错，后果是**破坏性**而非表面
+            // 的：下方的切走被跳过，正在使用的配置文件被删除而 meta 仍指着它，下次启动走
+            // 「Profile not found」并写一份全新默认值——用户的布局看起来就消失了。
+            bool wasCurrent = string.Equals(Settings.CurrentProfile, name, StringComparison.OrdinalIgnoreCase);
             if (wasCurrent)
             {
                 var others = new List<string>(Settings.ProfileNames);
-                others.Remove(name);
-                if (!SwitchProfile(others[0])) return;
+                others.RemoveAll(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase));
+                if (others.Count == 0 || !SwitchProfile(others[0])) return;
             }
+            // RemoveAll, not Remove — List<T>.Remove compares with string.Equals, i.e. ordinally, so a
+            // case-variant name would stay in the list pointing at the file we are about to unlink.
+            // Recoverable (SyncProfilesWithDisk drops entries with no file) but inconsistent with
+            // the wasCurrent test two lines above, which now ignores case.
+            // 用 RemoveAll 而非 Remove——List<T>.Remove 用 string.Equals（即 ordinal）比较，故一个
+            // 仅大小写不同的名字会留在列表里、指向我们即将删除的文件。可恢复（SyncProfilesWithDisk
+            // 会丢弃无对应文件的条目），但与上方两行现已忽略大小写的 wasCurrent 判定不一致。
             var list = new List<string>(Settings.ProfileNames);
-            list.Remove(name);
+            list.RemoveAll(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase));
             string[] previousNames = Settings.ProfileNames;
             Settings.ProfileNames = list.ToArray();
             // Update the META FIRST, then unlink. The old order deleted the file and only then
@@ -2155,7 +2175,23 @@ namespace JipperKeyViewer.KeyViewer
                 changed = true;
             }
             Settings.ProfileNames = valid.ToArray();
-            if (!valid.Contains(Settings.CurrentProfile))
+            // OrdinalIgnoreCase, matching the `seen` / `nameSeen` sets used a few lines above: this
+            // method already decided that two names differing only in case are the SAME profile, and
+            // then asked whether the current one was in the list with a case-SENSITIVE comparison.
+            // List<string>.Contains uses string.Equals, which is ordinal — so a current profile
+            // spelled with different casing than its list entry would miss here, and the "not found"
+            // branch would needlessly switch away from the profile that is already loaded.
+            // It is a no-op today (both fields always come from the same meta, so they match
+            // exactly), but the inconsistency is local and self-contradicting, and the consequence
+            // on the DeleteProfile side of the same decision is destructive.
+            //
+            // 用 OrdinalIgnoreCase，与上方几行的 `seen` / `nameSeen` 保持一致：本方法已经判定「仅
+            // 大小写不同的两个名字是**同一个**配置」，却又用**区分大小写**的比较去问当前配置是否在
+            // 列表里。List<string>.Contains 走 string.Equals（即 ordinal）——故一个大小写与其列表
+            // 条目不一致的当前配置会在此漏判，随后「找不到」分支会不必要地切走一个本已加载的配置。
+            // 今天是无操作（两个字段总是来自同一份 meta，故完全相等），但这个不一致就在同一方法
+            // 里、自相矛盾，而同一判定在 DeleteProfile 那侧的后果是**破坏性**的。
+            if (!valid.Any(v => string.Equals(v, Settings.CurrentProfile, StringComparison.OrdinalIgnoreCase)))
             {
                 SwitchProfile(valid[0]);
                 return;

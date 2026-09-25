@@ -1094,6 +1094,20 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   清空即承认「不知道屏幕上原本是什么」——这正是一次**没有发生**的切换之后该有的状态。
   `ExecuteCountReset`（GUI 的「重置计数」）本来就调它，故这是本代码库既有约定，本处只是漏了。
 
+### 配置名比较的三种写法（2026-09-26，第 69 轮）
+同一个「这两个名字指同一个配置吗？」在本文件里有**三种**比较方式：
+`OrdinalIgnoreCase`（重名检查、`.jkv` 导出）、`SyncProfilesWithDisk` 内部的 `seen`/`nameSeen`
+集合（`StringComparer.OrdinalIgnoreCase`）、以及**区分大小写**的
+`List<string>.Contains` / `List<T>.Remove` / `==`。现统一为 `OrdinalIgnoreCase`。
+
+今天全部无操作（`CurrentProfile` 与 `ProfileNames` 总来自同一份 meta，故字符串完全相等；
+且列表已按忽略大小写去重，故不可能有仅大小写不同的两个条目）。**但其中一处朝错误方向的
+判错是破坏性的**：`DeleteProfile` 的 `wasCurrent` 若为 `false`，则切走被跳过、正在使用的配置
+文件被 unlink 而 meta 仍指着它，下次启动走「Profile not found」并写一份全新默认值——
+用户的布局看起来就消失了。另两处（`others.Remove` / `list.Remove`）会让已删除的名字留在
+列表里指向刚被删的文件，可恢复但不与上方判定一致。
+与第 48 轮那条「第 40 轮自己引入的 bug」是同一类：**两条路径对同一问题给出不同答案**。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
