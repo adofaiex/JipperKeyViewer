@@ -650,6 +650,39 @@ namespace JipperKeyViewer.KeyViewer.Settings
             Converters = { new UnityStructConverter() },
         };
 
+        /// <summary>Serializer settings for the FreeMake editor's undo snapshots. Deliberately NOT
+        /// ProfileSerializer: that one is Indented, and the undo stack holds whole documents under
+        /// a 16 MB ceiling, so pretty-printing would roughly double its footprint for no benefit.
+        /// It DOES share ProfileSerializer's converter and reference-loop handling, because the two
+        /// paths serialize the SAME FmNode type and must agree on how it is written.
+        ///
+        /// Why this matters rather than being tidiness: FmNode currently stores every colour as
+        /// float[4] and marks its one Unity reference [NonSerialized], so the default settings
+        /// happen to work today. The moment someone "simplifies" one of those float[4]s to a real
+        /// Color or Vector2 — a very natural edit, and one this file already documents as a trap
+        /// for Vector4 — the profile save would keep working (it has UnityStructConverter) while
+        /// the SNAPSHOT would not, and both snapshot call sites sit inside a try/catch. The user's
+        /// undo would then silently stop recording anything, with no error anywhere. Sharing the
+        /// converter makes the two paths agree by construction instead of by coincidence.
+        /// / FreeMake 编辑器撤销快照的序列化设置。刻意**不**用 ProfileSerializer：那个是 Indented，
+        /// 而撤销栈在 16 MB 上限下保存整份文档，美化输出会近乎把占用翻倍却毫无收益。但它**共用**
+        /// ProfileSerializer 的转换器与循环引用处理——两条路径序列化的是**同一个** FmNode 类型，
+        /// 必须对它的写法达成一致。
+        ///
+        /// 这不是洁癖而是实质问题：FmNode 目前把每个颜色都存成 float[4]、并给唯一的 Unity 引用加了
+        /// [NonSerialized]，故默认设置**今天**恰好能用。但只要有人把其中某个 float[4]「简化」成真正
+        /// 的 Color 或 Vector2（非常自然的改动，且本文件已就 Vector4 记下过这个坑），配置保存会继续
+        /// 正常（它带 UnityStructConverter）而**快照**不会，且快照的两个调用点都在 try/catch 里——
+        /// 于是用户的撤销会**静默**地什么都不再记录，且任何地方都没有报错。共用转换器让两条路径
+        /// 靠构造一致，而不是靠巧合。
+        /// </summary>
+        internal static readonly JsonSerializerSettings EditorSnapshotSerializer = new JsonSerializerSettings
+        {
+            Formatting = Formatting.None,
+            ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+            Converters = { new UnityStructConverter() },
+        };
+
         /// <summary>Explicit field-only JSON for Unity struct types. /
         /// Unity 结构体类型的显式纯字段 JSON。</summary>
         internal sealed class UnityStructConverter : JsonConverter

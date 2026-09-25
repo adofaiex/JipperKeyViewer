@@ -1372,6 +1372,27 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
   `DisableKeyViewer` 里被调——那是**同步**调用，发生在替代者被创建**之前**，故无第 80 轮那种竞态。✓
 - **`colorPickerFieldSeq` / `sliderFieldSeq`**：序号计数器，无状态。✓
 
+### 撤销快照与配置保存用不同的序列化设置（2026-09-26，第 82 轮）
+「同一份数据、两条序列化路径」这一类的又一例。
+
+- **核实结论：撤销快照**今天**是正确的**。`SnapshotEditorDocument` / `RestoreEditorSnapshot` 用
+  `JsonConvert` 的**默认**设置（无 `ProfileSerializer` 的 `UnityStructConverter`、无
+  `ReferenceLoopHandling.Ignore`），一度看着像个隐患。逐条核实后确认安全：
+  - `FmNode` 带 `[JsonObject(MemberSerialization.Fields)]`——属性在**类型**上，故与传哪份设置无关；
+  - 它唯一的 Unity 引用 `RuntimeKey` 已标 `[System.NonSerialized]`（`KeyViewerSettings.cs:1223`），
+    故对象图**无环**，`ReferenceLoopHandling` 无关紧要；
+  - 所有颜色都是 `float[4]` 而非 `Color`/`Vector`，故 `UnityStructConverter` 无关紧要
+    （本文件早就记下 `Vector4` 的计算属性 `normalized` 会让 Newtonsoft 自引用、每次保存都抛异常，
+    这正是它们用 `float[]` 的原因）；
+  - `FmLayerGroup` 只有 `Id`/`Name`/`Visible` 三个纯字段。
+- **但这是一个「靠巧合成立」的不变量，已改成靠构造**：只要有人把某个 `float[4]`「简化」成真正的
+  `Color` 或 `Vector2`（非常自然的改动），**配置保存会继续正常**（它带 `UnityStructConverter`）
+  而**快照不会**；且快照的两个调用点**都在 `try/catch` 里**——于是用户的撤销会**静默**地什么都不再
+  记录，**任何地方都没有报错**。对一个「用户正是在出问题时才去用」的功能，这是最坏的失败形态。
+  现新增 `ProfileData.EditorSnapshotSerializer`：与 `ProfileSerializer` **共用**转换器与循环引用
+  处理，但 `Formatting.None`（撤销栈在 16 MB 上限下保存整份文档，美化输出会近乎把占用翻倍）。
+  序列化与反序列化两侧同时改，让两条路径对 FmNode 的写法**由构造保证一致**。
+
 ### 仍待处理（有意未修）
 - **【多秒冻结，非玩法期】每次加载器开关都重烘 58 张字形图集**：`fontList` 是**静态**而重载闸门
   `keyBackgroundSprite != null` 是**实例**字段。`Main.DisableKeyViewer` 销毁整个 GameObject，故下次

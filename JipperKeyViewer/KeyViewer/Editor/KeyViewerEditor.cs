@@ -1235,6 +1235,13 @@ namespace JipperKeyViewer.KeyViewer
                 nodes = stripped;
                 total = 0;
             }
+            // Uses EditorSnapshotSerializer, not the JsonConvert default — see its doc comment. Both
+            // this and RestoreEditorSnapshot sit inside a try/catch, so a serialization throw would
+            // not surface: undo would just silently stop recording, which is the worst possible
+            // failure mode for a feature the user reaches for precisely when something went wrong.
+            // 此处用 EditorSnapshotSerializer 而非 JsonConvert 默认设置——理由见其文档注释。本方法与
+            // RestoreEditorSnapshot 都在 try/catch 里，故序列化抛异常不会浮出：撤销只会**静默**停止
+            // 记录，而这对一项「用户正是在出问题时才去用」的功能是最坏的失败形态。
             return JsonConvert.SerializeObject(new FmDocumentSnapshot
             {
                 Nodes = nodes,
@@ -1243,7 +1250,7 @@ namespace JipperKeyViewer.KeyViewer
                 GroupNextId = Settings.Data.LayerGroupNextId,
                 TotalCount = total,
                 PreserveCounts = preserveCounts,
-            });
+            }, ProfileData.EditorSnapshotSerializer);
         }
 
         /// <summary>Record the CURRENT document state as one timeline entry. `allowSave` is false
@@ -1311,7 +1318,7 @@ namespace JipperKeyViewer.KeyViewer
             {
                 FmDocumentSnapshot doc = string.IsNullOrEmpty(snapshot)
                     ? new FmDocumentSnapshot()
-                    : JsonConvert.DeserializeObject<FmDocumentSnapshot>(snapshot);
+                    : JsonConvert.DeserializeObject<FmDocumentSnapshot>(snapshot, ProfileData.EditorSnapshotSerializer);
                 // Capture the live counters BEFORE the document is replaced (the restored nodes are
                 // fresh instances whose Count defaults to 0).
                 var liveCounts = new Dictionary<int, int>();
