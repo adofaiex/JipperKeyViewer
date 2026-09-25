@@ -4834,6 +4834,20 @@ namespace JipperKeyViewer.KeyViewer
         private void EditorTextGradientPropertyChanged()
         {
             editorInPlaceRefresh = true;
+            // The per-frame "does this document use gradients at all" scan is stamped on the node
+            // COUNT, and InvalidateGradientScanCache had no live call site outside its own file.
+            // Ticking a node's gradient toggle changes neither the count nor (with
+            // editorInPlaceRefresh) does it rebuild the overlay — so HasTextGradientSettings kept
+            // answering the stale `false` and TickTextGradients returned immediately: the toggle
+            // appeared to do nothing until something else happened to rebuild. The same stale
+            // value in the other direction (turning the LAST gradient off) pinned a full
+            // per-frame Keys loop for the rest of the session.
+            // 「本文件是否用到了渐变」的逐帧扫描按节点**数**打戳，而 InvalidateGradientScanCache 在
+            // 自身文件之外没有任何调用点。勾选节点渐变既不改节点数、也不会（因
+            // editorInPlaceRefresh）重建覆盖层——于是 HasTextGradientSettings 一直返回陈旧的
+            // false，TickTextGradients 立刻返回：勾选看起来毫无作用，直到别的事件碰巧重建。
+            // 反方向的陈旧值（关掉最后一个渐变）则让每帧全量遍历 Keys 的开销**永久**钉住。
+            InvalidateGradientScanCache();
             PushEditorHistoryNudge();
             SaveSettingsFromGui();
             foreach (FmNode node in editorSelection)

@@ -99,6 +99,26 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return new Color(arr[0], arr[1], arr[2], arr[3]);
         }
 
+        /// <summary>Sanitize a Color that came straight from profile JSON. ColorOf above covers the
+        /// node float[] arrays; these four GLOBAL outline/shadow colours are plain Color fields that
+        /// nothing else scrubs — EnsureCustomNodes only sanitizes node arrays. A shared .jkv or a
+        /// hand-edited settings.json can therefore put NaN/Inf into mat.SetColor("_OutlineColor" /
+        /// "_UnderlayColor"), which puts NaN in the fragment output (black or missing outline), and
+        /// the Color32 cache key quantises every non-finite colour to the same int so two different
+        /// broken styles collide on one material.
+        /// 直接来自配置 JSON 的 Color 净化。上面的 ColorOf 覆盖节点 float[] 数组；这四个**全局**
+        /// 描边/阴影色是普通 Color 字段，没有别处清洗——EnsureCustomNodes 只净化节点数组。于是
+        /// 他人分享的 .jkv 或手改的 settings.json 能把 NaN/Inf 送进
+        /// mat.SetColor("_OutlineColor" / "_UnderlayColor")，在片元输出里产生 NaN（描边变黑或消失），
+        /// 且 Color32 缓存键把每个非有限颜色量化成同一个 int，两个不同的坏样式会撞到同一材质。
+        /// </summary>
+        private static Color SafeColor(Color c, Color fallback)
+        {
+            if (float.IsNaN(c.r) || float.IsNaN(c.g) || float.IsNaN(c.b) || float.IsNaN(c.a)) return fallback;
+            if (float.IsInfinity(c.r) || float.IsInfinity(c.g) || float.IsInfinity(c.b) || float.IsInfinity(c.a)) return fallback;
+            return c;
+        }
+
         private static long Color32(Color c)
         {
             Color32 q = c;
@@ -142,10 +162,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 if (key)
                 {
                     s.Outline = d.EnableKeyTextOutline;
-                    s.OutlineColor = d.KeyTextOutlineColor;
+                    s.OutlineColor = SafeColor(d.KeyTextOutlineColor, Color.black);
                     s.OutlineWidth = d.KeyTextOutlineThickness;
                     s.Shadow = d.EnableKeyTextShadow;
-                    s.ShadowColor = d.KeyTextShadowColor;
+                    s.ShadowColor = SafeColor(d.KeyTextShadowColor, Color.black);
                     s.ShadowOffsetX = d.KeyTextShadowOffsetX;
                     s.ShadowOffsetY = d.KeyTextShadowOffsetY;
                     s.ShadowSoftness = d.KeyTextShadowSoftness;
@@ -153,10 +173,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 else
                 {
                     s.Outline = d.EnableCountTextOutline;
-                    s.OutlineColor = d.CountTextOutlineColor;
+                    s.OutlineColor = SafeColor(d.CountTextOutlineColor, Color.black);
                     s.OutlineWidth = d.CountTextOutlineThickness;
                     s.Shadow = d.EnableCountTextShadow;
-                    s.ShadowColor = d.CountTextShadowColor;
+                    s.ShadowColor = SafeColor(d.CountTextShadowColor, Color.black);
                     s.ShadowOffsetX = d.CountTextShadowOffsetX;
                     s.ShadowOffsetY = d.CountTextShadowOffsetY;
                     s.ShadowSoftness = d.CountTextShadowSoftness;

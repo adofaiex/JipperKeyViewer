@@ -118,14 +118,43 @@ namespace JipperKeyViewer.KeyViewer
             if (IsInvalidGradientColor(right)) right = Color.white;
             // The press path writes the SOLID text color unconditionally (ApplyCustomKeyColors /
             // UpdateKeyColors), and TMP rebuilds the mesh from m_fontColor at the end of the frame.
-            // Force the gradient's white base back BEFORE the cache early-return: otherwise the first
-            // press silently overwrites every vertex color and the label loses its gradient for the
-            // rest of the session (the label text never changes again, so nothing ever re-applies it).
+            // Force the gradient's white base back BEFORE the cache early-return — otherwise the
+            // label keeps rendering the pressed solid colour and the gradient never comes back.
+            //
+            // That white write is ITSELF the dirty trigger, though, and this is why the cache used
+            // to be wrong in the other direction: TMP_Text.color's setter sets m_havePropertiesChanged
+            // and calls SetVerticesDirty(), which registers a PreRender rebuild, and
+            // GenerateTextMesh() unconditionally repaints every vertex colour from m_fontColor32.
+            // So a press scheduled a repaint back to solid, we wrote white, the cache below saw
+            // unchanged Text/Left/Right and returned — and PreRender then repainted the whole label
+            // white. The gradient was destroyed by the very line meant to protect it, and nothing
+            // re-applied it because the label's text never changes again. The same happens when a
+            // hidden label is re-activated: SetActive(true) -> OnEnable -> SetAllDirty() registers
+            // the rebuild, and the colour is already white so the cache hits and returns.
+            //
+            // Hence the extra condition: the cache is only trusted while the mesh still actually
+            // carries the tint we wrote. TMP repaints meshInfo[].colors32 in place, so reading the
+            // first visible character's colour detects the repaint for the cost of one array read.
             // 按压路径会无条件写实色并在帧末重建 mesh；必须在缓存早退之前把渐变基色改回白色，
-            // 否则第一次按压就会把标签渐变永久抹掉。
-            if (text.color != Color.white) text.color = Color.white;
-            if (textGradientStates.TryGetValue(text, out TextGradientState state)
-                && state.Text == value && state.Left == left && state.Right == right)
+            // 否则标签会一直渲染按下实色、渐变再也回不来。
+            //
+            // 但这行白色写入**本身就是**标脏的触发器，这也正是旧缓存错在另一侧的原因：
+            // TMP_Text.color 的 setter 置 m_havePropertiesChanged 并调 SetVerticesDirty()，
+            // 注册一次 PreRender 重建，而 GenerateTextMesh() 会无条件用 m_fontColor32 重绘每个
+            // 顶点色。于是按压安排了一次回刷，按压路径写实色，本行写白色，下面的缓存看到
+            // Text/Left/Right 都没变便 return——随后 PreRender 把整条标签重绘成纯白。渐变正是被
+            // 这行本该保护它的代码毁掉的，而且因为标签文字再也不变，没有任何东西会重新应用它。
+            // 隐藏标签重新激活时同理：SetActive(true) → OnEnable → SetAllDirty() 注册重建，
+            // 而颜色已经是白色，缓存命中即 return。
+            //
+            // 故增加一个条件：只在 mesh 仍**确实**带着我们写入的着色时才信任缓存。TMP 就地重绘
+            // meshInfo[].colors32，故读第一个可见字符的颜色即能以一次数组读取检测到重绘。
+            bool baseColorChanged = text.color != Color.white;
+            if (baseColorChanged) text.color = Color.white;
+            if (!baseColorChanged
+                && textGradientStates.TryGetValue(text, out TextGradientState state)
+                && state.Text == value && state.Left == left && state.Right == right
+                && GradientStillApplied(text, left))
                 return;
 
             // Vertex colors are multiplied by TMP_Text.color. Keep the base color white while a
@@ -167,6 +196,41 @@ namespace JipperKeyViewer.KeyViewer
             }
             text.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
             textGradientStates[text] = new TextGradientState { Text = value, Left = left, Right = right };
+        }
+
+        /// <summary>Is the tint we last wrote still present in TMP's mesh? A press, a font change,
+        /// or re-activating a hidden label all schedule a PreRender rebuild, and
+        /// GenerateTextMesh() repaints every vertex colour from the (now white) base colour — so
+        /// "the inputs did not change" is NOT evidence that the rendered result did not change.
+        /// Read the first visible character's first vertex and compare it with what t=0 should be.
+        /// One array read; called only on a cache hit.
+        /// 我们上次写入的着色是否还在 TMP 的 mesh 里？按压、换字体、重新激活隐藏标签都会安排一次
+        /// PreRender 重建，而 GenerateTextMesh() 会用（此时为白色的）基色重绘每个顶点色——故
+        /// 「输入没变」**不能**证明「渲染结果没变」。读第一个可见字符的第一个顶点，与 t=0 应有
+        /// 的值比较。一次数组读取；仅在缓存命中时调用。
+        /// </summary>
+        private static bool GradientStillApplied(TMP_Text text, Color left)
+        {
+            TMP_TextInfo info = text.textInfo;
+            if (info == null || info.characterCount <= 0) return true; // nothing to tint yet
+            int charCount = info.characterCount;
+            for (int i = 0; i < charCount; i++)
+            {
+                ref TMP_CharacterInfo character = ref info.characterInfo[i];
+                if (!character.isVisible) continue;
+                int material = character.materialReferenceIndex;
+                if (material < 0 || material >= info.meshInfo.Length) continue;
+                Color32[] colors = info.meshInfo[material].colors32;
+                int vertex = character.vertexIndex;
+                if (colors == null || vertex < 0 || vertex >= colors.Length) continue;
+                float t = charCount > 1 ? (float)i / (charCount - 1) : 0f;
+                // Color32 has no == operator in this Unity version, so compare components.
+                // 该版本 Unity 的 Color32 没有 == 运算符，故逐分量比较。
+                Color32 want = Color.Lerp(left, left, t);
+                Color32 got = colors[vertex];
+                return got.r == want.r && got.g == want.g && got.b == want.b && got.a == want.a;
+            }
+            return true; // no visible glyph to check
         }
 
         private static bool IsInvalidGradientColor(Color c) =>

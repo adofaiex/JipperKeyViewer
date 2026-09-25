@@ -595,7 +595,11 @@ namespace JipperKeyViewer.KeyViewer
                     pressed ? (u ? d2.FullKeyboardBackgroundClicked : d2.BackgroundClicked) : (u ? d2.FullKeyboardBackground : d2.Background),
                     pressed ? (u ? d2.FullKeyboardOutlineClicked : d2.OutlineClicked) : (u ? d2.FullKeyboardOutline : d2.Outline));
                 key.text.color = pressed ? (u ? d2.FullKeyboardTextClicked : d2.TextClicked) : (u ? d2.FullKeyboardText : d2.Text);
-                if (key.value != null) key.value.color = key.text.color;
+                if (d2.EnableKeyTextGradient) key.text.color = Color.white;
+                if (key.value != null)
+                {
+                    key.value.color = d2.EnableCountTextGradient ? Color.white : key.text.color;
+                }
                 ApplyFixedGlow(key, i, pressed);
                 ApplyFixedBackgroundGradient(key, pressed);
                 ApplyFixedOutlineGradient(key, pressed);
@@ -607,6 +611,7 @@ namespace JipperKeyViewer.KeyViewer
                     pressed ? d.PerKeyBackgroundClicked[i] : d.PerKeyBackground[i],
                     pressed ? d.PerKeyOutlineClicked[i] : d.PerKeyOutline[i]);
                 key.text.color = pressed ? d.PerKeyTextClicked[i] : d.PerKeyText[i];
+                if (d.EnableKeyTextGradient) key.text.color = Color.white;
             }
             else
             {
@@ -614,8 +619,19 @@ namespace JipperKeyViewer.KeyViewer
                     pressed ? d.BackgroundClicked : d.Background,
                     pressed ? d.OutlineClicked : d.Outline);
                 key.text.color = pressed ? d.TextClicked : d.Text;
+                if (d.EnableKeyTextGradient) key.text.color = Color.white;
             }
-            if (key.value != null) key.value.color = key.text.color;
+            // With a glyph gradient active the solid colour must stay white: TMP's colour setter
+            // schedules a mesh rebuild that repaints every vertex from it, and the gradient pass
+            // runs earlier in the same frame so it cannot win that race. The pressed gradient
+            // variant supplies the real pressed colours. / 文字渐变生效时实色必须保持白色：TMP 的
+            // 颜色 setter 会安排一次按该色重绘所有顶点的 mesh 重建，而渐变 pass 在同一帧内跑得更早，
+            // 赢不了该竞态。按下渐变变体提供真实的按下颜色。
+            if (key.value != null)
+            {
+                if (!d.EnableCountTextGradient) key.value.color = key.text.color;
+                else key.value.color = Color.white;
+            }
             ApplyFixedGlow(key, i, pressed);
             ApplyFixedBackgroundGradient(key, pressed);
             ApplyFixedOutlineGradient(key, pressed);

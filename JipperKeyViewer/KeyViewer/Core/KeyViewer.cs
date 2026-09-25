@@ -371,6 +371,11 @@ namespace JipperKeyViewer.KeyViewer
         /// 时释放旧引用。</summary>
         private readonly Dictionary<TMP_Text, int> textStyleMaterialUse = new Dictionary<TMP_Text, int>();
         private readonly List<TMP_Text> textStyleEvictScratch = new List<TMP_Text>();
+        /// <summary>Separate scratch for evicted cache KEYS. The text scratch above is already in
+        /// use in the same method, and reusing one list for two element types would corrupt the
+        /// pending removals. / 淘汰缓存**键**的独立暂存。上面的文本暂存在同一方法里已被占用，
+        /// 一个列表存两种元素类型会破坏待删除项。</summary>
+        private readonly List<long> textStyleEvictKeyScratch = new List<long>();
         /// <summary>List of all available fonts (built-in + custom) / 所有可用字体列表（内置 + 自定义）</summary>
         static readonly List<FontEntry> fontList = new List<FontEntry>();
         /// <summary>Whether the font selection list is expanded in settings / 设置中字体选择列表是否展开</summary>

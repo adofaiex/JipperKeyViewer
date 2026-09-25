@@ -496,7 +496,16 @@ namespace JipperKeyViewer.KeyViewer
             // 粗暴淘汰会销毁某个存活文本仍在渲染的材质，让那个文本变成**空白**——比增长严重得多。
             // 因此材质由 ApplyFontMaterial 引用计数，只有无人使用的条目才会被销毁。
             textStyleMaterials[key] = mat;
-            EvictUnusedTextStyleMaterials();
+            // Exclude the entry we JUST minted. Its refcount is 0 by construction — it is the one
+            // entry guaranteed to match the eviction predicate — so without this the "which entry
+            // dies" decision can land on the material about to be returned, handing a DESTROYED
+            // Material to the caller. Object.Destroy is deferred, so the text renders once and is
+            // blank from the next frame on: exactly the failure the ref counting exists to prevent.
+            // 排除**刚**铸出的条目。它的引用计数按构造就是 0——是唯一必定匹配淘汰判据的条目——
+            // 故不加此排除时「哪条会死」的判定可能落在正要返回的材质上，把一个**已销毁**的
+            // 材质交给调用方。Object.Destroy 是延迟的，故文本会渲染一帧然后变空白——正是引用
+            // 计数要防止的那种故障。
+            EvictUnusedTextStyleMaterials(key);
             return mat;
         }
 
@@ -507,10 +516,12 @@ namespace JipperKeyViewer.KeyViewer
         private const int MaxTextStyleMaterials = 48;
 
         /// <summary>Destroy cached materials that no live TMP_Text is using, until the cache is
-        /// back under the cap. Uses a scratch list so the eviction scan never allocates. /
+        /// back under the cap. Uses a scratch list so the eviction scan never allocates.
+        /// `keepKey` is the entry the caller is about to return — it must never be the one evicted.
         /// 销毁没有任何存活 TMP_Text 正在使用的缓存材质，直到缓存回到上限以下。用暂存列表
-        /// 避免淘汰扫描产生分配。</summary>
-        private void EvictUnusedTextStyleMaterials()
+        /// 避免淘汰扫描产生分配。`keepKey` 是调用方即将返回的条目——绝不能被淘汰掉的正是它。
+        /// </summary>
+        private void EvictUnusedTextStyleMaterials(long keepKey = -1)
         {
             if (textStyleMaterials.Count <= MaxTextStyleMaterials) return;
             // Drop entries whose text was destroyed: Object.Destroy is deferred, so a destroyed
@@ -526,14 +537,34 @@ namespace JipperKeyViewer.KeyViewer
                 for (int i = 0; i < textStyleEvictScratch.Count; i++)
                     ReleaseTextMaterialUse(textStyleEvictScratch[i]);
             }
-            textStyleEvictScratch.Clear();
+            // Collect, THEN remove. The previous body called textStyleMaterials.Remove() from
+            // inside the foreach over that same dictionary: .NET invalidates the enumerator, so
+            // the very next MoveNext() threw InvalidOperationException. It only escaped notice
+            // because the `break` usually fired first — but that needs the count to reach the cap
+            // on that same iteration, which is not guaranteed, and the exception would surface
+            // in an IMGUI callback and disable the whole settings window.
+            // 先收集**再**删除。旧代码在遍历该字典的 foreach 内部调 textStyleMaterials.Remove()：
+            // .NET 会使枚举器失效，故下一次 MoveNext() 抛 InvalidOperationException。它没被发现
+            // 只是因为通常会先命中 break——但那要求恰好在同一次迭代把计数降到上限，而并无保证；
+            // 异常会浮到 IMGUI 回调里并禁用整个设置窗口。
+            textStyleEvictKeyScratch.Clear();
             foreach (KeyValuePair<long, Material> pair in textStyleMaterials)
             {
-                if (textStyleMaterials.Count <= MaxTextStyleMaterials) break;
-                if (pair.Value == null) { textStyleMaterials.Remove(pair.Key); continue; }
+                if (pair.Value == null) { textStyleEvictKeyScratch.Add(pair.Key); continue; }
+                if (pair.Key == keepKey) continue;
                 if (textStyleMaterialRefs.ContainsKey(pair.Value.GetInstanceID())) continue;
-                textStyleMaterials.Remove(pair.Key);
-                UnityEngine.Object.Destroy(pair.Value);
+                textStyleEvictKeyScratch.Add(pair.Key);
+            }
+            for (int i = 0; i < textStyleEvictKeyScratch.Count; i++)
+            {
+                long victim = textStyleEvictKeyScratch[i];
+                Material material;
+                if (textStyleMaterials.TryGetValue(victim, out material))
+                {
+                    textStyleMaterials.Remove(victim);
+                    if (material != null) UnityEngine.Object.Destroy(material);
+                }
+                if (textStyleMaterials.Count <= MaxTextStyleMaterials) break;
             }
         }
 

@@ -1467,7 +1467,17 @@ namespace JipperKeyViewer.KeyViewer
             Color txtPressed = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, d.TextClicked) : d.TextClicked;
             Color labelColor = pressed ? txtPressed : txt;
             labelColor.a *= node.TextOpacity;
-            key.text.color = labelColor;
+            // With a glyph gradient active, the SOLID colour must stay white. TMP's colour setter
+            // schedules a mesh rebuild and GenerateTextMesh() repaints every vertex from that
+            // colour, so writing the pressed solid here is what wipes the gradient; the gradient
+            // pass cannot win the race because it runs earlier in the same frame. The pressed
+            // gradient variant (resolved in ResolveTextGradient) supplies the real pressed
+            // colours, so nothing is lost.
+            // 文字渐变生效时，实色必须保持白色。TMP 的颜色 setter 会安排一次 mesh 重建，
+            // GenerateTextMesh() 会用该颜色重绘每个顶点，故在此写按下实色正是抹掉渐变的动作；
+            // 渐变 pass 在同一帧内跑得更早，赢不了这个竞态。按下渐变变体（由
+            // ResolveTextGradient 解析）提供真实的按下颜色，故不会有任何损失。
+            key.text.color = node.UseTextGradient ? Color.white : labelColor;
             if (key.value != null)
             {
                 Color countTxt = node.UseCustomCountTextColor && node.CountTextColor != null
@@ -1476,7 +1486,7 @@ namespace JipperKeyViewer.KeyViewer
                     ? NodeColor(node.CountTextColorPressed, txtPressed) : txtPressed;
                 countTxt.a *= node.CountTextOpacity;
                 countTxtP.a *= node.CountTextOpacity;
-                key.value.color = pressed ? countTxtP : countTxt;
+                key.value.color = node.UseCountTextGradient ? Color.white : (pressed ? countTxtP : countTxt);
             }
             ApplyCustomGlow(node, pressed);
             ApplyCustomBackgroundGradient(node, pressed);
@@ -1521,7 +1531,8 @@ namespace JipperKeyViewer.KeyViewer
             Color statTxtP = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, statTxt) : statTxt;
             Color labelColor = pressed ? statTxtP : statTxt;
             labelColor.a *= node.TextOpacity;
-            key.text.color = labelColor;
+            // Same gradient rule as ApplyCustomKeyColors. / 与 ApplyCustomKeyColors 同一渐变规则。
+            key.text.color = node.UseTextGradient ? Color.white : labelColor;
             if (key.value != null)
             {
                 Color countTxt = node.UseCustomCountTextColor && node.CountTextColor != null
@@ -1530,7 +1541,7 @@ namespace JipperKeyViewer.KeyViewer
                     ? NodeColor(node.CountTextColorPressed, statTxtP) : statTxtP;
                 countTxt.a *= node.CountTextOpacity;
                 countTxtP.a *= node.CountTextOpacity;
-                key.value.color = pressed ? countTxtP : countTxt;
+                key.value.color = node.UseCountTextGradient ? Color.white : (pressed ? countTxtP : countTxt);
             }
             ApplyCustomGlow(node, pressed);
             ApplyCustomBackgroundGradient(node, pressed);

@@ -635,6 +635,46 @@
 - Harness 增至 **129** 项（含「keys 非等长平行数组时统计面板仍保住自己的 statType」与
   「无 statType 的面板给出具体原因」）。
 
+### 文字渐变/样式层深审（2026-09-26，第 50 轮）
+子代理用 ilspycmd **反编译实际的 `Libs/Unity.TextMeshPro.dll`** 核实 TMP 行为（非凭记忆），
+查出第 34 轮那条「已修复」其实**并没有修好**。
+
+- **【【招牌功能失效】标签字形渐变被第一次按键永久抹掉**：第 34 轮的修法是「在缓存早退之前
+  强制白色基色」。反编译证明：TMP_Text.color 的 setter 置 `m_havePropertiesChanged` 并调
+  `SetVerticesDirty()` → 注册 PreRender 重建 → `GenerateTextMesh()` **无条件**用
+  `m_fontColor32` 重绘每个顶点色。于是：按压写实色 → 本行写白色 → 缓存比较
+  `Text/Left/Right` 全都没变 → return → PreRender 把整条标签重绘成纯白。**渐变正是被这行
+  本该保护它的代码毁掉的**，且因为标签文字再也不变，没有任何东西会重新应用它。
+  计数渐变只是因为**计数文字每次按压都变**才侥幸躲过——所以这个 bug 在最常被测的计数上
+  完全看不出来，而在标签上是致命的。
+  现两处都修：(a) 缓存多一个条件 `GradientStillApplied`——读第一个可见字符的首顶点，确认
+  mesh 里**确实**还带着我们写的着色（TMP 就地重绘 `colors32`，故一次数组读取即可检测）；
+  本帧改过 `text.color` 时直接不走早退。(b) **从源头**让按压写色变成渐变感知：
+  `ApplyCustomKeyColors` / `ApplyCustomSpecialColors` / 固定布局的 `UpdateKeyColors` 在
+  渐变生效时写 `Color.white`——因为渐变 pass 在同一帧内跑得更早，**赢不了** TMP 重建这个竞态，
+  必须在源头就不写实色。按下渐变变体提供真实的按下颜色，故无损失。
+- **【勾选节点渐变毫无作用】`InvalidateGradientScanCache` 在自身文件外零调用点**：该扫描按
+  节点**数**打戳，而勾选渐变既不改节点数、也不会（`editorInPlaceRefresh`）重建覆盖层，于是
+  `HasTextGradientSettings` 一直返回陈旧的 false。反方向的陈旧值（关掉最后一个渐变）则让每帧
+  全量遍历 `Keys` 的开销**永久**钉住，恰好抵消第 43 轮那次优化的收益。现
+  `EditorTextGradientPropertyChanged` 开头调用它，两个方向一起修好。
+- **【材质淘汰会销毁自己正要返回的材质 + 遍历中删字典抛异常】**：
+  `GetTextStyleMaterial` 先插入（引用计数按构造就是 0——**唯一**必定匹配淘汰判据的条目）再淘汰，
+  于是判定可能落在正要返回的材质上，把**已销毁**的 Material 交给调用者并赋给每个存活标签；
+  `Object.Destroy` 是延迟的，故文本渲染一帧后**变空白**。更糟的是旧代码在遍历该字典的
+  `foreach` **内部**调 `Remove`——.NET 会使枚举器失效，下一次 `MoveNext()` 抛
+  `InvalidOperationException`；它没被发现只是因为通常先命中 `break`（需恰好同一次迭代降到上限，
+  并无保证），而异常会浮到 IMGUI 回调里**禁用整个设置窗口**。现：淘汰排除刚插入的键、
+  改为先收集**再**删除（另加一个 `List<long>` 暂存——文本暂存同时在用）。
+- **【全局描边/阴影色绕过净化】**：第 39 轮加的 `ColorOf` 只覆盖节点 `float[]` 分支；这四个
+  全局 `Color` 字段（`KeyText`/`CountText` 的 `OutlineColor`、`ShadowColor`）没有任何地方清洗，
+  `EnsureCustomNodes` 也只净化节点数组。共享的 `.jkv` 或手改配置能把 NaN/Inf 送进
+  `SetColor("_OutlineColor"/"_UnderlayColor")`（片元输出 NaN → 描边变黑或消失），且 `Color32`
+  缓存键把每个非有限颜色量化成同一个 int，两个不同的坏样式撞到同一材质。现加 `SafeColor`。
+- `KvEasing.cs` 判定**干净**：26 条曲线与 Penner 定义逐条核对无误（含 1.70158/1.525 的 back
+  常数与 in-out expo 的 1e-10 守卫），字符串 switch 保留是有意决定。`SampleCurve` 全仓库无
+  调用方（死代码），但成本可忽略，未删。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
