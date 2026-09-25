@@ -67,6 +67,24 @@ namespace JipperKeyViewer.KeyViewer
         internal static bool HasThirdRow => Settings.Data.KeyViewerStyle is KeyviewerStyle.Key20 or KeyviewerStyle.Key24 or KeyviewerStyle.Custom;
         /// <summary>Maximum key slots (keys can be at indices 0..MaxKeySlots-1) / 最大键位槽数</summary>
         internal const int MaxKeySlots = 40;
+        /// <summary>Length of every per-key settings array: the 40 key slots plus the two stat
+        /// panel slots (KPS at MaxKeySlots, Total at MaxKeySlots+1).
+        ///
+        /// This was the literal `MaxKeySlots + 2` written out at eight separate sites — seven in
+        /// the migration block and one in EnsureSettingsArrays. They agree today, but a layout that
+        /// ever grew a third stat panel, or a change to MaxKeySlots applied to some copies and not
+        /// others, would silently size the per-key arrays differently from each other. The indices
+        /// are also produced separately (KeyIndex(-1) / KeyIndex(-2) in KeyViewerLayout.cs), so
+        /// the constant and the index derivation have to move together.
+        /// 每个每键设置数组的长度：40 个按键槽位加两个统计面板槽位（KPS 在 MaxKeySlots，Total 在
+        /// MaxKeySlots+1）。
+        ///
+        /// 此前是字面量 `MaxKeySlots + 2` 写在**八处**——迁移块里七处、`EnsureSettingsArrays`
+        /// 一处。今天它们一致，但只要将来多出第三个统计面板、或对 MaxKeySlots 的改动只落到部分
+        /// 副本，每键数组之间就会**静默地**长度不一。相关下标也由另一处单独产生
+        /// （KeyViewerLayout.cs 的 KeyIndex(-1) / KeyIndex(-2)），故常量与下标推导必须同步演进。
+        /// </summary>
+        internal const int PerKeySlotCount = MaxKeySlots + 2;
         /// <summary>Whether the current layout is the full 108-key keyboard / 当前布局是否为全键盘</summary>
         internal static bool IsFullKeyboard => Settings.Data.KeyViewerStyle == KeyviewerStyle.Full108;
         /// <summary>Whether the current layout is the FreeMake custom node layout / 当前布局是否为 FreeMake 自定义节点布局</summary>
@@ -1136,17 +1154,21 @@ namespace JipperKeyViewer.KeyViewer
             // 36-era files also carried shorter PerKey color arrays (38 = 36+2): the shifts below
             // only write inside the old length, so a dormant profile with footSize 16 silently
             // dropped the tail slots. Resize first — the tail fills from the profile's own global
-            // colors, the same fill EnsureSettingsArrays applies for a newer build.
+            // colors, using the SAME per-row rule EnsureSettingsArrays applies for a newer build
+            // (the rain array resolves per rain row, not flat row-1; see
+            // ProfileData.DefaultPerKeyRainColor).
             // 36-era 文件的 PerKey 颜色数组同样更短（38 = 36+2）：平移只写入旧长度之内，休眠
             // Profile 带 16 脚键时会把尾部槽位静默丢掉。先重定长度，尾部用该 Profile 自己的
-            // 全局色填充。
-            pd.PerKeyBackground = EnsureColorArray(pd.PerKeyBackground, MaxKeySlots + 2, pd.Background);
-            pd.PerKeyBackgroundClicked = EnsureColorArray(pd.PerKeyBackgroundClicked, MaxKeySlots + 2, pd.BackgroundClicked);
-            pd.PerKeyOutline = EnsureColorArray(pd.PerKeyOutline, MaxKeySlots + 2, pd.Outline);
-            pd.PerKeyOutlineClicked = EnsureColorArray(pd.PerKeyOutlineClicked, MaxKeySlots + 2, pd.OutlineClicked);
-            pd.PerKeyText = EnsureColorArray(pd.PerKeyText, MaxKeySlots + 2, pd.Text);
-            pd.PerKeyTextClicked = EnsureColorArray(pd.PerKeyTextClicked, MaxKeySlots + 2, pd.TextClicked);
-            pd.PerKeyRainColor = EnsureColorArray(pd.PerKeyRainColor, MaxKeySlots + 2, pd.RainColor);
+            // 全局色填充，并采用与新版 EnsureSettingsArrays **相同**的按排规则（雨色数组按雨排
+            // 解析，而非一律第 1 排——见 ProfileData.DefaultPerKeyRainColor）。
+            pd.PerKeyBackground = EnsureColorArray(pd.PerKeyBackground, PerKeySlotCount, pd.Background);
+            pd.PerKeyBackgroundClicked = EnsureColorArray(pd.PerKeyBackgroundClicked, PerKeySlotCount, pd.BackgroundClicked);
+            pd.PerKeyOutline = EnsureColorArray(pd.PerKeyOutline, PerKeySlotCount, pd.Outline);
+            pd.PerKeyOutlineClicked = EnsureColorArray(pd.PerKeyOutlineClicked, PerKeySlotCount, pd.OutlineClicked);
+            pd.PerKeyText = EnsureColorArray(pd.PerKeyText, PerKeySlotCount, pd.Text);
+            pd.PerKeyTextClicked = EnsureColorArray(pd.PerKeyTextClicked, PerKeySlotCount, pd.TextClicked);
+            pd.PerKeyRainColor = ProfileData.EnsureRainColorArray(
+                pd.PerKeyRainColor, PerKeySlotCount, pd.RainColor, pd.RainColor2, pd.RainColor3);
             Array.Copy(pd.Count, oldBase, pd.Count, FootKeyBase, footSize);
             // Gap-only clear — the full-range clear overlapped the just-copied entries
             // when footSize > (FootKeyBase - oldBase).
@@ -1381,7 +1403,7 @@ namespace JipperKeyViewer.KeyViewer
                 Array.Copy(Settings.Data.Count, c, Math.Min(Settings.Data.Count.Length, MaxKeySlots));
                 Settings.Data.Count = c;
             }
-            int n = MaxKeySlots + 2;
+            int n = PerKeySlotCount;
             Settings.Data.PerKeyBackground = EnsureColorArray(Settings.Data.PerKeyBackground, n, Settings.Data.Background);
             Settings.Data.PerKeyBackgroundClicked = EnsureColorArray(Settings.Data.PerKeyBackgroundClicked, n, Settings.Data.BackgroundClicked);
             Settings.Data.PerKeyOutline = EnsureColorArray(Settings.Data.PerKeyOutline, n, Settings.Data.Outline);

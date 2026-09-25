@@ -794,10 +794,25 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// </summary>
         internal static Color DefaultPerKeyRainColor(int i)
         {
-            if (i < 8) return KeyViewer.RainColor;
-            if (i < 16) return KeyViewer.RainColor2;
-            if (i < KeyViewer.FootKeyBase) return KeyViewer.RainColor3;
-            return KeyViewer.RainColor;
+            return DefaultPerKeyRainColor(i, KeyViewer.RainColor, KeyViewer.RainColor2, KeyViewer.RainColor3);
+        }
+
+        /// <summary>Same per-row rule, resolved against an explicit set of row colours so a
+        /// migration resizing one specific profile fills that profile's OWN globals rather than
+        /// whatever the currently-loaded settings happen to hold. The v4→v5 migration explicitly
+        /// documented that it filled "the same fill EnsureSettingsArrays applies" — which stopped
+        /// being true when that path became per-row, leaving a third copy of the rule behind.
+        /// 同一条按排规则，但用显式给出的一组排色解析，使某次迁移在为**特定** Profile 重定长度时
+        /// 填的是该 Profile **自己**的全局色，而不是当前已加载配置里碰巧的值。v4→v5 迁移的注释
+        /// 明确写着它填的是「EnsureSettingsArrays 所用的同一种填充」——而那条路径改成按排之后
+        /// 这句话就不再为真，于是规则的第三份副本被留在了原地。
+        /// </summary>
+        internal static Color DefaultPerKeyRainColor(int i, Color row1, Color row2, Color row3)
+        {
+            if (i < 8) return row1;
+            if (i < 16) return row2;
+            if (i < KeyViewer.FootKeyBase) return row3;
+            return row1;
         }
 
         private static Color[] SafeEnsureRain(Color[] arr, int len)
@@ -812,6 +827,19 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// <summary>Same contract as the ctor path, for callers outside this file (EnsureSettingsArrays).
         /// 与构造函数那条路径同契约，供本文件之外（EnsureSettingsArrays）调用。</summary>
         internal static Color[] EnsureRainColorArray(Color[] arr, int len) => SafeEnsureRain(arr, len);
+
+        /// <summary>Per-row variant for migrations, which resizes one specific profile and must use
+        /// THAT profile's globals. / 按排版本，供迁移使用——它重定的是特定 Profile 的长度，
+        /// 必须用**该 Profile** 自己的全局色。
+        /// </summary>
+        internal static Color[] EnsureRainColorArray(Color[] arr, int len, Color row1, Color row2, Color row3)
+        {
+            if (arr != null && arr.Length == len) return arr;
+            Color[] r = new Color[len];
+            for (int i = 0; i < len; i++) r[i] = DefaultPerKeyRainColor(i, row1, row2, row3);
+            if (arr != null) Array.Copy(arr, r, Math.Min(arr.Length, len));
+            return r;
+        }
 
         private static Color[] SafeEnsure(Color[] arr, int len, Color fill)
         {

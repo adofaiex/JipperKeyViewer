@@ -960,6 +960,23 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
 规范化，故不存在「被持久化却无法求值」的名字；`ProfileData` 每个数组字段都被 `EnsureSettingsArrays`
 定长、42-vs-105 的不匹配在全部 6 个读取点都有守卫；三个文件里没有任何 `readonly` 集合被重新赋值。
 
+### 收敛重复的每键槽位常量（2026-09-26，第 63 轮）
+- **`MaxKeySlots + 2` 字面量写了 11 处**（迁移块 7 处 + `EnsureSettingsArrays` 1 处 + 其它 3 处）。
+  今天全部一致，但只要将来多出第三个统计面板、或对 `MaxKeySlots` 的改动只落到部分副本，
+  七个每键数组之间就会**静默地**长度不一——而数组长度不一致恰恰就是「OnGUI 里越界 → 整个
+  设置窗口失效」那一类。现提为具名常量 `KeyViewer.PerKeySlotCount`。
+  （相关下标由另一处单独产生：`KeyViewerLayout.cs` 的 `KeyIndex(-1)`/`KeyIndex(-2)`，
+  常量与下标推导必须同步演进——已写进常量注释。）
+- **第 62 轮的每键雨色修复暴露了一处「注释承诺的��变量代码已不再维护」**：v4→v5 迁移的注释
+  明确写着尾部「用的是与新版 `EnsureSettingsArrays` **相同**的填充」——而那条路径改成按排之后
+  这句话就不再为真，于是规则的**第三份**副本被原地留下（仍是平铺第 1 排）。
+  这正是本项目最高产的缺陷类型：重复实现的逻辑会静默分叉。
+  现新增 `DefaultPerKeyRainColor(int i, Color row1, Color row2, Color row3)` 重载，迁移用该
+  Profile **自己**的三个全局色解析，而不是当前已加载配置里碰巧的值。
+- 教训记录：PowerShell 的 `-replace 'MaxKeySlots \+ 2'` **把常量的定义与注释一起替换了**，
+  产出 `internal const int PerKeySlotCount = PerKeySlotCount;`。靠编译前的实际输出发现并用
+  `edit` 工具修回；**不要**用脚本做这种全文件替换。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
