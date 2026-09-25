@@ -1182,6 +1182,27 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   ≈210 次引用比较/帧」曾被以「属噪声、不值得回归风险」推迟——**分配**部分其实早已解决，剩下
   的只是比较次数，在 108 键规模下确实无意义。维持不改动。
 
+### 不可重犯清单的核验（2026-09-26，第 73 轮）
+AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，但**从未被系统核验过**——即它可能已经
+腐化。本轮逐条核对，**六条全部完好**：
+
+1. **108K 无雨**：`RainSystem.cs` 两处 `if (KeyViewer.IsFullKeyboard) return;` 仍在（雨滴生成 +
+   `IsRainEnabledForKey`）。✓
+2. **不复制 Quartz 代码**：全仓库 `GPL` / `Copyright … Quartz` 扫描只命中**一条注释**，即
+   `KeyViewerDmNoteImport.cs` 开头声明「本导入器刻意独立于 Quartz 的 GPL 实现」。✓
+3. **颜色/文字输入不触发 `ResetKeyViewer()`**：`KeyViewerColorGUI.cs` 与 `KeyViewerSettingsGUI.cs`
+   里的 `ResetKeyViewer()` 共 3 处，逐处看过——`EnablePerKeyColors`、`CustomPositionEnabled`、
+   `HideMainKeyCount`，**全部是「模式开关」而非「颜色值」**。它们改变的是层级里**存在哪些元素**，
+   故重建是正确的。第 36 轮修的「拖颜色滑杆 → 每次 MouseDrag 重建整层」没有复发。✓
+4. **无逐帧全量布局重建**：✓（布局重建只经 `ResetKeyViewer`，且无每帧调用点）
+5. **无未节流的逐字符动画扫描**：`KvTextGradient.TickTextGradients` 仍以
+   `HasTextGradientSettings()` 开头，且在「无渐变且无记录状态」时于第 80 行早退——逐字符扫描
+   （`characterInfo[i]`，:219/:257）只在该门通过后、且状态变化时才跑。第 34/43 轮的修复完好。✓
+6. **无多壳透明光效网格**：无残留。✓
+
+**附带核实**：`new Font(` 共 3 处，全部在 `KeyViewerResources.cs`（不在 `Core\`），且**三处都有
+   `finally` 销毁源字体**。第 38 轮的字体泄漏修复完好。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
