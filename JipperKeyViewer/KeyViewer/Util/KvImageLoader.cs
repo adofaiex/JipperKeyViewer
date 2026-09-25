@@ -23,6 +23,14 @@ namespace JipperKeyViewer.KeyViewer.Util
             public Texture2D Texture;
             public DateTime LastWriteUtc;
             public long Length;
+            /// <summary>Decoded dimensions, kept so the VRAM ledger can be returned when this entry
+            /// is evicted. The texture object is about to be destroyed, and reading width/height
+            /// after a Destroy is exactly the read-after-destroy the resource audit flagged.
+            /// / 解码后的尺寸，留着以便逐出此条目时归还显存账本。贴图对象即将被销毁，而 Destroy
+            /// 之后读 width/height 正是资源层审计点出的「读已销毁对象」那一类。
+            /// </summary>
+            public int LastWidth;
+            public int LastHeight;
         }
 
         // Cross-rebuild cache for the FreeMake image-node path. LoadTexture itself stays uncached on
@@ -49,6 +57,22 @@ namespace JipperKeyViewer.KeyViewer.Util
             = new Dictionary<string, CachedTexture>(StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<Texture2D> cachedOwnership = new HashSet<Texture2D>();
 
+        /// <summary>Aggregate VRAM ceiling for cached custom-image textures. The per-file caps
+        /// (16 MB on disk, 4096x4096) bound any ONE file but say nothing about the total: a
+        /// 4096x4096 RGBA32 texture is 67,108,864 bytes = 64 MB of VRAM for a PNG that is only a few
+        /// MB on disk, and each key-bound image node can hold two of them (normal + pressed). The
+        /// node caps permit far more than that — twenty max-size nodes is 1.28 GB, and the driver
+        /// OOMs on a 4 GB card while the mod reports "loaded everything successfully". A shared .jkv
+        /// carrying ~30 such PNGs is enough; no user error required. Mirrors the video ledger's
+        /// 256 MB. / 缓存自定义图片贴图的显存总上限。单文件上限（磁盘 16MB、4096x4096）只约束
+        /// **单个**文件、对总量毫无约束：一张 4096x4096 RGBA32 是 67,108,864 字节 = 64 MB 显存，
+        /// 而磁盘上的 PNG 只有几 MB；且每个带键图片节点可持有**两张**（常态 + 按下）。节点上限允许
+        /// 的数量远超此——二十个满尺寸节点即 1.28 GB，4GB 显存的卡上驱动会 OOM，而模组报告
+        /// 「全部加载成功」。一个携带约 30 张此类 PNG 的分享 .jkv 就足够，无需用户犯错。
+        /// 与视频账本的 256 MB 保持一致。</summary>
+        private const long MaxCachedImageBytes = 256L * 1024 * 1024;
+        private static long liveCachedImageBytes;
+
         /// <summary>Is this texture owned by the cross-rebuild cache? A caller that is tearing down
         /// per-rebuild state must NOT destroy it — the next rebuild will hand out the same instance.
         /// / 该贴图是否由跨重建缓存持有？拆除逐次构建状态的调用方**不得**销毁它——下一次构建会交出
@@ -70,6 +94,12 @@ namespace JipperKeyViewer.KeyViewer.Util
             }
             textureCache.Clear();
             cachedOwnership.Clear();
+            // Same reasoning as the video ledger's ReleaseAll: reset outright rather than trust the
+            // per-entry subtraction, so a domain reload that dropped some entries cannot leave the
+            // budget permanently narrowed and silently disable images for the rest of the session.
+            // 与视频账本的 ReleaseAll 同理：直接归零而非依赖逐条减计数，使域重载丢掉的条目不会让
+            // 预算永久变窄、从而在本次会话余下时间里悄悄禁用图片。
+            liveCachedImageBytes = 0;
         }
 
         /// <summary>Load a PNG, reusing the previous decode when the file is unchanged. For callers
@@ -95,9 +125,29 @@ namespace JipperKeyViewer.KeyViewer.Util
                 cachedOwnership.Remove(hit.Texture);
                 try { UnityEngine.Object.Destroy(hit.Texture); }
                 catch (Exception) { /* already gone */ }
+                // Returning the evicted texture's bytes is what lets a document that swaps one
+                // large image for another keep working instead of slowly starving its own budget.
+                // 归还被逐出贴图的字节，一个把大图换成另一张的文档才能继续工作，而不是慢慢饿死
+                // 自己的预算。
+                liveCachedImageBytes -= (long)hit.LastWidth * hit.LastHeight * 4L;
+                if (liveCachedImageBytes < 0) liveCachedImageBytes = 0;
             }
             Texture2D loaded = LoadTexture(path);
             if (loaded == null) return null;
+            // Read the real decoded dimensions, not the PNG header: the header is what the per-file
+            // cap validates, and only the decoded texture's size is what the GPU actually reserves.
+            // 读**解码后**的真实尺寸而非 PNG 头部：头部只是单文件上限校验的对象，真正由 GPU 预留的
+            // 是解码后贴图的尺寸。
+            int texWidth = loaded.width, texHeight = loaded.height;
+            long wanted = (long)texWidth * texHeight * 4L;
+            if (liveCachedImageBytes + wanted > MaxCachedImageBytes)
+            {
+                try { UnityEngine.Object.Destroy(loaded); }
+                catch (Exception) { /* nothing to do */ }
+                Loader.Warning($"KeyViewer: image '{path}' skipped — the custom-image texture budget "
+                    + $"({MaxCachedImageBytes / (1024 * 1024)} MB) is already committed");
+                return null;
+            }
             try
             {
                 FileInfo fi = new FileInfo(path);
@@ -106,8 +156,11 @@ namespace JipperKeyViewer.KeyViewer.Util
                     Texture = loaded,
                     LastWriteUtc = fi.LastWriteTimeUtc,
                     Length = fi.Length,
+                    LastWidth = texWidth,
+                    LastHeight = texHeight,
                 };
                 cachedOwnership.Add(loaded);
+                liveCachedImageBytes += wanted;
             }
             catch (Exception)
             {

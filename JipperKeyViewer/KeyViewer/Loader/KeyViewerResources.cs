@@ -127,7 +127,30 @@ namespace JipperKeyViewer.KeyViewer
                     continue;
                 }
 
-                var tmpFont = TMP_FontAsset.CreateFontAsset(font);
+                // Guarded exactly like the three sibling CreateFontAsset sites (the OTF/TTF loader,
+                // the CJK loader, and ScanCustomFonts). A game font the baker cannot rasterise — a
+                // bitmap or legacy CJK font, one with no rasterisable glyphs — throws here, and this
+                // call sits OUTSIDE the try barrier that wraps BuildOverlay, so the exception
+                // escapes TryLoadResources -> EnableKeyViewer and the whole overlay never appears.
+                // The user sees no key display at all, and the only trace is a Unity log line. One
+                // bad optional font must not take the keys down — that is the reason the sibling
+                // sites are guarded, and this one was simply missed.
+                // 与另外三处 CreateFontAsset（OTF/TTF 加载器、CJK 加载器、ScanCustomFonts）一样加
+                // 保护。无法烘焙的游戏字体——位图/旧式 CJK 字体、没有任何可栅格化字形的字体——会在
+                // 此抛异常，而本次调用位于包住 BuildOverlay 的 try 屏障**之外**，故异常会逃出
+                // TryLoadResources → EnableKeyViewer，整个覆盖层**从不出现**：用户看不到任何按键
+                // 显示，唯一痕迹是一行 Unity 日志。一个坏的可选字体不该拖垮按键——这正是那些
+                // 孪生调用点被保护的原因，只是这一处被漏掉了。
+                TMP_FontAsset tmpFont = null;
+                try
+                {
+                    tmpFont = TMP_FontAsset.CreateFontAsset(font);
+                }
+                catch (Exception e)
+                {
+                    Loader.Error($"KeyViewer: could not bake the game font '{font.name}' — skipping it ({e.Message})");
+                    continue;
+                }
                 if (tmpFont != null)
                 {
                     var entry = new FontEntry(font.name, tmpFont);
