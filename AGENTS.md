@@ -179,6 +179,24 @@
   `ProcessKeySelection` 与节点捕获同时消费，顺带改掉固定布局槽位绑定。现武装前显式解除。
 - **另存为可能覆盖磁盘同名文件**（与预设新建同一类问题），现一并检查 `GetProfilePath`。
 
+### 功能补齐与低危修复（2026-09-26，第 37 轮）
+- **鬼雨缺节点级描边方向覆盖**：普通雨有 `UseCustomRainBorderSides`/`RainBorderSides`，
+  鬼雨只有圆角与点状覆盖，节点无法单独调整鬼雨描边方向。现补
+  `UseCustomGhostRainBorderSides`/`GhostRainBorderSides`（0=全部/1=垂直/2=水平，与普通雨同一
+  套编码）+ 编辑器 UI + 三语提示，默认关闭，旧配置行为不变。
+- **节点无法在全局开启时单独关闭点状雨滴**：`UseCustomRainDotted` 一旦勾选就无条件强制
+  `dotted=true`，用户想"全局开着、唯独这个节点用实心"根本做不到；而且 `EnsureCustomNodes`
+  还把点长从 0 钳到 1，把 `0` 这个可能的关闭值变成了 1 像素点。现在点长 0 = 该节点显式关闭
+  点状（普通雨与鬼雨），钳制范围随之放宽到 0..100，帮助文本三语更新。
+- **编辑器选区 `Contains` 每帧 O(n)**：`DrawEditorNode`/`DrawEditorMinimap` 每个节点每帧都要
+  问一次"是否选中"，112 节点全选时每帧约 1.2 万次引用比较。现改为 `EditorSelectionList`
+  （有序 List + 同步 HashSet），所有修改都经由此类型，两者不会失步。
+- **每键颜色面板的索引无守卫**：`keyCodes[i]`、`keyCodes[backSequence[b]]`、
+  `PerKeyBackground[idx]` 全部裸索引。任何绕过 `EnsureSettingsArrays` 的加载路径都会在 OnGUI
+  内抛 `IndexOutOfRange`，结果是**整个设置窗口被禁用**而不只是这一行。现全部加守卫。
+- `GetKeyScale(keyIndex)` 从"每滴每帧"提到"每键每帧"（该键所有雨滴的按压缩放是常量）。
+- Harness 增至 96 项（含点长 0 保持关闭态、描边方向索引钳制回归）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

@@ -900,6 +900,13 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public float RainGapLength;
         public bool UseCustomGhostRainCornerRadius;
         public float GhostRainCornerRadius;
+        /// <summary>Ghost rain had per-node corner-radius and dotted overrides but no border-side
+        /// one, so a node could not change the ghost outline direction the way it could for normal
+        /// rain. 0 = all, 1 = vertical, 2 = horizontal — same encoding as RainBorderSides. /
+        /// 鬼雨原本有节点级圆角与点状覆盖，却没有描边方向覆盖，节点无法像普通雨那样单独调整鬼雨
+        /// 描边方向。0=全部、1=垂直、2=水平，与 RainBorderSides 同一套编码。</summary>
+        public bool UseCustomGhostRainBorderSides;
+        public int GhostRainBorderSides;
         public bool UseCustomGhostRainDotted;
         public float GhostRainDotLength;
         public float GhostRainGapLength;

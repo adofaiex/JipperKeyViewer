@@ -103,8 +103,12 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 int row = key.CustomNode != null
                     ? Mathf.Clamp(key.CustomNode.RainRow, 0, 2)
                     : (ki < 8 ? 0 : (ki < 16 ? 1 : 2));
+                // The per-key press scale is constant for every drop of this key, so look it up
+                // once per key instead of once per drop per frame. / 每键的按压缩放对该键的所有
+                // 雨滴都是常量，按键取一次即可，不必每滴每帧都查。
+                float keyScale = Layer != null ? Layer.GetKeyScale(ki) : 1f;
                 for (int j = key.rainList.Count - 1; j >= 0; j--)
-                    UpdateSingleRainDrop(key.rainList[j], key, ki, keyPos, j, row, dtSec);
+                    UpdateSingleRainDrop(key.rainList[j], key, ki, keyPos, j, row, keyScale, dtSec);
             }
 
             // One mesh rebuild per frame while anything is active / 只要有活跃雨滴，每帧重建一次 mesh
@@ -181,7 +185,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             cachedGhostStartY3 = settings.Data.GhostRainStartYRow3;
         }
 
-        private void UpdateSingleRainDrop(RawRain rain, Key key, int keyIndex, Vector2 keyPos, int j, int row, float dtSec)
+        private void UpdateSingleRainDrop(RawRain rain, Key key, int keyIndex, Vector2 keyPos, int j, int row, float keyScale, float dtSec)
         {
             if (rain.removed) return;
 
@@ -206,7 +210,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // (ReturnRawRain can hand the record to a new drop in the same frame).
             // 先算矩形后处理淡出：被淡出移除的雨滴不能再被写入（ReturnRawRain 可能在同帧
             // 就把记录发给了新雨滴）。
-            UpdateRectAndTrail(rain, key, keyIndex, keyPos, speed, height);
+            UpdateRectAndTrail(rain, key, keyIndex, keyPos, speed, height, keyScale);
             UpdateFade(rain, dtSec, key, j);
         }
 
@@ -244,7 +248,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 而独立维护第二份拷贝正是"第 2 排速度配第 1 排宽度"这类 bug 的成因。</summary>
         private static int RowFromRainByte(byte color) => color == 0 ? 0 : color == 3 ? 2 : 1;
 
-        private void UpdateRectAndTrail(RawRain rain, Key key, int keyIndex, Vector2 keyPos, float speed, float height)
+        private void UpdateRectAndTrail(RawRain rain, Key key, int keyIndex, Vector2 keyPos, float speed, float height, float keyScale)
         {
             float trailEdgeDist = rain.elapsedMs * speed;
             float drawH = trailEdgeDist > height
@@ -286,7 +290,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             float cx = keyPos.x + alignOffset + ox + key.rainWidth * 0.5f;
             float topY = keyPos.y - key.keySize.y * 0.5f + baseStart + RainContainerHeight + travel;
 
-            float s = Layer != null ? Layer.GetKeyScale(keyIndex) : 1f;
+            float s = keyScale;
             rain.scaleF = s;
             if (s != 1f)
             {
@@ -619,12 +623,10 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 {
                     if (node.UseCustomGhostRainCornerRadius)
                         rawRain.outlineCornerRadius = Mathf.Clamp(node.GhostRainCornerRadius, 0f, 20f);
+                    if (node.UseCustomGhostRainBorderSides)
+                        rawRain.outlineSides = Mathf.Clamp(node.GhostRainBorderSides, 0, 2);
                     if (node.UseCustomGhostRainDotted)
-                    {
-                        rawRain.dotted = true;
-                        rawRain.dotLength = Mathf.Clamp(node.GhostRainDotLength, 1f, 100f);
-                        rawRain.gapLength = Mathf.Clamp(node.GhostRainGapLength, 0f, 100f);
-                    }
+                        ApplyNodeDotted(rawRain, node.GhostRainDotLength, node.GhostRainGapLength);
                 }
                 else
                 {
@@ -633,11 +635,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     if (node.UseCustomRainBorderSides)
                         rawRain.outlineSides = Mathf.Clamp(node.RainBorderSides, 0, 2);
                     if (node.UseCustomRainDotted)
-                    {
-                        rawRain.dotted = true;
-                        rawRain.dotLength = Mathf.Clamp(node.RainDotLength, 1f, 100f);
-                        rawRain.gapLength = Mathf.Clamp(node.RainGapLength, 0f, 100f);
-                    }
+                        ApplyNodeDotted(rawRain, node.RainDotLength, node.RainGapLength);
                 }
             }
 
@@ -710,6 +708,26 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rainActiveSet.Add(keyIndex);
                 rainActiveKeys.Add(keyIndex);
             }
+        }
+
+        /// <summary>Apply a node's dotted-rain override. A dot length of 0 means the node EXPLICITLY
+        /// turns dotted rain off, which is the only way to keep the global toggle on for everything
+        /// else while this node stays solid — the override previously always forced dotted=true, so
+        /// opting in a node also forced the effect on it. / 应用节点级点状雨滴覆盖。点长为 0 表示
+        /// 该节点显式关闭点状雨滴——这是"全局保持开启、唯独这个节点用实心"的唯一途径；此前覆盖
+        /// 一律强制 dotted=true，勾选覆盖反而把效果强加给了该节点。</summary>
+        private static void ApplyNodeDotted(RawRain rain, float dotLength, float gapLength)
+        {
+            if (dotLength > 0f)
+            {
+                rain.dotted = true;
+                rain.dotLength = Mathf.Clamp(dotLength, 1f, 100f);
+                rain.gapLength = Mathf.Clamp(gapLength, 0f, 100f);
+                return;
+            }
+            rain.dotted = false;
+            rain.dotLength = 0f;
+            rain.gapLength = 0f;
         }
 
         private bool IsCustomRainRowEnabled(FmNode node, bool isGhost)

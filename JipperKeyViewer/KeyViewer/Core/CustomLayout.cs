@@ -359,10 +359,15 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainAlignment = Mathf.Clamp(node.RainAlignment, 0, 2);
                 node.RainCornerRadius = float.IsNaN(node.RainCornerRadius) || float.IsInfinity(node.RainCornerRadius) ? 0f : Mathf.Clamp(node.RainCornerRadius, 0f, 20f);
                 node.RainBorderSides = Mathf.Clamp(node.RainBorderSides, 0, 2);
-                node.RainDotLength = float.IsNaN(node.RainDotLength) || float.IsInfinity(node.RainDotLength) ? 12f : Mathf.Clamp(node.RainDotLength, 1f, 100f);
+                node.GhostRainBorderSides = Mathf.Clamp(node.GhostRainBorderSides, 0, 2);
+                // Dot length keeps 0: it is the node's explicit "dotted off" state, and clamping it
+                // up to 1 turned every such node into 1px dots that the user could then not undo.
+                // 点长保留 0：它是节点"显式关闭点状"的取值，钳到 1 会把这类节点变成 1 像素点、
+                // 且用户无法再关掉。
+                node.RainDotLength = float.IsNaN(node.RainDotLength) || float.IsInfinity(node.RainDotLength) ? 12f : Mathf.Clamp(node.RainDotLength, 0f, 100f);
                 node.RainGapLength = float.IsNaN(node.RainGapLength) || float.IsInfinity(node.RainGapLength) ? 8f : Mathf.Clamp(node.RainGapLength, 0f, 100f);
                 node.GhostRainCornerRadius = float.IsNaN(node.GhostRainCornerRadius) || float.IsInfinity(node.GhostRainCornerRadius) ? 0f : Mathf.Clamp(node.GhostRainCornerRadius, 0f, 20f);
-                node.GhostRainDotLength = float.IsNaN(node.GhostRainDotLength) || float.IsInfinity(node.GhostRainDotLength) ? 12f : Mathf.Clamp(node.GhostRainDotLength, 1f, 100f);
+                node.GhostRainDotLength = float.IsNaN(node.GhostRainDotLength) || float.IsInfinity(node.GhostRainDotLength) ? 12f : Mathf.Clamp(node.GhostRainDotLength, 0f, 100f);
                 node.GhostRainGapLength = float.IsNaN(node.GhostRainGapLength) || float.IsInfinity(node.GhostRainGapLength) ? 8f : Mathf.Clamp(node.GhostRainGapLength, 0f, 100f);
                 node.CounterAnimScale = float.IsNaN(node.CounterAnimScale) ? 1.1f : Mathf.Clamp(node.CounterAnimScale, 1f, 2f);
                 node.CounterAnimDurationMs = node.CounterAnimDurationMs <= 0f || float.IsNaN(node.CounterAnimDurationMs)

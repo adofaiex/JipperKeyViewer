@@ -278,6 +278,18 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.BeginVertical("box");
             KeyCode[] keyCodes = GetKeyCode();
             KeyCode[] footKeyCodes = GetFootKeyCode();
+            // Every index below is driven by profile data (key arrays and the per-row back
+            // sequence). EnsureSettingsArrays currently guarantees the lengths, but a load path
+            // that bypassed it would throw IndexOutOfRange inside OnGUI — which disables the whole
+            // settings window, not just this row. Skip what is not there instead.
+            // 下面的索引全部来自配置数据（按键数组与每排序列）。EnsureSettingsArrays 目前保证了
+            // 长度，但任何绕过它的加载路径都会在 OnGUI 内抛 IndexOutOfRange——整个设置窗口会被
+            // 禁用，而不只是这一行。缺失的部分直接跳过。
+            if (keyCodes == null || keyCodes.Length < 8)
+            {
+                GUILayout.EndVertical();
+                return;
+            }
 
             GUILayout.Label(I18n.Tr("row1_keys") + ":");
             GUILayout.BeginHorizontal();
@@ -290,7 +302,8 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.Label(I18n.Tr("row2_keys") + ":");
                 GUILayout.BeginHorizontal();
                 for (int b = 0; b < backSequence.Length && b < 8; b++)
-                    DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                    if (backSequence[b] < keyCodes.Length)
+                        DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
                 GUILayout.EndHorizontal();
             }
 
@@ -345,7 +358,13 @@ namespace JipperKeyViewer.KeyViewer
 
         private void DrawPerKeyColorBtn(int idx, string label)
         {
-            Color c = Settings.Data.PerKeyBackground[idx];
+            // PerKeyBackground is populated by the ProfileData constructor, which FromJsonOverwrite
+            // can bypass; a null/short array here would throw inside OnGUI and disable the whole
+            // settings window. / PerKeyBackground 由 ProfileData 构造函数填充，而 FromJsonOverwrite
+            // 可绕过构造函数；数组为 null 或过短会在 OnGUI 内抛异常并禁用整个设置窗口。
+            Color c = idx >= 0 && Settings.Data.PerKeyBackground != null && idx < Settings.Data.PerKeyBackground.Length
+                ? Settings.Data.PerKeyBackground[idx]
+                : Color.white;
             if (perKeyBtnStyle == null) perKeyBtnStyle = new GUIStyle(GUI.skin.button);
             perKeyBtnStyle.normal.textColor = c.grayscale > 0.5f ? Color.black : Color.white;
             if (perKeyColorSelected == idx)

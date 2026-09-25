@@ -43,7 +43,54 @@ namespace JipperKeyViewer.KeyViewer
         private bool fmHasKeyFocus;
         private bool fmResizing;
 
-        private readonly List<FmNode> editorSelection = new List<FmNode>();
+        /// <summary>Editor selection: ordered list + membership set kept in sync. DrawEditorNode and
+        /// DrawEditorMinimap ask "is this node selected?" once per node per frame, and
+        /// List.Contains is O(n) — with everything selected on a 112-node document that is ~12k
+        /// reference comparisons every frame just to pick highlight colours. The set makes it O(1)
+        /// and, because every mutation goes through this type, the two can never disagree. /
+        /// 编辑器选区：有序列表 + 同步的成员集合。DrawEditorNode 与 DrawEditorMinimap 每个节点
+        /// 每帧都要问一次"是否选中"，而 List.Contains 是 O(n)——112 节点全选时每帧约 1.2 万次
+        /// 引用比较，只为挑高亮颜色。集合让其变为 O(1)；所有修改都经由此类型，二者不会失步。</summary>
+        private sealed class EditorSelectionList : IReadOnlyList<FmNode>
+        {
+            private readonly List<FmNode> order = new List<FmNode>();
+            private readonly HashSet<FmNode> members = new HashSet<FmNode>();
+
+            public int Count => order.Count;
+            public FmNode this[int index] => order[index];
+
+            public bool Contains(FmNode node) => node != null && members.Contains(node);
+
+            public void Add(FmNode node)
+            {
+                if (node != null && members.Add(node)) order.Add(node);
+            }
+
+            public void AddRange(IEnumerable<FmNode> nodes)
+            {
+                if (nodes == null) return;
+                foreach (FmNode n in nodes) Add(n);
+            }
+
+            public bool Remove(FmNode node)
+            {
+                if (node == null || !members.Remove(node)) return false;
+                order.Remove(node);
+                return true;
+            }
+
+            public void Clear()
+            {
+                order.Clear();
+                members.Clear();
+            }
+
+            public List<FmNode> ToList() => new List<FmNode>(order);
+            public IEnumerator<FmNode> GetEnumerator() => order.GetEnumerator();
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => order.GetEnumerator();
+        }
+
+        private readonly EditorSelectionList editorSelection = new EditorSelectionList();
         private readonly List<FmNode> editorClipboard = new List<FmNode>();
         private int editorPasteSerial;
         private readonly EditorHistory editorHistory = new EditorHistory();
@@ -3150,7 +3197,9 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     DrawEditorFloatField(I18n.Tr("fm_rain_dot_length"), "fme_rdl_" + first.Id, n => n.RainDotLength, v =>
                     {
-                        foreach (FmNode n in editorSelection) n.RainDotLength = Mathf.Clamp(v, 1f, 100f);
+                        // 0 = dotted OFF for this node (the only way to keep the global toggle on
+                        // everywhere else). / 0 = 该节点关闭点状（全局仍可为其它节点开启）。
+                        foreach (FmNode n in editorSelection) n.RainDotLength = Mathf.Clamp(v, 0f, 100f);
                     }, "fm_help_rain_dotted");
                     DrawEditorFloatField(I18n.Tr("fm_rain_gap_length"), "fme_rgl_" + first.Id, n => n.RainGapLength, v =>
                     {
@@ -3253,6 +3302,21 @@ namespace JipperKeyViewer.KeyViewer
                             foreach (FmNode n in editorSelection) n.GhostRainCornerRadius = Mathf.Clamp(v, 0f, 20f);
                         }, "fm_help_ghost_rain_corner");
                     }
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_border_sides_custom"), first.UseCustomGhostRainBorderSides, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.UseCustomGhostRainBorderSides = v;
+                    }, "fm_help_ghost_rain_border_sides");
+                    if (first.UseCustomGhostRainBorderSides)
+                    {
+                        GUILayout.Label(I18n.Tr("rain_outline_sides"));
+                        string[] ghostSides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+                        int ghostSelected = GUILayout.SelectionGrid(Mathf.Clamp(first.GhostRainBorderSides, 0, 2), ghostSides, 3);
+                        if (ghostSelected != first.GhostRainBorderSides)
+                        {
+                            foreach (FmNode n in editorSelection) n.GhostRainBorderSides = ghostSelected;
+                            EditorPropertyChanged();
+                        }
+                    }
                     DrawEditorToggle(I18n.Tr("fm_ghost_rain_dotted_custom"), first.UseCustomGhostRainDotted, v =>
                     {
                         foreach (FmNode n in editorSelection)
@@ -3269,7 +3333,8 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         DrawEditorFloatField(I18n.Tr("fm_ghost_rain_dot_length"), "fme_gdl_" + first.Id, n => n.GhostRainDotLength, v =>
                         {
-                            foreach (FmNode n in editorSelection) n.GhostRainDotLength = Mathf.Clamp(v, 1f, 100f);
+                            // 0 = dotted ghost rain OFF for this node. / 0 = 该节点关闭点状鬼雨。
+                            foreach (FmNode n in editorSelection) n.GhostRainDotLength = Mathf.Clamp(v, 0f, 100f);
                         }, "fm_help_ghost_rain_dotted");
                         DrawEditorFloatField(I18n.Tr("fm_ghost_rain_gap_length"), "fme_ggl_" + first.Id, n => n.GhostRainGapLength, v =>
                         {
