@@ -53,6 +53,7 @@ namespace JipperKeyViewer.KeyViewer
             // 合并形状层：所有按键框（背景+描边）画进两个 mesh，不再每键一组 Image。
             // 文本放独立子画布，文本更新不会重批形状 mesh，反之亦然。按键根为纯数据载体
             // （位置锚点 + 雨滴状态），在所有图层之后创建。
+            keyGlowLayer = CreateFullStretchRect("KeyGlow");
             keyShapeLayer = CreateFullStretchRect("KeyShapes").gameObject.AddComponent<KeyShapeLayer>();
             keyOutlineLayer = CreateFullStretchRect("KeyOutlines").gameObject.AddComponent<KeyShapeLayer>();
             keyShapeLayer.AttachOutlineLayer(keyOutlineLayer);
@@ -85,6 +86,9 @@ namespace JipperKeyViewer.KeyViewer
                 int footSize = FootKeySize(Settings.Data.FootKeyViewerStyle);
                 if (footSize > 0) InitializeFootKeyViewer(footSize);
             }
+            ApplyFixedKeyGlows();
+            ApplyFixedBackgroundGradients();
+            ApplyFixedOutlineGradients();
             // Apply streamer mode (hide KPS/Total) — only for normal layouts; the full keyboard has its
             // own dedicated "Show KPS / Total" toggle, so don't let streamer mode fight it.
             // 应用主播模式（隐藏 KPS/Total）——仅普通布局生效；全键盘有专属开关，不与之冲突。
@@ -101,6 +105,7 @@ namespace JipperKeyViewer.KeyViewer
             lastPerKeyKps = new int[MaxKeySlots];
             Stopwatch = System.Diagnostics.Stopwatch.StartNew();
             RefreshAllCountDisplay();
+            TickTextGradients();
         }
 
         /// <summary>
@@ -119,6 +124,7 @@ namespace JipperKeyViewer.KeyViewer
             // not free any custom-image texture. / 与 ResetKeyViewer 同理的贴图归属问题——
             // 销毁 KeyViewerObject 不会释放任何自定义图片贴图。
             ReleaseCustomTextures();
+            ReleaseCustomGlowSprite();
             Object.Destroy(KeyViewerObject);
             KeyViewerObject = null;
             KeyViewerSizeObject = null;
@@ -133,6 +139,7 @@ namespace JipperKeyViewer.KeyViewer
             Canvas = null;
             keyShapeLayer = null;
             keyOutlineLayer = null;
+            keyGlowLayer = null;
             textLayer = null;
             rainLayer = null;
             ghostRainLayer = null;
@@ -636,6 +643,7 @@ namespace JipperKeyViewer.KeyViewer
                 if (Keys[i].value != null) Keys[i].value.color = pressed ? txC : tx;
             }
             ApplyKpsTotalColors();
+            if (!IsCustomLayout) ApplyFixedKeyGlows();
         }
 
         /// <summary>Apply user-set normalized positions to the KPS / Total boxes (full keyboard only) / 将用户设置的归一化位置套用到 KPS/Total 框（仅全键盘）</summary>
@@ -918,6 +926,7 @@ namespace JipperKeyViewer.KeyViewer
             if (key == null) return;
             if (key.visuals != null) key.visuals.gameObject.SetActive(active);
             if (keyShapeLayer != null && key.shapeSlot >= 0) keyShapeLayer.SetVisible(key.shapeSlot, active);
+            if (!IsCustomLayout) SetFixedGlowVisible(key, active);
         }
 
         private TextMeshProUGUI CreateKeyText(GameObject parent, float sizeX, bool slim, bool count, KeyViewerSettings settings, bool centered = false, bool stackedLabel = false, int perKeyIndex = -1, bool isFootKey = false)
@@ -1452,6 +1461,9 @@ namespace JipperKeyViewer.KeyViewer
             else
                 ApplyGlobalColorsToAll();
             ApplyKpsTotalColors();
+            ApplyFixedKeyGlows();
+            ApplyFixedBackgroundGradients();
+            ApplyFixedOutlineGradients();
         }
 
         private void ApplyKpsTotalColors()
@@ -1586,6 +1598,7 @@ namespace JipperKeyViewer.KeyViewer
                 rainSystem.ClearActiveDrops(Keys);
                 Transform shapeT = keyShapeLayer != null ? keyShapeLayer.transform : null;
                 Transform outlineT = keyOutlineLayer != null ? keyOutlineLayer.transform : null;
+                Transform glowT = keyGlowLayer;
                 Transform rainT = rainLayer != null ? rainLayer.transform : null;
                 Transform ghostT = ghostRainLayer != null ? ghostRainLayer.transform : null;
                 if (KeyViewerSizeObject != null)
@@ -1594,7 +1607,7 @@ namespace JipperKeyViewer.KeyViewer
                     for (int c = children.childCount - 1; c >= 0; c--)
                     {
                         Transform child = children.GetChild(c);
-                        if (child == shapeT || child == outlineT || child == textLayer || child == rainT || child == ghostT) continue;
+                        if (child == shapeT || child == outlineT || child == glowT || child == textLayer || child == rainT || child == ghostT) continue;
                         Object.Destroy(child.gameObject);
                     }
                 }
@@ -1618,6 +1631,9 @@ namespace JipperKeyViewer.KeyViewer
             // to avoid leaking them when switching to the full keyboard, so they must be recreated here.
             // 同时重建脚键：ResetKeyViewer 现在销毁全部子物体（含脚键）以避免切到全键盘时残留，故需在此重建。
             ResetFootKeyViewer();
+            ApplyFixedKeyGlows();
+            ApplyFixedBackgroundGradients();
+            ApplyFixedOutlineGradients();
             if (Settings.Data.StreamerMode && !IsFullKeyboard)
             {
                 SetStatsVisible(false);
@@ -1632,6 +1648,7 @@ namespace JipperKeyViewer.KeyViewer
             if (KeyViewerSizeObject != null)
                 KeyViewerSizeObject.transform.localScale = new Vector3(Settings.Data.Size, Settings.Data.Size, 1);
             RefreshAllCountDisplay();
+            TickTextGradients();
         }
 
         /// <summary>
@@ -1681,6 +1698,7 @@ namespace JipperKeyViewer.KeyViewer
             if (Settings.Data.CustomPositionEnabled)
                 ResetFootKeyViewerPosition();
             RefreshAllCountDisplay();
+            TickTextGradients();
         }
 
         /// <summary>

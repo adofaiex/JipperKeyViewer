@@ -811,6 +811,299 @@ namespace JipperKeyViewer.KeyViewer
                 SaveSettingsFromGui();
             }
 
+            // Global fixed-layout glow. It is deliberately separate from FreeMake node glow and
+            // updates cached Images in place — changing a slider never rebuilds the key mesh.
+            // 固定布局全局光效：与 FreeMake 节点光效分开，修改滑块只更新缓存 Image，不重建 Mesh。
+            if (!IsCustomLayout)
+            {
+                GUILayout.Space(5f);
+                GUILayout.Label("<b>" + I18n.Tr("fixed_glow") + "</b>");
+                bool newFixedGlow = GUILayout.Toggle(Settings.Data.EnableFixedKeyGlow, I18n.Tr("fixed_glow_enable"));
+                if (newFixedGlow != Settings.Data.EnableFixedKeyGlow)
+                {
+                    Settings.Data.EnableFixedKeyGlow = newFixedGlow;
+                    ApplyFixedKeyGlows();
+                    SaveSettingsFromGui();
+                }
+                if (Settings.Data.EnableFixedKeyGlow)
+                {
+                    bool newFollow = GUILayout.Toggle(Settings.Data.FixedKeyGlowFollowBody, I18n.Tr("fixed_glow_follow"));
+                    if (newFollow != Settings.Data.FixedKeyGlowFollowBody)
+                    {
+                        Settings.Data.FixedKeyGlowFollowBody = newFollow;
+                        ApplyFixedKeyGlows();
+                        SaveSettingsFromGui();
+                    }
+                    float newGlowSize = FloatSliderField(I18n.Tr("fixed_glow_size"), Settings.Data.FixedKeyGlowSize, 0f, 50f, "F0");
+                    if (newGlowSize != Settings.Data.FixedKeyGlowSize)
+                    {
+                        Settings.Data.FixedKeyGlowSize = newGlowSize;
+                        ApplyFixedKeyGlows();
+                        SaveSettingsFromGui();
+                    }
+                    float newGlowOpacity = FloatSliderField(I18n.Tr("fixed_glow_opacity"), Settings.Data.FixedKeyGlowOpacity * 100f, 0f, 100f, "F0");
+                    if (newGlowOpacity != Settings.Data.FixedKeyGlowOpacity * 100f)
+                    {
+                        Settings.Data.FixedKeyGlowOpacity = Mathf.Clamp01(newGlowOpacity / 100f);
+                        ApplyFixedKeyGlows();
+                        SaveSettingsFromGui();
+                    }
+                    if (!Settings.Data.FixedKeyGlowFollowBody)
+                    {
+                        Color newGlowColor = DrawColorPicker(I18n.Tr("fixed_glow_color"), Settings.Data.FixedKeyGlowColor, Color.white);
+                        if (newGlowColor != Settings.Data.FixedKeyGlowColor)
+                        {
+                            Settings.Data.FixedKeyGlowColor = newGlowColor;
+                            ApplyFixedKeyGlows();
+                            SaveSettingsFromGui();
+                        }
+                    }
+
+                    bool newPressedOverride = GUILayout.Toggle(Settings.Data.FixedKeyGlowPressedOverride, I18n.Tr("fixed_glow_pressed_override"));
+                    if (newPressedOverride != Settings.Data.FixedKeyGlowPressedOverride)
+                    {
+                        Settings.Data.FixedKeyGlowPressedOverride = newPressedOverride;
+                        ApplyFixedKeyGlows();
+                        SaveSettingsFromGui();
+                    }
+                    if (Settings.Data.FixedKeyGlowPressedOverride)
+                    {
+                        bool newPressedFollow = GUILayout.Toggle(Settings.Data.FixedKeyGlowFollowBodyPressed, I18n.Tr("fixed_glow_pressed_follow"));
+                        if (newPressedFollow != Settings.Data.FixedKeyGlowFollowBodyPressed)
+                        {
+                            Settings.Data.FixedKeyGlowFollowBodyPressed = newPressedFollow;
+                            ApplyFixedKeyGlows();
+                            SaveSettingsFromGui();
+                        }
+                        float newPressedSize = FloatSliderField(I18n.Tr("fixed_glow_pressed_size"), Settings.Data.FixedKeyGlowSizePressed, 0f, 50f, "F0");
+                        if (newPressedSize != Settings.Data.FixedKeyGlowSizePressed)
+                        {
+                            Settings.Data.FixedKeyGlowSizePressed = newPressedSize;
+                            ApplyFixedKeyGlows();
+                            SaveSettingsFromGui();
+                        }
+                        float newPressedOpacity = FloatSliderField(I18n.Tr("fixed_glow_pressed_opacity"), Settings.Data.FixedKeyGlowOpacityPressed * 100f, 0f, 100f, "F0");
+                        if (newPressedOpacity != Settings.Data.FixedKeyGlowOpacityPressed * 100f)
+                        {
+                            Settings.Data.FixedKeyGlowOpacityPressed = Mathf.Clamp01(newPressedOpacity / 100f);
+                            ApplyFixedKeyGlows();
+                            SaveSettingsFromGui();
+                        }
+                        if (!Settings.Data.FixedKeyGlowFollowBodyPressed)
+                        {
+                            Color newPressedColor = DrawColorPicker(I18n.Tr("fixed_glow_pressed_color"), Settings.Data.FixedKeyGlowColorPressed, Color.white);
+                            if (newPressedColor != Settings.Data.FixedKeyGlowColorPressed)
+                            {
+                                Settings.Data.FixedKeyGlowColorPressed = newPressedColor;
+                                ApplyFixedKeyGlows();
+                                SaveSettingsFromGui();
+                            }
+                        }
+                    }
+                }
+
+                GUILayout.Space(5f);
+                GUILayout.Label("<b>" + I18n.Tr("fixed_background_gradient") + "</b>");
+                bool newFixedGradient = GUILayout.Toggle(Settings.Data.EnableFixedBackgroundGradient, I18n.Tr("fixed_background_gradient_enable"));
+                if (newFixedGradient != Settings.Data.EnableFixedBackgroundGradient)
+                {
+                    Settings.Data.EnableFixedBackgroundGradient = newFixedGradient;
+                    ApplyFixedBackgroundGradients();
+                    SaveSettingsFromGui();
+                }
+                if (Settings.Data.EnableFixedBackgroundGradient)
+                {
+                    Color top = DrawColorPicker(I18n.Tr("fixed_background_gradient_top"), Settings.Data.FixedBackgroundGradientTop, Color.white);
+                    if (top != Settings.Data.FixedBackgroundGradientTop)
+                    {
+                        Settings.Data.FixedBackgroundGradientTop = top;
+                        ApplyFixedBackgroundGradients();
+                        SaveSettingsFromGui();
+                    }
+                    Color bottom = DrawColorPicker(I18n.Tr("fixed_background_gradient_bottom"), Settings.Data.FixedBackgroundGradientBottom, Color.black);
+                    if (bottom != Settings.Data.FixedBackgroundGradientBottom)
+                    {
+                        Settings.Data.FixedBackgroundGradientBottom = bottom;
+                        ApplyFixedBackgroundGradients();
+                        SaveSettingsFromGui();
+                    }
+                    bool newGradientPressed = GUILayout.Toggle(Settings.Data.FixedBackgroundGradientPressedOverride, I18n.Tr("fixed_background_gradient_pressed"));
+                    if (newGradientPressed != Settings.Data.FixedBackgroundGradientPressedOverride)
+                    {
+                        Settings.Data.FixedBackgroundGradientPressedOverride = newGradientPressed;
+                        ApplyFixedBackgroundGradients();
+                        SaveSettingsFromGui();
+                    }
+                    if (Settings.Data.FixedBackgroundGradientPressedOverride)
+                    {
+                        Color pressedTop = DrawColorPicker(I18n.Tr("fixed_background_gradient_top_pressed"), Settings.Data.FixedBackgroundGradientTopPressed, Color.white);
+                        if (pressedTop != Settings.Data.FixedBackgroundGradientTopPressed)
+                        {
+                            Settings.Data.FixedBackgroundGradientTopPressed = pressedTop;
+                            ApplyFixedBackgroundGradients();
+                            SaveSettingsFromGui();
+                        }
+                        Color pressedBottom = DrawColorPicker(I18n.Tr("fixed_background_gradient_bottom_pressed"), Settings.Data.FixedBackgroundGradientBottomPressed, Color.black);
+                        if (pressedBottom != Settings.Data.FixedBackgroundGradientBottomPressed)
+                        {
+                            Settings.Data.FixedBackgroundGradientBottomPressed = pressedBottom;
+                            ApplyFixedBackgroundGradients();
+                            SaveSettingsFromGui();
+                        }
+                    }
+                }
+
+                GUILayout.Space(5f);
+                GUILayout.Label("<b>" + I18n.Tr("fixed_outline_gradient") + "</b>");
+                bool newFixedOutlineGradient = GUILayout.Toggle(Settings.Data.EnableFixedOutlineGradient, I18n.Tr("fixed_outline_gradient_enable"));
+                if (newFixedOutlineGradient != Settings.Data.EnableFixedOutlineGradient)
+                {
+                    Settings.Data.EnableFixedOutlineGradient = newFixedOutlineGradient;
+                    ApplyFixedOutlineGradients();
+                    SaveSettingsFromGui();
+                }
+                if (Settings.Data.EnableFixedOutlineGradient)
+                {
+                    Color top = DrawColorPicker(I18n.Tr("fixed_outline_gradient_top"), Settings.Data.FixedOutlineGradientTop, Color.white);
+                    if (top != Settings.Data.FixedOutlineGradientTop)
+                    {
+                        Settings.Data.FixedOutlineGradientTop = top;
+                        ApplyFixedOutlineGradients();
+                        SaveSettingsFromGui();
+                    }
+                    Color bottom = DrawColorPicker(I18n.Tr("fixed_outline_gradient_bottom"), Settings.Data.FixedOutlineGradientBottom, Color.black);
+                    if (bottom != Settings.Data.FixedOutlineGradientBottom)
+                    {
+                        Settings.Data.FixedOutlineGradientBottom = bottom;
+                        ApplyFixedOutlineGradients();
+                        SaveSettingsFromGui();
+                    }
+                    bool newOutlinePressed = GUILayout.Toggle(Settings.Data.FixedOutlineGradientPressedOverride, I18n.Tr("fixed_outline_gradient_pressed"));
+                    if (newOutlinePressed != Settings.Data.FixedOutlineGradientPressedOverride)
+                    {
+                        Settings.Data.FixedOutlineGradientPressedOverride = newOutlinePressed;
+                        ApplyFixedOutlineGradients();
+                        SaveSettingsFromGui();
+                    }
+                    if (Settings.Data.FixedOutlineGradientPressedOverride)
+                    {
+                        Color pressedTop = DrawColorPicker(I18n.Tr("fixed_outline_gradient_top_pressed"), Settings.Data.FixedOutlineGradientTopPressed, Color.white);
+                        if (pressedTop != Settings.Data.FixedOutlineGradientTopPressed)
+                        {
+                            Settings.Data.FixedOutlineGradientTopPressed = pressedTop;
+                            ApplyFixedOutlineGradients();
+                            SaveSettingsFromGui();
+                        }
+                        Color pressedBottom = DrawColorPicker(I18n.Tr("fixed_outline_gradient_bottom_pressed"), Settings.Data.FixedOutlineGradientBottomPressed, Color.black);
+                        if (pressedBottom != Settings.Data.FixedOutlineGradientBottomPressed)
+                        {
+                            Settings.Data.FixedOutlineGradientBottomPressed = pressedBottom;
+                            ApplyFixedOutlineGradients();
+                            SaveSettingsFromGui();
+                        }
+                    }
+                }
+
+                GUILayout.Space(5f);
+                GUILayout.Label("<b>" + I18n.Tr("fixed_text_gradient") + "</b>");
+                bool newTextGradient = GUILayout.Toggle(Settings.Data.EnableKeyTextGradient, I18n.Tr("fixed_text_gradient_enable"));
+                if (newTextGradient != Settings.Data.EnableKeyTextGradient)
+                {
+                    Settings.Data.EnableKeyTextGradient = newTextGradient;
+                    TickTextGradients();
+                    SaveSettingsFromGui();
+                }
+                if (Settings.Data.EnableKeyTextGradient)
+                {
+                    Color left = DrawColorPicker(I18n.Tr("fixed_text_gradient_left"), Settings.Data.KeyTextGradientLeft, Color.white);
+                    if (left != Settings.Data.KeyTextGradientLeft)
+                    {
+                        Settings.Data.KeyTextGradientLeft = left;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    Color right = DrawColorPicker(I18n.Tr("fixed_text_gradient_right"), Settings.Data.KeyTextGradientRight, Color.white);
+                    if (right != Settings.Data.KeyTextGradientRight)
+                    {
+                        Settings.Data.KeyTextGradientRight = right;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    bool newPressedTextGradient = GUILayout.Toggle(Settings.Data.KeyTextGradientPressedOverride, I18n.Tr("fixed_text_gradient_pressed"));
+                    if (newPressedTextGradient != Settings.Data.KeyTextGradientPressedOverride)
+                    {
+                        Settings.Data.KeyTextGradientPressedOverride = newPressedTextGradient;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    if (Settings.Data.KeyTextGradientPressedOverride)
+                    {
+                        Color pressedLeft = DrawColorPicker(I18n.Tr("fixed_text_gradient_left_pressed"), Settings.Data.KeyTextGradientLeftPressed, Color.white);
+                        if (pressedLeft != Settings.Data.KeyTextGradientLeftPressed)
+                        {
+                            Settings.Data.KeyTextGradientLeftPressed = pressedLeft;
+                            TickTextGradients();
+                            SaveSettingsFromGui();
+                        }
+                        Color pressedRight = DrawColorPicker(I18n.Tr("fixed_text_gradient_right_pressed"), Settings.Data.KeyTextGradientRightPressed, Color.white);
+                        if (pressedRight != Settings.Data.KeyTextGradientRightPressed)
+                        {
+                            Settings.Data.KeyTextGradientRightPressed = pressedRight;
+                            TickTextGradients();
+                            SaveSettingsFromGui();
+                        }
+                    }
+                }
+                bool newCountGradient = GUILayout.Toggle(Settings.Data.EnableCountTextGradient, I18n.Tr("fixed_count_text_gradient"));
+                if (newCountGradient != Settings.Data.EnableCountTextGradient)
+                {
+                    Settings.Data.EnableCountTextGradient = newCountGradient;
+                    TickTextGradients();
+                    SaveSettingsFromGui();
+                }
+                if (Settings.Data.EnableCountTextGradient)
+                {
+                    Color countLeft = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_left"), Settings.Data.CountTextGradientLeft, Color.white);
+                    if (countLeft != Settings.Data.CountTextGradientLeft)
+                    {
+                        Settings.Data.CountTextGradientLeft = countLeft;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    Color countRight = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_right"), Settings.Data.CountTextGradientRight, Color.white);
+                    if (countRight != Settings.Data.CountTextGradientRight)
+                    {
+                        Settings.Data.CountTextGradientRight = countRight;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    bool newPressedCountGradient = GUILayout.Toggle(Settings.Data.CountTextGradientPressedOverride, I18n.Tr("fixed_count_text_gradient_pressed"));
+                    if (newPressedCountGradient != Settings.Data.CountTextGradientPressedOverride)
+                    {
+                        Settings.Data.CountTextGradientPressedOverride = newPressedCountGradient;
+                        TickTextGradients();
+                        SaveSettingsFromGui();
+                    }
+                    if (Settings.Data.CountTextGradientPressedOverride)
+                    {
+                        Color pressedCountLeft = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_left_pressed"), Settings.Data.CountTextGradientLeftPressed, Color.white);
+                        if (pressedCountLeft != Settings.Data.CountTextGradientLeftPressed)
+                        {
+                            Settings.Data.CountTextGradientLeftPressed = pressedCountLeft;
+                            TickTextGradients();
+                            SaveSettingsFromGui();
+                        }
+                        Color pressedCountRight = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_right_pressed"), Settings.Data.CountTextGradientRightPressed, Color.white);
+                        if (pressedCountRight != Settings.Data.CountTextGradientRightPressed)
+                        {
+                            Settings.Data.CountTextGradientRightPressed = pressedCountRight;
+                            TickTextGradients();
+                            SaveSettingsFromGui();
+                        }
+                    }
+                }
+            }
+
             // Per-key text size / spacing section / 每键字号/字间距 区块
             DrawPerKeyTextSizeSection();
 

@@ -32,6 +32,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private Rect[] rects;
         private Color[] bgColors;
         private Color[] outlineColors;
+        // Optional vertical fill gradient for the background mesh. It is vertex data, not a
+        // texture/Image per key, so rounded and 9-sliced boxes keep their exact geometry.
+        // 背景 Mesh 的可选垂直渐变；使用顶点色而非每键贴图/Image，圆角与九宫格几何保持不变。
+        private bool[] bgGradientEnabled;
+        private Color[] bgGradientTops;
+        private Color[] bgGradientBottoms;
+        private bool[] outlineGradientEnabled;
+        private Color[] outlineGradientTops;
+        private Color[] outlineGradientBottoms;
         private float[] scales;
         private bool[] visibles;
         // Per-slot corner radius (0 = square, the legacy 9-slice path) and per-slot border
@@ -69,6 +78,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             rects = new Rect[slotCount];
             bgColors = new Color[slotCount];
             outlineColors = new Color[slotCount];
+            bgGradientEnabled = new bool[slotCount];
+            bgGradientTops = new Color[slotCount];
+            bgGradientBottoms = new Color[slotCount];
+            outlineGradientEnabled = new bool[slotCount];
+            outlineGradientTops = new Color[slotCount];
+            outlineGradientBottoms = new Color[slotCount];
             scales = new float[slotCount];
             visibles = new bool[slotCount];
             cornerRadii = new float[slotCount];
@@ -127,6 +142,36 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             outlineColors[slot] = outline;
             MarkDirty();
         }
+
+        public void SetBackgroundGradient(int slot, bool enabled, Color top, Color bottom)
+        {
+            if (slot < 0 || slot >= count) return;
+            enabled &= !IsInvalidColor(top) && !IsInvalidColor(bottom);
+            if (bgGradientEnabled[slot] == enabled
+                && (!enabled || (bgGradientTops[slot] == top && bgGradientBottoms[slot] == bottom)))
+                return;
+            bgGradientEnabled[slot] = enabled;
+            bgGradientTops[slot] = enabled ? top : Color.white;
+            bgGradientBottoms[slot] = enabled ? bottom : Color.white;
+            MarkDirty();
+        }
+
+        public void SetOutlineGradient(int slot, bool enabled, Color top, Color bottom)
+        {
+            if (slot < 0 || slot >= count) return;
+            enabled &= !IsInvalidColor(top) && !IsInvalidColor(bottom);
+            if (outlineGradientEnabled[slot] == enabled
+                && (!enabled || (outlineGradientTops[slot] == top && outlineGradientBottoms[slot] == bottom)))
+                return;
+            outlineGradientEnabled[slot] = enabled;
+            outlineGradientTops[slot] = enabled ? top : Color.white;
+            outlineGradientBottoms[slot] = enabled ? bottom : Color.white;
+            MarkDirty();
+        }
+
+        private static bool IsInvalidColor(Color color) =>
+            float.IsNaN(color.r) || float.IsNaN(color.g) || float.IsNaN(color.b) || float.IsNaN(color.a)
+            || float.IsInfinity(color.r) || float.IsInfinity(color.g) || float.IsInfinity(color.b) || float.IsInfinity(color.a);
 
         public void SetScale(int slot, float scale)
         {
@@ -195,6 +240,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 钳制)会产生负宽高——镜像交叠的垃圾切片。同时拦截未来坏缩放数学产生的 NaN。
                     if (float.IsNaN(r.width) || float.IsNaN(r.height) || r.width <= 0f || r.height <= 0f) continue;
                 }
+                bool gradient = isOutline
+                    ? src.outlineGradientEnabled[i]
+                    : src.bgGradientEnabled[i];
+                Color bottom = gradient
+                    ? (isOutline ? src.outlineGradientBottoms[i] : src.bgGradientBottoms[i])
+                    : colors[i];
+                Color top = gradient
+                    ? (isOutline ? src.outlineGradientTops[i] : src.bgGradientTops[i])
+                    : colors[i];
                 float radius = src.cornerRadii[i];
                 if (radius > 0f)
                 {
@@ -203,7 +257,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 描边环单独绘制（填充块下方略小的块），使两层与九宫格路径保持同样的双
                     // mesh 结构。
                     float border = src.borderThicknesses[i];
-                    DrawRounded(vh, r, colors[i], radius, border);
+                    DrawRounded(vh, r, top, bottom, gradient, radius, border);
                 }
                 else if (src.borderThicknesses[i] > 0f && isOutline)
                 {
@@ -215,11 +269,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 直角键的自定义边框厚度：描边层改画指定厚度的直角环，取代贴图自带的
                     // 11px 九宫格边框。没有这个分支时 BorderThickness 对直角键完全无效——
                     // 只有圆角路径读它。背景层保持整块九宫格填充；环画在其外缘之上。
-                    DrawSquareRing(vh, r, colors[i], src.borderThicknesses[i]);
+                    DrawSquareRing(vh, r, top, bottom, gradient, src.borderThicknesses[i]);
                 }
                 else
                 {
-                    DrawSliced(vh, r, colors[i], Sprite);
+                    DrawSliced(vh, r, top, bottom, gradient, Sprite);
                 }
             }
         }
@@ -251,11 +305,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static readonly float[] scratchInnerX = new float[MaxRoundedPoints];
         private static readonly float[] scratchInnerY = new float[MaxRoundedPoints];
 
-        private static void DrawSliced(VertexHelper vh, Rect r, Color color, Sprite sprite)
+        private static void DrawSliced(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, Sprite sprite)
         {
             if (sprite == null)
             {
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, color);
+                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             // UV rects computed from textureRect (outer) and border (inner) — this Unity version has
@@ -280,7 +334,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             Vector4 spriteBorder = sprite.border * ppuScale;
             if (sprite.border == Vector4.zero)
             {
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax, color);
+                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             // Inner UV from the RAW texel border — not the ppu-scaled one. / 内圈 UV 用原始 texel 边框计算,而非 ppu 缩放后的。
@@ -309,7 +363,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 for (int xi = 0; xi < 3; xi++)
                 {
                     if (xs[xi + 1] - xs[xi] <= 0f || ys[yi + 1] - ys[yi] <= 0f) continue;
-                    AddQuad(vh, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], color);
+                    AddQuad(vh, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], top, bottom, gradient, r.yMin, r.yMax);
                 }
             }
         }
@@ -375,7 +429,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// so radius &gt; 0 slots bypass DrawSliced entirely. / 圆角矩形 mesh：背景层填充形状，
         /// 描边层沿边缘内侧画 border 像素的环。九宫格贴图无法圆角，故 radius &gt; 0 的槽位完全
         /// 绕开 DrawSliced。</summary>
-        private void DrawRounded(VertexHelper vh, Rect r, Color color, float radius, float border)
+        private void DrawRounded(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, float radius, float border)
         {
             float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
             Vector2 uv = RoundedUV();
@@ -386,7 +440,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 // A radius that collapsed (sub-pixel box) still renders as a plain quad rather
                 // than vanishing. / 半径被压缩到 0（亚像素盒子）时仍画成普通矩形而非消失。
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, color);
+                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             int n = FillRoundedPoints(r, rad, scratchRoundX, scratchRoundY);
@@ -396,12 +450,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 // Filled shape: triangle fan around the rect centre. / 填充形状：绕矩形中心的三角扇。
                 int c = vh.currentVertCount;
                 UIVertex v = UIVertex.simpleVert;
-                v.color = color;
+                v.color = VerticalGradientColor(top, bottom, gradient, r.center.y, r.yMin, r.yMax);
                 v.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
                 v.position = new Vector3(r.center.x, r.center.y, 0f);
                 vh.AddVert(v);
                 for (int i = 0; i < n; i++)
                 {
+                    v.color = VerticalGradientColor(top, bottom, gradient, scratchRoundY[i], r.yMin, r.yMax);
                     v.position = new Vector3(scratchRoundX[i], scratchRoundY[i], 0f);
                     vh.AddVert(v);
                 }
@@ -441,7 +496,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     new Vector2(scratchRoundX[j], scratchRoundY[j]),
                     new Vector2(scratchInnerX[j], scratchInnerY[j]),
                     new Vector2(scratchInnerX[i], scratchInnerY[i]),
-                    ringUv, color);
+                    ringUv, top, bottom, gradient, r.yMin, r.yMax);
             }
         }
 
@@ -452,32 +507,67 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// 指定厚度的直角描边环——圆角描边环在直角键上的对应物。四条轴向边（横条占满全宽、
         /// 竖条只占中段），角上不会重复绘制。厚度 0 不会走到这里——旧九宫格路径保留贴图
         /// 自带边框。</summary>
-        private void DrawSquareRing(VertexHelper vh, Rect r, Color color, float border)
+        private void DrawSquareRing(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, float border)
         {
             float b = Mathf.Min(border, Mathf.Min(r.width, r.height) * 0.5f);
             if (b <= 0f) return;
             Vector2 uv = RingUV();
-            AddQuad(vh, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, color); // top
-            AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, color); // bottom
-            AddQuad(vh, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, color); // left
-            AddQuad(vh, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, color); // right
+            AddQuad(vh, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // top
+            AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // bottom
+            AddQuad(vh, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // left
+            AddQuad(vh, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // right
         }
 
         /// <summary>Arbitrary quad — the ring segments are not axis-aligned. / 任意四边形——环段
         /// 不与坐标轴对齐。</summary>
-        private static void AddQuadVerts(VertexHelper vh, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv, Color color)
+        private static void AddQuadVerts(VertexHelper vh, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv,
+            Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
         {
             int i = vh.currentVertCount;
             UIVertex vert = UIVertex.simpleVert;
-            vert.color = color;
             vert.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
+            vert.color = VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax);
             vert.position = new Vector3(a.x, a.y, 0f);
             vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax);
             vert.position = new Vector3(b.x, b.y, 0f);
             vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax);
             vert.position = new Vector3(c.x, c.y, 0f);
             vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax);
             vert.position = new Vector3(d.x, d.y, 0f);
+            vh.AddVert(vert);
+            vh.AddTriangle(i, i + 1, i + 2);
+            vh.AddTriangle(i, i + 2, i + 3);
+        }
+
+        private static Color VerticalGradientColor(Color top, Color bottom, bool gradient, float y, float yMin, float yMax)
+        {
+            if (!gradient || yMax <= yMin) return top;
+            return Color.Lerp(bottom, top, Mathf.Clamp01((y - yMin) / (yMax - yMin)));
+        }
+
+        private static void AddQuad(VertexHelper vh, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1,
+            Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
+        {
+            int i = vh.currentVertCount;
+            UIVertex vert = UIVertex.simpleVert;
+            vert.color = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
+            vert.position = new Vector3(x0, y0, 0f);
+            vert.uv0 = new Vector4(u0, v0, 0f, 0f);
+            vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
+            vert.position = new Vector3(x1, y0, 0f);
+            vert.uv0 = new Vector4(u1, v0, 0f, 0f);
+            vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            vert.position = new Vector3(x1, y1, 0f);
+            vert.uv0 = new Vector4(u1, v1, 0f, 0f);
+            vh.AddVert(vert);
+            vert.color = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            vert.position = new Vector3(x0, y1, 0f);
+            vert.uv0 = new Vector4(u0, v1, 0f, 0f);
             vh.AddVert(vert);
             vh.AddTriangle(i, i + 1, i + 2);
             vh.AddTriangle(i, i + 2, i + 3);

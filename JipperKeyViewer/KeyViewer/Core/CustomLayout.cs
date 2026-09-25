@@ -34,6 +34,8 @@ namespace JipperKeyViewer.KeyViewer
         private readonly Dictionary<int, bool> customGhostStates = new Dictionary<int, bool>();
         private readonly Dictionary<FmNode, RectTransform> customImageRects = new Dictionary<FmNode, RectTransform>();
         private readonly Dictionary<FmNode, RawImage> customImageRaws = new Dictionary<FmNode, RawImage>();
+        private readonly Dictionary<FmNode, Image> customGlowImages = new Dictionary<FmNode, Image>();
+        private Sprite customGlowSprite;
         private readonly HashSet<int> customVideoFallbackApplied = new HashSet<int>();
 
         /// <summary>Clear ghost-key edge state when the active document identity changes.
@@ -284,10 +286,41 @@ namespace JipperKeyViewer.KeyViewer
                 node.Width = float.IsNaN(node.Width) || float.IsInfinity(node.Width) ? 60f : Mathf.Clamp(node.Width, 10f, 2000f);
                 node.Height = float.IsNaN(node.Height) || float.IsInfinity(node.Height) ? 60f : Mathf.Clamp(node.Height, 10f, 2000f);
                 node.Opacity = float.IsNaN(node.Opacity) ? 1f : Mathf.Clamp01(node.Opacity);
+                node.GlowSize = float.IsNaN(node.GlowSize) || float.IsInfinity(node.GlowSize) ? 20f : Mathf.Clamp(node.GlowSize, 0f, 50f);
+                node.GlowOpacity = float.IsNaN(node.GlowOpacity) || float.IsInfinity(node.GlowOpacity) ? 0.7f : Mathf.Clamp01(node.GlowOpacity);
+                node.GlowSizePressed = float.IsNaN(node.GlowSizePressed) || float.IsInfinity(node.GlowSizePressed) ? 20f : Mathf.Clamp(node.GlowSizePressed, 0f, 50f);
+                node.GlowOpacityPressed = float.IsNaN(node.GlowOpacityPressed) || float.IsInfinity(node.GlowOpacityPressed) ? 0.7f : Mathf.Clamp01(node.GlowOpacityPressed);
                 node.RainRow = Mathf.Clamp(node.RainRow, 0, 2);
                 node.FontSize = float.IsNaN(node.FontSize) || node.FontSize < 0f ? 0f : Mathf.Min(node.FontSize, 72f);
+                node.CountFontSize = float.IsNaN(node.CountFontSize) || node.CountFontSize < 0f ? 0f : Mathf.Min(node.CountFontSize, 72f);
+                node.CountOffsetX = float.IsNaN(node.CountOffsetX) || float.IsInfinity(node.CountOffsetX) ? 0f : Mathf.Clamp(node.CountOffsetX, -200f, 200f);
+                node.CountOffsetY = float.IsNaN(node.CountOffsetY) || float.IsInfinity(node.CountOffsetY) ? 0f : Mathf.Clamp(node.CountOffsetY, -200f, 200f);
+                node.TextOpacity = float.IsNaN(node.TextOpacity) || float.IsInfinity(node.TextOpacity) ? 1f : Mathf.Clamp01(node.TextOpacity);
+                node.CountTextOpacity = float.IsNaN(node.CountTextOpacity) || float.IsInfinity(node.CountTextOpacity) ? 1f : Mathf.Clamp01(node.CountTextOpacity);
+                node.LabelOffsetX = float.IsNaN(node.LabelOffsetX) || float.IsInfinity(node.LabelOffsetX) ? 0f : Mathf.Clamp(node.LabelOffsetX, -200f, 200f);
+                node.LabelOffsetY = float.IsNaN(node.LabelOffsetY) || float.IsInfinity(node.LabelOffsetY) ? 0f : Mathf.Clamp(node.LabelOffsetY, -200f, 200f);
+                node.LabelRotation = float.IsNaN(node.LabelRotation) || float.IsInfinity(node.LabelRotation) ? 0f : Mathf.Clamp(node.LabelRotation, -180f, 180f);
+                node.CountRotation = float.IsNaN(node.CountRotation) || float.IsInfinity(node.CountRotation) ? 0f : Mathf.Clamp(node.CountRotation, -180f, 180f);
+                node.LabelScale = float.IsNaN(node.LabelScale) || float.IsInfinity(node.LabelScale) ? 1f : Mathf.Clamp(node.LabelScale, 0.5f, 2f);
+                node.CountScale = float.IsNaN(node.CountScale) || float.IsInfinity(node.CountScale) ? 1f : Mathf.Clamp(node.CountScale, 0.5f, 2f);
+                node.PressedLabelScale = float.IsNaN(node.PressedLabelScale) || float.IsInfinity(node.PressedLabelScale) ? 1f : Mathf.Clamp(node.PressedLabelScale, 0.5f, 2f);
+                node.PressedCountScale = float.IsNaN(node.PressedCountScale) || float.IsInfinity(node.PressedCountScale) ? 1f : Mathf.Clamp(node.PressedCountScale, 0.5f, 2f);
+                node.PressedLabelOffsetX = float.IsNaN(node.PressedLabelOffsetX) || float.IsInfinity(node.PressedLabelOffsetX) ? 0f : Mathf.Clamp(node.PressedLabelOffsetX, -200f, 200f);
+                node.PressedLabelOffsetY = float.IsNaN(node.PressedLabelOffsetY) || float.IsInfinity(node.PressedLabelOffsetY) ? 0f : Mathf.Clamp(node.PressedLabelOffsetY, -200f, 200f);
+                node.PressedCountOffsetX = float.IsNaN(node.PressedCountOffsetX) || float.IsInfinity(node.PressedCountOffsetX) ? 0f : Mathf.Clamp(node.PressedCountOffsetX, -200f, 200f);
+                node.PressedCountOffsetY = float.IsNaN(node.PressedCountOffsetY) || float.IsInfinity(node.PressedCountOffsetY) ? 0f : Mathf.Clamp(node.PressedCountOffsetY, -200f, 200f);
+                node.PressedLabelRotation = float.IsNaN(node.PressedLabelRotation) || float.IsInfinity(node.PressedLabelRotation) ? 0f : Mathf.Clamp(node.PressedLabelRotation, -180f, 180f);
+                node.PressedCountRotation = float.IsNaN(node.PressedCountRotation) || float.IsInfinity(node.PressedCountRotation) ? 0f : Mathf.Clamp(node.PressedCountRotation, -180f, 180f);
                 node.RainOffsetX = float.IsNaN(node.RainOffsetX) ? 0f : Mathf.Clamp(node.RainOffsetX, -2000f, 2000f);
                 node.RainOffsetY = float.IsNaN(node.RainOffsetY) ? 0f : Mathf.Clamp(node.RainOffsetY, -2000f, 2000f);
+                node.RainAlignment = Mathf.Clamp(node.RainAlignment, 0, 2);
+                node.RainCornerRadius = float.IsNaN(node.RainCornerRadius) || float.IsInfinity(node.RainCornerRadius) ? 0f : Mathf.Clamp(node.RainCornerRadius, 0f, 20f);
+                node.RainBorderSides = Mathf.Clamp(node.RainBorderSides, 0, 2);
+                node.RainDotLength = float.IsNaN(node.RainDotLength) || float.IsInfinity(node.RainDotLength) ? 12f : Mathf.Clamp(node.RainDotLength, 1f, 100f);
+                node.RainGapLength = float.IsNaN(node.RainGapLength) || float.IsInfinity(node.RainGapLength) ? 8f : Mathf.Clamp(node.RainGapLength, 0f, 100f);
+                node.GhostRainCornerRadius = float.IsNaN(node.GhostRainCornerRadius) || float.IsInfinity(node.GhostRainCornerRadius) ? 0f : Mathf.Clamp(node.GhostRainCornerRadius, 0f, 20f);
+                node.GhostRainDotLength = float.IsNaN(node.GhostRainDotLength) || float.IsInfinity(node.GhostRainDotLength) ? 12f : Mathf.Clamp(node.GhostRainDotLength, 1f, 100f);
+                node.GhostRainGapLength = float.IsNaN(node.GhostRainGapLength) || float.IsInfinity(node.GhostRainGapLength) ? 8f : Mathf.Clamp(node.GhostRainGapLength, 0f, 100f);
                 node.CounterAnimScale = float.IsNaN(node.CounterAnimScale) ? 1.1f : Mathf.Clamp(node.CounterAnimScale, 1f, 2f);
                 node.CounterAnimDurationMs = node.CounterAnimDurationMs <= 0f || float.IsNaN(node.CounterAnimDurationMs)
                     ? 300f
@@ -461,6 +494,7 @@ namespace JipperKeyViewer.KeyViewer
             customGroupPresses.Clear();
             customImageRects.Clear();
             customImageRaws.Clear();
+            customGlowImages.Clear();
             customVideoFallbackApplied.Clear();
             // Normalize a legacy/drifted global Total against the node document before the first
             // panel refresh. / 首次刷新面板前，按节点文档归一化旧版或漂移的全局 Total。
@@ -490,10 +524,265 @@ namespace JipperKeyViewer.KeyViewer
             // Unbound image nodes are pure decoration. / 未绑定按键的图片节点为纯装饰。
             foreach (FmNode node in nodes)
                 if (node != null && node.NodeType == 3 && !CustomNodeHasKey(node) && CustomNodeVisible(node))
+                {
                     CreateCustomImageObject(node);
+                    ApplyCustomGlow(node, false);
+                }
             OrderCustomImageRects();
             // Release every video player this pass did not touch. / 释放本次构建未触及的所有视频播放器。
             KvVideoTextureManager.EndBuild();
+        }
+
+        private void ApplyCustomGlow(FmNode node, bool pressed)
+        {
+            if (node == null || keyGlowLayer == null) return;
+            Image image;
+            bool usePressedGlow = pressed && node.GlowPressedOverride;
+            float rawSize = usePressedGlow ? node.GlowSizePressed : node.GlowSize;
+            float rawOpacity = usePressedGlow ? node.GlowOpacityPressed : node.GlowOpacity;
+            float size = float.IsNaN(rawSize) || float.IsInfinity(rawSize)
+                ? 20f : Mathf.Clamp(rawSize, 0f, 50f);
+            float opacity = float.IsNaN(rawOpacity) || float.IsInfinity(rawOpacity)
+                ? 0.7f : Mathf.Clamp01(rawOpacity);
+            bool visible = CustomNodeVisible(node);
+            if (!visible || !node.UseGlow || size <= 0f)
+            {
+                if (customGlowImages.TryGetValue(node, out image) && image != null)
+                    image.enabled = false;
+                return;
+            }
+
+            if (!customGlowImages.TryGetValue(node, out image) || image == null)
+            {
+                GameObject glowObject = new GameObject("Glow_" + node.Id);
+                glowObject.transform.SetParent(keyGlowLayer, false);
+                RectTransform rect = glowObject.AddComponent<RectTransform>();
+                rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(0f, 1f);
+                image = glowObject.AddComponent<Image>();
+                image.sprite = GetCustomGlowSprite();
+                image.type = Image.Type.Sliced;
+                image.raycastTarget = false;
+                customGlowImages[node] = image;
+            }
+
+            float pad = Mathf.Max(2f, size);
+            RectTransform glowRect = (RectTransform)image.transform;
+            glowRect.anchoredPosition = new Vector2(node.X - pad, -(node.Y - pad));
+            glowRect.sizeDelta = new Vector2(node.Width + pad * 2f, node.Height + pad * 2f);
+            glowRect.SetSiblingIndex(Mathf.Clamp(node.Depth, 0, 60));
+
+            Color body = node.NodeType == 3
+                ? (node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.Outline) : Settings.Data.Outline)
+                : node.NodeType == 1
+                    ? (node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.KpsBackground) : Settings.Data.KpsBackground)
+                    : node.NodeType == 2
+                        ? (node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.TotalBackground) : Settings.Data.TotalBackground)
+                        : node.UseCustomColor
+                            ? NodeColor(pressed ? node.BgPressed : node.Bg,
+                                pressed ? Settings.Data.BackgroundClicked : Settings.Data.Background)
+                            : (pressed ? Settings.Data.BackgroundClicked : Settings.Data.Background);
+            bool followBody = usePressedGlow ? node.GlowFollowBodyPressed : node.GlowFollowBody;
+            float[] glowColor = usePressedGlow ? node.GlowColorPressed : node.GlowColor;
+            Color glow = followBody ? body : NodeColor(glowColor, body);
+            glow.a *= opacity;
+            image.enabled = true;
+            image.color = glow;
+        }
+
+        private void ApplyCustomBackgroundGradient(FmNode node, bool pressed)
+        {
+            if (node == null || keyShapeLayer == null || node.RuntimeKey == null) return;
+            int slot = node.RuntimeKey.shapeSlot;
+            if (slot < 0)
+            {
+                keyShapeLayer.SetBackgroundGradient(slot, false, Color.white, Color.white);
+                return;
+            }
+            if (!node.UseBackgroundGradient)
+            {
+                keyShapeLayer.SetBackgroundGradient(slot, false, Color.white, Color.white);
+                return;
+            }
+
+            Color normal = node.NodeType == 1
+                ? node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.KpsBackground) : Settings.Data.KpsBackground
+                : node.NodeType == 2
+                    ? node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.TotalBackground) : Settings.Data.TotalBackground
+                    : node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.Background) : Settings.Data.Background;
+            Color active = node.NodeType == 1 || node.NodeType == 2
+                ? normal
+                : node.UseCustomColor
+                    ? NodeColor(node.BgPressed, Settings.Data.BackgroundClicked)
+                    : Settings.Data.BackgroundClicked;
+            bool usePressed = pressed && node.UsePressedBackgroundGradient;
+            Color top = NodeColor(usePressed ? node.BackgroundGradientTopPressed : node.BackgroundGradientTop,
+                usePressed ? active : normal);
+            Color bottom = NodeColor(usePressed ? node.BackgroundGradientBottomPressed : node.BackgroundGradientBottom,
+                usePressed ? active : normal);
+            keyShapeLayer.SetBackgroundGradient(slot, true, top, bottom);
+        }
+
+        private void ApplyCustomOutlineGradient(FmNode node, bool pressed)
+        {
+            if (node == null || keyShapeLayer == null || node.RuntimeKey == null) return;
+            int slot = node.RuntimeKey.shapeSlot;
+            if (slot < 0 || !node.UseOutlineGradient)
+            {
+                if (slot >= 0) keyShapeLayer.SetOutlineGradient(slot, false, Color.white, Color.white);
+                return;
+            }
+
+            Color normal = node.NodeType == 1
+                ? node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.KpsOutline) : Settings.Data.KpsOutline
+                : node.NodeType == 2
+                    ? node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.TotalOutline) : Settings.Data.TotalOutline
+                    : node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.Outline) : Settings.Data.Outline;
+            Color active = node.NodeType == 1
+                ? node.UseCustomColor ? NodeColor(node.OutlinePressed, normal) : normal
+                : node.NodeType == 2
+                    ? node.UseCustomColor ? NodeColor(node.OutlinePressed, normal) : normal
+                    : node.UseCustomColor
+                        ? NodeColor(node.OutlinePressed, Settings.Data.OutlineClicked)
+                        : Settings.Data.OutlineClicked;
+            bool usePressed = pressed && node.UsePressedOutlineGradient;
+            keyShapeLayer.SetOutlineGradient(slot, true,
+                NodeColor(usePressed ? node.OutlineGradientTopPressed : node.OutlineGradientTop, usePressed ? active : normal),
+                NodeColor(usePressed ? node.OutlineGradientBottomPressed : node.OutlineGradientBottom, usePressed ? active : normal));
+        }
+
+        private void ApplyFixedBackgroundGradients()
+        {
+            if (IsCustomLayout || keyShapeLayer == null || Keys == null) return;
+            for (int i = 0; i < Keys.Length; i++)
+                ApplyFixedBackgroundGradient(Keys[i], Keys[i] != null && Keys[i].isPressed);
+            ApplyFixedBackgroundGradient(Kps, Kps != null && Kps.isPressed);
+            ApplyFixedBackgroundGradient(Total, Total != null && Total.isPressed);
+        }
+
+        private void ApplyFixedBackgroundGradient(Key key, bool pressed)
+        {
+            if (IsCustomLayout || key == null || keyShapeLayer == null) return;
+            ProfileData d = Settings.Data;
+            bool usePressed = pressed && d.FixedBackgroundGradientPressedOverride;
+            keyShapeLayer.SetBackgroundGradient(key.shapeSlot, d.EnableFixedBackgroundGradient,
+                usePressed ? d.FixedBackgroundGradientTopPressed : d.FixedBackgroundGradientTop,
+                usePressed ? d.FixedBackgroundGradientBottomPressed : d.FixedBackgroundGradientBottom);
+        }
+
+        private void ApplyFixedOutlineGradients()
+        {
+            if (IsCustomLayout || keyShapeLayer == null || Keys == null) return;
+            for (int i = 0; i < Keys.Length; i++)
+                ApplyFixedOutlineGradient(Keys[i], Keys[i] != null && Keys[i].isPressed);
+            ApplyFixedOutlineGradient(Kps, Kps != null && Kps.isPressed);
+            ApplyFixedOutlineGradient(Total, Total != null && Total.isPressed);
+        }
+
+        private void ApplyFixedOutlineGradient(Key key, bool pressed)
+        {
+            if (IsCustomLayout || key == null || keyShapeLayer == null) return;
+            ProfileData d = Settings.Data;
+            bool usePressed = pressed && d.FixedOutlineGradientPressedOverride;
+            keyShapeLayer.SetOutlineGradient(key.shapeSlot, d.EnableFixedOutlineGradient,
+                usePressed ? d.FixedOutlineGradientTopPressed : d.FixedOutlineGradientTop,
+                usePressed ? d.FixedOutlineGradientBottomPressed : d.FixedOutlineGradientBottom);
+        }
+
+        private void ApplyFixedKeyGlows()
+        {
+            if (IsCustomLayout)
+            {
+                ClearFixedGlowImages();
+                return;
+            }
+            if (keyGlowLayer == null || Keys == null) return;
+            keyGlowLayer.SetSiblingIndex(0);
+            for (int i = 0; i < Keys.Length; i++)
+                ApplyFixedGlow(Keys[i], i, Keys[i] != null && Keys[i].isPressed);
+            ApplyFixedGlow(Kps, -1, Kps != null && Kps.isPressed);
+            ApplyFixedGlow(Total, -2, Total != null && Total.isPressed);
+        }
+
+        private void ApplyFixedGlow(Key key, int index, bool pressed)
+        {
+            if (key == null) return;
+            ProfileData d = Settings.Data;
+            bool usePressedGlow = pressed && d.FixedKeyGlowPressedOverride;
+            float rawSize = usePressedGlow ? d.FixedKeyGlowSizePressed : d.FixedKeyGlowSize;
+            float rawOpacity = usePressedGlow ? d.FixedKeyGlowOpacityPressed : d.FixedKeyGlowOpacity;
+            float size = float.IsNaN(rawSize) || float.IsInfinity(rawSize)
+                ? 20f : Mathf.Clamp(rawSize, 0f, 50f);
+            float opacity = float.IsNaN(rawOpacity) || float.IsInfinity(rawOpacity)
+                ? 0.7f : Mathf.Clamp01(rawOpacity);
+            bool visible = key.visuals == null || key.visuals.gameObject.activeSelf;
+            Image image;
+            if (!visible || !d.EnableFixedKeyGlow || size <= 0f || keyGlowLayer == null)
+            {
+                if (fixedGlowImages.TryGetValue(key, out image) && image != null)
+                    image.enabled = false;
+                return;
+            }
+
+            RectTransform source = key.transform as RectTransform;
+            if (source == null) return;
+            if (!fixedGlowImages.TryGetValue(key, out image) || image == null)
+            {
+                GameObject glowObject = new GameObject("GlowFixed_" + index);
+                glowObject.transform.SetParent(keyGlowLayer, false);
+                RectTransform rect = glowObject.AddComponent<RectTransform>();
+                image = glowObject.AddComponent<Image>();
+                image.sprite = GetCustomGlowSprite();
+                image.type = Image.Type.Sliced;
+                image.raycastTarget = false;
+                fixedGlowImages[key] = image;
+            }
+
+            float pad = Mathf.Max(2f, size);
+            RectTransform glowRect = (RectTransform)image.transform;
+            glowRect.anchorMin = source.anchorMin;
+            glowRect.anchorMax = source.anchorMax;
+            glowRect.pivot = source.pivot;
+            glowRect.anchoredPosition = new Vector2(source.anchoredPosition.x - pad, source.anchoredPosition.y);
+            glowRect.sizeDelta = new Vector2(source.sizeDelta.x + pad * 2f, source.sizeDelta.y + pad * 2f);
+            glowRect.SetSiblingIndex(Mathf.Clamp(index >= 0 ? index : index == -1 ? 62 : 63, 0, 63));
+
+            Color body = FixedGlowBodyColor(index, pressed, d);
+            bool followBody = usePressedGlow ? d.FixedKeyGlowFollowBodyPressed : d.FixedKeyGlowFollowBody;
+            Color glow = followBody ? body : (usePressedGlow ? d.FixedKeyGlowColorPressed : d.FixedKeyGlowColor);
+            glow.a *= opacity;
+            image.color = glow;
+            image.enabled = true;
+        }
+
+        private static Color FixedGlowBodyColor(int index, bool pressed, ProfileData d)
+        {
+            if (index == -1) return d.KpsBackground;
+            if (index == -2) return d.TotalBackground;
+            if (KeyViewer.IsFullKeyboard)
+            {
+                bool unified = d.EnableFullKeyboardUnifiedColor;
+                return pressed
+                    ? (unified ? d.FullKeyboardBackgroundClicked : d.BackgroundClicked)
+                    : (unified ? d.FullKeyboardBackground : d.Background);
+            }
+            if (d.EnablePerKeyColors && d.PerKeyBackground != null && d.PerKeyBackgroundClicked != null
+                && index >= 0 && index < d.PerKeyBackground.Length && index < d.PerKeyBackgroundClicked.Length)
+                return pressed ? d.PerKeyBackgroundClicked[index] : d.PerKeyBackground[index];
+            return pressed ? d.BackgroundClicked : d.Background;
+        }
+
+        private void SetFixedGlowVisible(Key key, bool visible)
+        {
+            if (key == null) return;
+            if (fixedGlowImages.TryGetValue(key, out Image image) && image != null)
+                image.enabled = visible && Settings.Data.EnableFixedKeyGlow;
+        }
+
+        private void ClearFixedGlowImages()
+        {
+            foreach (Image image in fixedGlowImages.Values)
+                if (image != null) Destroy(image.gameObject);
+            fixedGlowImages.Clear();
         }
 
         private Key CreateCustomKey(FmNode node, int slot)
@@ -550,15 +839,24 @@ namespace JipperKeyViewer.KeyViewer
             key.rainOffsetX = Mathf.Clamp(node.RainOffsetX, -2000f, 2000f);
 
             if (node.FontSize > 0f)
-            {
                 key.text.fontSizeMax = node.FontSize;
-                if (key.value != null) key.value.fontSizeMax = node.FontSize;
-            }
+            if (key.value != null)
+                key.value.fontSizeMax = node.CountFontSize > 0f
+                    ? node.CountFontSize
+                    : (node.FontSize > 0f ? node.FontSize : key.text.fontSizeMax);
+            FontStyles nodeFontStyle = (FontStyles)node.FontStyleFlags;
+            key.text.fontStyle = nodeFontStyle;
+            if (key.value != null)
+                key.value.fontStyle = node.UseCustomCountFontStyle
+                    ? (FontStyles)node.CountFontStyleFlags
+                    : nodeFontStyle;
             if (!isStat)
                 UpdateCustomKeyText(key, node); // stat labels are owned by SetKpsTotalDisplay / stat 标签由 SetKpsTotalDisplay 接管
             ApplyCustomShapeStyle(key, node);
             ApplyCustomTextStyles(key, node);
             LayoutCustomTexts(key, node);
+            ApplyCustomTextOffsets(key, node);
+            ApplyCustomGlow(node, false);
             return key;
         }
 
@@ -589,6 +887,50 @@ namespace JipperKeyViewer.KeyViewer
                 vt.anchoredPosition = Vector2.zero;
                 vt.sizeDelta = new Vector2(key.keySize.x - 4f, key.keySize.y - 4f);
                 key.value.alignment = TextAlignmentOptions.Center;
+            }
+        }
+
+        private static void ApplyCustomTextOffsets(Key key, FmNode node)
+        {
+            if (key == null || node == null) return;
+            if (key.text != null)
+            {
+                key.text.rectTransform.anchoredPosition += new Vector2(node.LabelOffsetX, node.LabelOffsetY);
+                key.text.rectTransform.localRotation = Quaternion.Euler(0f, 0f, node.LabelRotation);
+                key.text.rectTransform.localScale = Vector3.one * node.LabelScale;
+                key.customTextBasePos = key.text.rectTransform.anchoredPosition;
+            }
+            if (key.value != null)
+            {
+                key.value.rectTransform.anchoredPosition += new Vector2(node.CountOffsetX, node.CountOffsetY);
+                key.value.rectTransform.localRotation = Quaternion.Euler(0f, 0f, node.CountRotation);
+                key.value.rectTransform.localScale = Vector3.one * node.CountScale;
+                key.customValueBasePos = key.value.rectTransform.anchoredPosition;
+            }
+        }
+
+        private static void ApplyCustomPressedTextTransform(Key key, FmNode node, bool pressed)
+        {
+            if (key == null || node == null) return;
+            if (key.text != null)
+            {
+                float scale = pressed && node.UsePressedLabelScale ? node.PressedLabelScale : node.LabelScale;
+                float rotation = pressed && node.UsePressedLabelRotation ? node.PressedLabelRotation : node.LabelRotation;
+                Vector2 offset = pressed && node.UsePressedLabelOffset
+                    ? new Vector2(node.PressedLabelOffsetX, node.PressedLabelOffsetY) : Vector2.zero;
+                key.text.rectTransform.anchoredPosition = key.customTextBasePos + offset;
+                key.text.rectTransform.localScale = Vector3.one * scale;
+                key.text.rectTransform.localRotation = Quaternion.Euler(0f, 0f, rotation);
+            }
+            if (key.value != null)
+            {
+                float scale = pressed && node.UsePressedCountScale ? node.PressedCountScale : node.CountScale;
+                float rotation = pressed && node.UsePressedCountRotation ? node.PressedCountRotation : node.CountRotation;
+                Vector2 offset = pressed && node.UsePressedCountOffset
+                    ? new Vector2(node.PressedCountOffsetX, node.PressedCountOffsetY) : Vector2.zero;
+                key.value.rectTransform.anchoredPosition = key.customValueBasePos + offset;
+                key.value.rectTransform.localScale = Vector3.one * scale;
+                key.value.rectTransform.localRotation = Quaternion.Euler(0f, 0f, rotation);
             }
         }
 
@@ -679,6 +1021,9 @@ namespace JipperKeyViewer.KeyViewer
         private void OrderCustomImageRects()
         {
             int sibling = 0;
+            // Keep the shared glow layer behind image bodies, then order images by Depth. /
+            // 先把共享光效层固定在图片本体之后（下方），再按 Depth 排列图片。
+            if (keyGlowLayer != null) keyGlowLayer.SetSiblingIndex(sibling++);
             foreach (FmNode node in Settings.Data.CustomNodes
                 .Where(n => n != null && customImageRects.ContainsKey(n))
                 .OrderBy(n => n.Depth))
@@ -703,8 +1048,26 @@ namespace JipperKeyViewer.KeyViewer
         /// / 销毁全部自定义图片贴图（带键+装饰）并清引用。Unity 重载的判空使其幂等——
         /// 二次调用为空操作。由 ResetKeyViewer/DisableKeyViewer 在 GameObject 销毁前调用。
         /// </summary>
+        private void ReleaseCustomGlowSprite()
+        {
+            if (customGlowSprite == null) return;
+            if (customGlowSprite.texture != null) Destroy(customGlowSprite.texture);
+            Destroy(customGlowSprite);
+            customGlowSprite = null;
+        }
+
+        private void ClearCustomGlowImages()
+        {
+            foreach (Image image in customGlowImages.Values)
+                if (image != null) Destroy(image.gameObject);
+            customGlowImages.Clear();
+        }
+
         private void ReleaseCustomTextures()
         {
+            ClearTextGradientStates();
+            ClearFixedGlowImages();
+            ClearCustomGlowImages();
             if (Keys != null)
             {
                 for (int i = 0; i < Keys.Length; i++)
@@ -725,6 +1088,7 @@ namespace JipperKeyViewer.KeyViewer
             customDecorationTextures.Clear();
             customImageRects.Clear();
             customImageRaws.Clear();
+            customGlowImages.Clear();
             customVideoFallbackApplied.Clear();
         }
 
@@ -745,6 +1109,36 @@ namespace JipperKeyViewer.KeyViewer
             {
                 return null;
             }
+        }
+
+        private Sprite GetCustomGlowSprite()
+        {
+            if (customGlowSprite != null) return customGlowSprite;
+            const int size = 64;
+            const int margin = 22;
+            Texture2D texture = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            Color[] pixels = new Color[size * size];
+            for (int y = 0; y < size; y++)
+            {
+                float ty = Mathf.Clamp01(Mathf.Min(y, size - 1 - y) / (float)margin);
+                float ay = ty * ty * (3f - 2f * ty);
+                for (int x = 0; x < size; x++)
+                {
+                    float tx = Mathf.Clamp01(Mathf.Min(x, size - 1 - x) / (float)margin);
+                    float ax = tx * tx * (3f - 2f * tx);
+                    pixels[y * size + x] = new Color(1f, 1f, 1f, ax * ay);
+                }
+            }
+            texture.SetPixels(pixels);
+            texture.Apply(false, false);
+            customGlowSprite = Sprite.Create(texture, new Rect(0f, 0f, size, size),
+                new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect,
+                new Vector4(margin, margin, margin, margin));
+            return customGlowSprite;
         }
 
         internal static Color NodeColor(float[] arr, Color fallback)
@@ -815,8 +1209,22 @@ namespace JipperKeyViewer.KeyViewer
             // 节点级文本颜色（数组为空回落全局）。
             Color txt = node.UseCustomColor && node.TextColor != null ? NodeColor(node.TextColor, d.Text) : d.Text;
             Color txtPressed = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, d.TextClicked) : d.TextClicked;
-            key.text.color = pressed ? txtPressed : txt;
-            if (key.value != null) key.value.color = key.text.color;
+            Color labelColor = pressed ? txtPressed : txt;
+            labelColor.a *= node.TextOpacity;
+            key.text.color = labelColor;
+            if (key.value != null)
+            {
+                Color countTxt = node.UseCustomCountTextColor && node.CountTextColor != null
+                    ? NodeColor(node.CountTextColor, txt) : txt;
+                Color countTxtP = node.UseCustomCountTextColor && node.CountTextColorPressed != null
+                    ? NodeColor(node.CountTextColorPressed, txtPressed) : txtPressed;
+                countTxt.a *= node.CountTextOpacity;
+                countTxtP.a *= node.CountTextOpacity;
+                key.value.color = pressed ? countTxtP : countTxt;
+            }
+            ApplyCustomGlow(node, pressed);
+            ApplyCustomBackgroundGradient(node, pressed);
+            ApplyCustomOutlineGradient(node, pressed);
         }
 
         /// <summary>KPS/Total nodes keep the dedicated Kps*/Total* colors (no per-node override in v1). /
@@ -855,8 +1263,22 @@ namespace JipperKeyViewer.KeyViewer
             Color statBase = isKps ? Settings.Data.KpsText : Settings.Data.TotalText;
             Color statTxt = node.UseCustomColor && node.TextColor != null ? NodeColor(node.TextColor, statBase) : statBase;
             Color statTxtP = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, statTxt) : statTxt;
-            key.text.color = pressed ? statTxtP : statTxt;
-            if (key.value != null) key.value.color = key.text.color;
+            Color labelColor = pressed ? statTxtP : statTxt;
+            labelColor.a *= node.TextOpacity;
+            key.text.color = labelColor;
+            if (key.value != null)
+            {
+                Color countTxt = node.UseCustomCountTextColor && node.CountTextColor != null
+                    ? NodeColor(node.CountTextColor, statTxt) : statTxt;
+                Color countTxtP = node.UseCustomCountTextColor && node.CountTextColorPressed != null
+                    ? NodeColor(node.CountTextColorPressed, statTxtP) : statTxtP;
+                countTxt.a *= node.CountTextOpacity;
+                countTxtP.a *= node.CountTextOpacity;
+                key.value.color = pressed ? countTxtP : countTxt;
+            }
+            ApplyCustomGlow(node, pressed);
+            ApplyCustomBackgroundGradient(node, pressed);
+            ApplyCustomOutlineGradient(node, pressed);
         }
 
         private void UpdateCustomKeyText(Key key, FmNode node)
@@ -996,6 +1418,11 @@ namespace JipperKeyViewer.KeyViewer
                     if (statPressed != key.isPressed)
                     {
                         key.isPressed = statPressed;
+                        if (key.text != null)
+                            key.text.gameObject.SetActive(!node.HideLabel && (!statPressed || !node.HideLabelWhilePressed));
+                        if (key.value != null)
+                            key.value.gameObject.SetActive(!node.HideCount && (!statPressed || node.CountShowWhilePressed));
+                        ApplyCustomPressedTextTransform(key, node, statPressed);
                         ApplyCustomSpecialColors(key, node, statPressed);
                     }
                 }
@@ -1006,6 +1433,11 @@ namespace JipperKeyViewer.KeyViewer
         private void ApplyCustomKeyEdge(Key key, FmNode node, bool down, long timeMs, ProfileData d)
         {
             key.isPressed = down;
+            if (key.text != null)
+                key.text.gameObject.SetActive(!node.HideLabel && (!down || !node.HideLabelWhilePressed));
+            if (key.value != null)
+                key.value.gameObject.SetActive(!node.HideCount && (!down || node.CountShowWhilePressed));
+            ApplyCustomPressedTextTransform(key, node, down);
             // Press scale — the same animation the fixed layouts run from ProcessKeyGroup; the
             // custom input path used to skip it entirely, so 按压缩放 did nothing here. Per-node:
             // PressAnimEnabled opts out, UseCustomPressAnim overrides the global scale value.

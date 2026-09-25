@@ -67,6 +67,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public bool outlineEnabled;
         public Color outlineColor;
         public float outlineWidth;
+        /// <summary>Optional rounded outline corner radius (0 = square) / 可选圆角描边半径</summary>
+        public float outlineCornerRadius;
+        /// <summary>0 = all, 1 = vertical, 2 = horizontal / 描边方向</summary>
+        public int outlineSides;
+        /// <summary>Optional dotted trail pattern / 可选点状轨迹参数</summary>
+        public bool dotted;
+        public float dotLength;
+        public float gapLength;
 
         public RawRain(byte color)
         {

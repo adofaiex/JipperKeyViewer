@@ -154,15 +154,22 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 Color oc = rain.outlineColor;
                 oc.a *= baseA;
                 float ow = rain.outlineWidth * sf;
-                DrawRainQuad(vh, r.xMin - ow, r.xMax + ow, r.yMin - ow, r.yMax + ow, h + ow * 2, oc, oc,
-                    rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
+                if (rain.outlineCornerRadius > 0.5f)
+                    DrawRoundedRainOutline(vh, r, ow, rain.outlineCornerRadius, rain.outlineSides, oc, rain.dNear, rain.dFar,
+                        rain.trackHeight, rain.fadePx, span, simple);
+                else
+                    DrawRainOutlineBySide(vh, r, ow, rain.outlineSides, oc, rain.dNear, rain.dFar,
+                        rain.trackHeight, rain.fadePx, span, simple);
             }
             if (drawMain)
             {
                 Color cb = rain.mainColor; cb.a = baseA;
                 Color ct = rain.ColorTop; ct.a = baseA;
-                DrawRainQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, h, cb, ct,
-                    rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
+                if (rain.dotted && rain.dotLength > 0.5f)
+                    DrawDottedRainBody(vh, rain, r, cb, ct, simple);
+                else
+                    DrawRainQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, h, cb, ct,
+                        rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
             }
         }
 
@@ -170,6 +177,179 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// a bottom→top two-color body (single-color callers pass the same color twice). /
         /// 轨迹渐变四边形，自旧 RainGraphic 原样移植并扩展为底→顶双色（单色调用方传同一颜色
         /// 两次）。</summary>
+        private static void DrawRainOutlineBySide(VertexHelper vh, Rect body, float width, int sides, Color color,
+            float dNear, float dFar, float trackH, float fade, float span, bool simple)
+        {
+            bool vertical = sides != 2;
+            bool horizontal = sides != 1;
+            if (vertical && horizontal)
+            {
+                DrawRainQuad(vh, body.xMin - width, body.xMax + width, body.yMin - width, body.yMax + width,
+                    body.height + width * 2f, color, color, dNear, dFar, trackH, fade, span, simple);
+                return;
+            }
+            Rect outer = new Rect(body.xMin - width, body.yMin - width,
+                body.width + width * 2f, body.height + width * 2f);
+            if (horizontal)
+            {
+                DrawRainSolidRect(vh, outer.xMin, outer.xMax, outer.yMin, outer.yMin + width, color, outer,
+                    dNear, dFar, trackH, fade, span, simple);
+                DrawRainSolidRect(vh, outer.xMin, outer.xMax, outer.yMax - width, outer.yMax, color, outer,
+                    dNear, dFar, trackH, fade, span, simple);
+            }
+            if (vertical)
+            {
+                DrawRainSolidRect(vh, outer.xMin, outer.xMin + width, outer.yMin, outer.yMax, color, outer,
+                    dNear, dFar, trackH, fade, span, simple);
+                DrawRainSolidRect(vh, outer.xMax - width, outer.xMax, outer.yMin, outer.yMax, color, outer,
+                    dNear, dFar, trackH, fade, span, simple);
+            }
+        }
+
+        private static void DrawRoundedRainOutline(VertexHelper vh, Rect body, float width, float requestedRadius, int sides,
+            Color color, float dNear, float dFar, float trackH, float fade, float span, bool simple)
+        {
+            float halfW = Mathf.Min(width, Mathf.Min(body.width, body.height) * 0.5f);
+            if (halfW <= 0.01f)
+            {
+                DrawRainOutlineBySide(vh, body, width, sides, color, dNear, dFar, trackH, fade, span, simple);
+                return;
+            }
+            Rect outer = new Rect(body.xMin - halfW, body.yMin - halfW,
+                body.width + halfW * 2f, body.height + halfW * 2f);
+            float radius = Mathf.Clamp(requestedRadius, 0f, Mathf.Min(outer.width, outer.height) * 0.5f);
+            if (radius <= 0.01f)
+            {
+                DrawRainOutlineBySide(vh, new Rect(outer.xMin + halfW, outer.yMin + halfW,
+                    outer.width - halfW * 2f, outer.height - halfW * 2f), halfW, sides, color,
+                    dNear, dFar, trackH, fade, span, simple);
+                return;
+            }
+            DrawRoundedRainOutlineWithRadius(vh, outer, radius, halfW, sides, color, dNear, dFar, trackH, fade, span, simple);
+        }
+
+        private static void DrawRoundedRainOutlineWithRadius(VertexHelper vh, Rect outer, float radius, float width,
+            int sides, Color color, float dNear, float dFar, float trackH, float fade, float span, bool simple)
+        {
+            float inner = Mathf.Max(0f, radius - width);
+            bool vertical = sides != 2;
+            bool horizontal = sides != 1;
+            if (horizontal)
+            {
+                DrawRainSolidRect(vh, outer.xMin + radius, outer.xMax - radius, outer.yMin, outer.yMin + width,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+                DrawRainSolidRect(vh, outer.xMin + radius, outer.xMax - radius, outer.yMax - width, outer.yMax,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+            }
+            if (vertical)
+            {
+                DrawRainSolidRect(vh, outer.xMin, outer.xMin + width, outer.yMin + radius, outer.yMax - radius,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+                DrawRainSolidRect(vh, outer.xMax - width, outer.xMax, outer.yMin + radius, outer.yMax - radius,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+            }
+            if (horizontal)
+            {
+                AddRainArc(vh, outer.xMax - radius, outer.yMax - radius, radius, inner, 0f, Mathf.PI * 0.5f,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+                AddRainArc(vh, outer.xMin + radius, outer.yMax - radius, radius, inner, Mathf.PI * 0.5f, Mathf.PI,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+            }
+            if (vertical)
+            {
+                AddRainArc(vh, outer.xMin + radius, outer.yMin + radius, radius, inner, Mathf.PI, Mathf.PI * 1.5f,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+                AddRainArc(vh, outer.xMax - radius, outer.yMin + radius, radius, inner, Mathf.PI * 1.5f, Mathf.PI * 2f,
+                    color, outer, dNear, dFar, trackH, fade, span, simple);
+            }
+        }
+
+        private static void DrawRainSolidRect(VertexHelper vh, float xL, float xR, float yB, float yT, Color color,
+            Rect outer, float dNear, float dFar, float trackH, float fade, float span, bool simple)
+        {
+            if (xR <= xL || yT <= yB) return;
+            Color bottom = RainColorAtY(color, yB, outer, dNear, dFar, trackH, fade, simple);
+            Color top = RainColorAtY(color, yT, outer, dNear, dFar, trackH, fade, simple);
+            AddQuad(vh, xL, xR, yB, yT, 0f, 1f, 0f, 1f, bottom, top);
+        }
+
+        private static Color RainColorAtY(Color color, float y, Rect outer, float dNear, float dFar,
+            float trackH, float fade, bool simple)
+        {
+            if (simple || outer.height <= 0.0001f) return color;
+            float t = Mathf.Clamp01((y - outer.yMin) / outer.height);
+            float distance = Mathf.Lerp(dNear, dFar, t);
+            color.a *= AlphaAtD(distance, trackH - fade, trackH, fade);
+            return color;
+        }
+
+        private static void AddRainArc(VertexHelper vh, float cx, float cy, float outerRadius, float innerRadius,
+            float a0, float a1, Color color, Rect outer, float dNear, float dFar, float trackH, float fade,
+            float span, bool simple)
+        {
+            int steps = Mathf.Clamp(Mathf.CeilToInt(outerRadius * 0.5f), 3, 12);
+            float previousCos = Mathf.Cos(a0);
+            float previousSin = Mathf.Sin(a0);
+            for (int i = 1; i <= steps; i++)
+            {
+                float angle = Mathf.Lerp(a0, a1, i / (float)steps);
+                float c = Mathf.Cos(angle);
+                float s = Mathf.Sin(angle);
+                Color c0 = RainColorAtY(color, cy + previousSin * outerRadius, outer, dNear, dFar, trackH, fade, simple);
+                Color c1 = RainColorAtY(color, cy + s * outerRadius, outer, dNear, dFar, trackH, fade, simple);
+                AddRainPoly4(vh,
+                    cx + previousCos * innerRadius, cy + previousSin * innerRadius,
+                    cx + previousCos * outerRadius, cy + previousSin * outerRadius,
+                    cx + c * outerRadius, cy + s * outerRadius,
+                    cx + c * innerRadius, cy + s * innerRadius,
+                    c0, c0, c1, c1);
+                previousCos = c;
+                previousSin = s;
+            }
+        }
+
+        private static void AddRainPoly4(VertexHelper vh, float x0, float y0, float x1, float y1,
+            float x2, float y2, float x3, float y3, Color c0, Color c1, Color c2, Color c3)
+        {
+            int i = vh.currentVertCount;
+            UIVertex v = UIVertex.simpleVert;
+            v.uv0 = new Vector4(0.5f, 0.5f, 0f, 0f);
+            v.position = new Vector3(x0, y0, 0f); v.color = c0; vh.AddVert(v);
+            v.position = new Vector3(x1, y1, 0f); v.color = c1; vh.AddVert(v);
+            v.position = new Vector3(x2, y2, 0f); v.color = c2; vh.AddVert(v);
+            v.position = new Vector3(x3, y3, 0f); v.color = c3; vh.AddVert(v);
+            vh.AddTriangle(i, i + 1, i + 2);
+            vh.AddTriangle(i, i + 2, i + 3);
+        }
+
+        private static void DrawDottedRainBody(VertexHelper vh, RawRain rain, Rect r, Color bottom, Color top, bool simple)
+        {
+            float pattern = Mathf.Max(0.5f, rain.dotLength + rain.gapLength);
+            float step = pattern;
+            int maxSegments = Mathf.CeilToInt(r.height / step);
+            if (maxSegments > 64) step = r.height / 64f;
+            for (float y0 = r.yMin; y0 < r.yMax; y0 += step)
+            {
+                float y1 = Mathf.Min(r.yMax, y0 + rain.dotLength);
+                if (y1 <= y0) continue;
+                Color c0 = RainBodyColorAtY(bottom, top, y0, r, rain, simple);
+                Color c1 = RainBodyColorAtY(bottom, top, y1, r, rain, simple);
+                AddQuad(vh, r.xMin, r.xMax, y0, y1, 0f, 1f, 0f, 1f, c0, c1);
+            }
+        }
+
+        private static Color RainBodyColorAtY(Color bottom, Color top, float y, Rect body, RawRain rain, bool simple)
+        {
+            float t = body.height <= 0.0001f ? 0f : Mathf.Clamp01((y - body.yMin) / body.height);
+            Color color = Color.Lerp(bottom, top, t);
+            if (!simple && rain.trackHeight > 0.5f && rain.fadePx > 0.5f)
+            {
+                float distance = Mathf.Lerp(rain.dNear, rain.dFar, t);
+                color.a *= AlphaAtD(distance, rain.trackHeight - rain.fadePx, rain.trackHeight, rain.fadePx);
+            }
+            return color;
+        }
+
         private static void DrawRainQuad(VertexHelper vh, float xL, float xR, float yB, float yT, float h, Color colBot, Color colTop,
             float dNear, float dFar, float trackH, float fade, float span, bool simple)
         {

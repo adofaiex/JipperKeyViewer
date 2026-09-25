@@ -562,6 +562,9 @@ namespace JipperKeyViewer.KeyViewer
                     pressed ? (u ? d2.FullKeyboardOutlineClicked : d2.OutlineClicked) : (u ? d2.FullKeyboardOutline : d2.Outline));
                 k.text.color = pressed ? (u ? d2.FullKeyboardTextClicked : d2.TextClicked) : (u ? d2.FullKeyboardText : d2.Text);
                 if (k.value != null) k.value.color = k.text.color;
+                ApplyFixedGlow(k, i, pressed);
+                ApplyFixedBackgroundGradient(k, pressed);
+                ApplyFixedOutlineGradient(k, pressed);
                 return;
             }
             if (Keys == null || i >= Keys.Length) return;
@@ -583,6 +586,9 @@ namespace JipperKeyViewer.KeyViewer
                 key.text.color = pressed ? d.TextClicked : d.Text;
             }
             if (key.value != null) key.value.color = key.text.color;
+            ApplyFixedGlow(key, i, pressed);
+            ApplyFixedBackgroundGradient(key, pressed);
+            ApplyFixedOutlineGradient(key, pressed);
         }
 
         /// <summary>Press-animation duration for a key, in seconds. Custom-layout nodes may carry

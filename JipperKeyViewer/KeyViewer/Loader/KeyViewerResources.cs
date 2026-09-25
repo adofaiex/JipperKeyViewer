@@ -310,10 +310,20 @@ namespace JipperKeyViewer.KeyViewer
                         isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel));
                 }
                 if (use != null) t.fontMaterial = use;
-                t.fontStyle = style;
+                t.fontStyle = node != null
+                    ? (isCount && node.UseCustomCountFontStyle ? (FontStyles)node.CountFontStyleFlags : (FontStyles)node.FontStyleFlags)
+                    : style;
                 t.fontSizeMax = Settings.Data.KeyFontSize;
             }
             bool hasPerKey = Settings.Data.EnablePerKeyTextSize;
+            void ApplyNodeFontSize(TMP_Text t, Settings.FmNode node, bool isCount)
+            {
+                if (t == null || node == null) return;
+                float size = isCount
+                    ? (node.CountFontSize > 0f ? node.CountFontSize : node.FontSize)
+                    : node.FontSize;
+                if (size > 0f) t.fontSizeMax = size;
+            }
             void ApplyPerKeyOverride(TMP_Text t, int pi)
             {
                 if (t == null || !hasPerKey || pi < 0 || pi >= Settings.Data.PerKeyFontSize.Length) return;
@@ -329,6 +339,7 @@ namespace JipperKeyViewer.KeyViewer
                     Settings.FmNode node = Keys[i].CustomNode;
                     UpdateText(Keys[i].text, keyMat, node, false);
                     ApplyPerKeyOverride(Keys[i].text, pi);
+                    ApplyNodeFontSize(Keys[i].text, node, false);
                     // value: reset FIRST, then override — the old order let UpdateText's
                     // unconditional fontSizeMax write clobber the per-key size (the Kps/Total
                     // blocks below already had the correct order).
@@ -336,6 +347,7 @@ namespace JipperKeyViewer.KeyViewer
                     // 抹掉每键字号(下方 Kps/Total 段原本顺序就正确)。
                     UpdateText(Keys[i].value, countMat, node, true);
                     ApplyPerKeyOverride(Keys[i].value, pi);
+                    ApplyNodeFontSize(Keys[i].value, node, true);
                 }
             }
             int kpsPi = MaxKeySlots;
@@ -350,17 +362,23 @@ namespace JipperKeyViewer.KeyViewer
                 Settings.FmNode kpsNode = Kps.CustomNode;
                 UpdateText(Kps.text, keyMat, kpsNode, false);
                 ApplyPerKeyOverride(Kps.text, kpsPi);
+                ApplyNodeFontSize(Kps.text, kpsNode, false);
                 UpdateText(Kps.value, countMat, kpsNode, true);
                 ApplyPerKeyOverride(Kps.value, kpsPi);
+                ApplyNodeFontSize(Kps.value, kpsNode, true);
             }
             if (Total != null)
             {
                 Settings.FmNode totalNode = Total.CustomNode;
                 UpdateText(Total.text, keyMat, totalNode, false);
                 ApplyPerKeyOverride(Total.text, totalPi);
+                ApplyNodeFontSize(Total.text, totalNode, false);
                 UpdateText(Total.value, countMat, totalNode, true);
                 ApplyPerKeyOverride(Total.value, totalPi);
+                ApplyNodeFontSize(Total.value, totalNode, true);
             }
+            ClearTextGradientStates();
+            TickTextGradients();
         }
 
         /// <summary>

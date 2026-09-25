@@ -47,6 +47,9 @@ namespace JipperKeyViewer.KeyViewer
         public Coroutine currentAnim;
         /// <summary>Text wrapper in the text canvas — center pivot over the key box, scaled on press / 文本画布中的文本包裹层，轴心在按键框中心，按压时缩放</summary>
         public Transform visuals;
+        /// <summary>Base custom text positions before pressed-state offsets / 按下偏移前的自定义文字基准位置</summary>
+        public Vector2 customTextBasePos;
+        public Vector2 customValueBasePos;
         /// <summary>X offset for rain container alignment (0 for standard keys) / 雨滴容器的 X 偏移（标准按键为 0）</summary>
         public float rainOffsetX;
         /// <summary>Rain column width (key width; 50 when redirected to a front column) / 雨滴列宽（按键宽度；重指向前列时为 50）</summary>

@@ -263,7 +263,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 : (rain.isGhost ? ghostRowStartYs[ri] : rowStartYs[ri]) + rain.StartOffsetY;
             float travel = rain.anchoredPosition.Value.y - rain.startY;
             float ox = rain.HasOffsetX ? rain.OffsetXOverride : key.rainOffsetX;
-            float cx = keyPos.x + ox + key.rainWidth * 0.5f;
+            float alignOffset = 0f;
+            if (key.CustomNode != null)
+            {
+                if (key.CustomNode.RainAlignment == 0) alignOffset = 0f;
+                else if (key.CustomNode.RainAlignment == 1) alignOffset = (key.keySize.x - key.rainWidth) * 0.5f;
+                else alignOffset = key.keySize.x - key.rainWidth;
+            }
+            float cx = keyPos.x + alignOffset + ox + key.rainWidth * 0.5f;
             float topY = keyPos.y - key.keySize.y * 0.5f + baseStart + RainContainerHeight + travel;
 
             float s = Layer != null ? Layer.GetKeyScale(keyIndex) : 1f;
@@ -423,6 +430,11 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 r.outlineEnabled = false;
                 r.outlineColor = default;
                 r.outlineWidth = 0f;
+                r.outlineCornerRadius = 0f;
+                r.outlineSides = 0;
+                r.dotted = false;
+                r.dotLength = 0f;
+                r.gapLength = 0f;
             }
             else
             {
@@ -484,9 +496,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rawRain.outlineColor = row == 1 ? settings.Data.GhostRainOutlineColorRow1
                     : row == 2 ? settings.Data.GhostRainOutlineColorRow2
                     : settings.Data.GhostRainOutlineColorRow3;
-                rawRain.outlineWidth = row == 1 ? settings.Data.GhostRainOutlineWidthRow1
+                rawRain.outlineWidth = Mathf.Max(0f, row == 1 ? settings.Data.GhostRainOutlineWidthRow1
                     : row == 2 ? settings.Data.GhostRainOutlineWidthRow2
-                    : settings.Data.GhostRainOutlineWidthRow3;
+                    : settings.Data.GhostRainOutlineWidthRow3);
             }
             else
             {
@@ -510,9 +522,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rawRain.outlineColor = row == 1 ? settings.Data.RainOutlineColorRow1
                     : row == 2 ? settings.Data.RainOutlineColorRow2
                     : settings.Data.RainOutlineColorRow3;
-                rawRain.outlineWidth = row == 1 ? settings.Data.RainOutlineWidthRow1
+                rawRain.outlineWidth = Mathf.Max(0f, row == 1 ? settings.Data.RainOutlineWidthRow1
                     : row == 2 ? settings.Data.RainOutlineWidthRow2
-                    : settings.Data.RainOutlineWidthRow3;
+                    : settings.Data.RainOutlineWidthRow3);
             }
 
             // Per-node shadow/outline overrides — applied AFTER the row assignment so a null node
@@ -535,7 +547,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     {
                         rawRain.outlineEnabled = cn.RainOutlineEnabled;
                         rawRain.outlineColor = KeyViewer.NodeColor(cn.RainOutlineColor, rawRain.outlineColor);
-                        rawRain.outlineWidth = cn.RainOutlineWidth;
+                        rawRain.outlineWidth = Mathf.Max(0f, cn.RainOutlineWidth);
                     }
                 }
                 else
@@ -551,7 +563,43 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     {
                         rawRain.outlineEnabled = cn.GhostRainOutlineEnabled;
                         rawRain.outlineColor = KeyViewer.NodeColor(cn.GhostRainOutlineColor, rawRain.outlineColor);
-                        rawRain.outlineWidth = cn.GhostRainOutlineWidth;
+                        rawRain.outlineWidth = Mathf.Max(0f, cn.GhostRainOutlineWidth);
+                    }
+                }
+            }
+
+            rawRain.outlineCornerRadius = settings.Data.EnableRainRoundedOutline
+                ? Mathf.Clamp(settings.Data.RainOutlineCornerRadius, 0f, 20f)
+                : 0f;
+            rawRain.outlineSides = Mathf.Clamp(settings.Data.RainOutlineSides, 0, 2);
+            rawRain.dotted = settings.Data.EnableRainDotted;
+            rawRain.dotLength = settings.Data.EnableRainDotted ? Mathf.Clamp(settings.Data.RainDotLength, 1f, 100f) : 0f;
+            rawRain.gapLength = settings.Data.EnableRainDotted ? Mathf.Clamp(settings.Data.RainGapLength, 0f, 100f) : 0f;
+            if (key.CustomNode != null)
+            {
+                FmNode node = key.CustomNode;
+                if (isGhost)
+                {
+                    if (node.UseCustomGhostRainCornerRadius)
+                        rawRain.outlineCornerRadius = Mathf.Clamp(node.GhostRainCornerRadius, 0f, 20f);
+                    if (node.UseCustomGhostRainDotted)
+                    {
+                        rawRain.dotted = true;
+                        rawRain.dotLength = Mathf.Clamp(node.GhostRainDotLength, 1f, 100f);
+                        rawRain.gapLength = Mathf.Clamp(node.GhostRainGapLength, 0f, 100f);
+                    }
+                }
+                else
+                {
+                    if (node.UseCustomRainCornerRadius)
+                        rawRain.outlineCornerRadius = Mathf.Clamp(node.RainCornerRadius, 0f, 20f);
+                    if (node.UseCustomRainBorderSides)
+                        rawRain.outlineSides = Mathf.Clamp(node.RainBorderSides, 0, 2);
+                    if (node.UseCustomRainDotted)
+                    {
+                        rawRain.dotted = true;
+                        rawRain.dotLength = Mathf.Clamp(node.RainDotLength, 1f, 100f);
+                        rawRain.gapLength = Mathf.Clamp(node.RainGapLength, 0f, 100f);
                     }
                 }
             }

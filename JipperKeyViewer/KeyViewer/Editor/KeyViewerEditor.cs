@@ -2199,10 +2199,67 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        private static void DrawRoundedVerticalGradient(Rect r, Color top, Color bottom, float radius)
+        {
+            if (r.width <= 0f || r.height <= 0f) return;
+            const int steps = 16;
+            float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
+            for (int i = 0; i < steps; i++)
+            {
+                float y0 = r.yMin + r.height * i / steps;
+                float y1 = r.yMin + r.height * (i + 1) / steps;
+                float inset = 0f;
+                if (rad > 0f)
+                {
+                    if (y0 < r.yMin + rad)
+                    {
+                        float dy = rad - (y0 - r.yMin);
+                        inset = Mathf.Max(inset, rad - Mathf.Sqrt(Mathf.Max(0f, rad * rad - dy * dy)));
+                    }
+                    if (y1 > r.yMax - rad)
+                    {
+                        float dy = rad - (r.yMax - y1);
+                        inset = Mathf.Max(inset, rad - Mathf.Sqrt(Mathf.Max(0f, rad * rad - dy * dy)));
+                    }
+                }
+                float t = (i + 0.5f) / steps;
+                GUIUtils.DrawRect(new Rect(r.xMin + inset, y0,
+                    Mathf.Max(0f, r.width - inset * 2f), y1 - y0), Color.Lerp(bottom, top, t));
+            }
+        }
+
+        private static void DrawRectOutlineGradient(Rect r, Color top, Color bottom, float width)
+        {
+            float w = Mathf.Min(width, Mathf.Min(r.width, r.height) * 0.5f);
+            if (w <= 0f) return;
+            DrawRoundedVerticalGradient(new Rect(r.xMin, r.yMin, r.width, w), top, bottom, 0f);
+            DrawRoundedVerticalGradient(new Rect(r.xMin, r.yMax - w, r.width, w), top, bottom, 0f);
+            DrawRoundedVerticalGradient(new Rect(r.xMin, r.yMin + w, w, Mathf.Max(0f, r.height - 2f * w)), top, bottom, 0f);
+            DrawRoundedVerticalGradient(new Rect(r.xMax - w, r.yMin + w, w, Mathf.Max(0f, r.height - 2f * w)), top, bottom, 0f);
+        }
+
         private void DrawEditorNode(FmNode node, Rect sr, Rect canvasRect)
         {
             bool selected = editorSelection.Contains(node);
             float dim = node.Hidden ? 0.25f : node.Unselectable && !selected ? 0.45f : 1f;
+            if (node.UseGlow && node.GlowSize > 0f)
+            {
+                float size = Mathf.Clamp(node.GlowSize, 0f, 50f) * fmZoom;
+                float pad = Mathf.Max(2f, size);
+                Color body = node.NodeType == 3
+                    ? (node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.Outline) : Settings.Data.Outline)
+                    : node.NodeType == 1
+                        ? (node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.KpsBackground) : Settings.Data.KpsBackground)
+                        : node.NodeType == 2
+                            ? (node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.TotalBackground) : Settings.Data.TotalBackground)
+                            : node.UseCustomColor ? NodeColor(node.Bg, Settings.Data.Background) : Settings.Data.Background;
+                Color glow = node.GlowFollowBody ? body : NodeColor(node.GlowColor, body);
+                Color previous = GUI.color;
+                GUI.color = new Color(glow.r, glow.g, glow.b, Mathf.Clamp01(node.GlowOpacity) * dim);
+                GUI.DrawTexture(new Rect(sr.x - pad, sr.y - pad, sr.width + pad * 2f, sr.height + pad * 2f),
+                    GetCustomGlowSprite().texture, ScaleMode.StretchToFill);
+                GUI.color = previous;
+            }
             if (node.NodeType == 3)
             {
                 Texture2D tex = EditorNodeTexture(node);
@@ -2242,6 +2299,10 @@ namespace JipperKeyViewer.KeyViewer
                 ProfileData d = Settings.Data;
                 Color bg = node.UseCustomColor ? NodeColor(node.Bg, d.Background) : d.Background;
                 Color ol = node.UseCustomColor ? NodeColor(node.Outline, d.Outline) : d.Outline;
+                Color gradientTop = node.UseBackgroundGradient ? NodeColor(node.BackgroundGradientTop, bg) : bg;
+                Color gradientBottom = node.UseBackgroundGradient ? NodeColor(node.BackgroundGradientBottom, bg) : bg;
+                Color outlineGradientTop = node.UseOutlineGradient ? NodeColor(node.OutlineGradientTop, ol) : ol;
+                Color outlineGradientBottom = node.UseOutlineGradient ? NodeColor(node.OutlineGradientBottom, ol) : ol;
                 // Mirror the runtime box shape. Rounded nodes: the outline color fills the
                 // rounded rect and the background covers it inset by the border width (the
                 // same ring the runtime mesh draws). Square nodes keep the legacy rect +
@@ -2252,10 +2313,18 @@ namespace JipperKeyViewer.KeyViewer
                 if (node.CornerRadius > 0.5f)
                 {
                     float b = node.BorderThickness > 0f ? node.BorderThickness * fmZoom : 1.5f;
-                    DrawRoundedRect(clipped, WithAlpha(ol, dim), node.CornerRadius * fmZoom);
+                    if (node.UseOutlineGradient)
+                        DrawRoundedVerticalGradient(clipped, WithAlpha(outlineGradientTop, dim), WithAlpha(outlineGradientBottom, dim),
+                            node.CornerRadius * fmZoom);
+                    else
+                        DrawRoundedRect(clipped, WithAlpha(ol, dim), node.CornerRadius * fmZoom);
                     Rect inner = new Rect(clipped.x + b, clipped.y + b,
                         Mathf.Max(0f, clipped.width - 2f * b), Mathf.Max(0f, clipped.height - 2f * b));
-                    DrawRoundedRect(inner, WithAlpha(bg, dim), Mathf.Max(0f, node.CornerRadius * fmZoom - b));
+                    if (node.UseBackgroundGradient)
+                        DrawRoundedVerticalGradient(inner, WithAlpha(gradientTop, dim), WithAlpha(gradientBottom, dim),
+                            Mathf.Max(0f, node.CornerRadius * fmZoom - b));
+                    else
+                        DrawRoundedRect(inner, WithAlpha(bg, dim), Mathf.Max(0f, node.CornerRadius * fmZoom - b));
                 }
                 else
                 {
@@ -2263,8 +2332,14 @@ namespace JipperKeyViewer.KeyViewer
                     // legacy 1.5px marker otherwise. / 复刻运行时直角描边环：有自定义厚度
                     // 用自定义值，否则沿用 1.5px 标记线。
                     float sq = node.BorderThickness > 0f ? node.BorderThickness * fmZoom : 1.5f;
-                    GUIUtils.DrawRect(clipped, WithAlpha(bg, dim));
-                    DrawRectOutline(clipped, WithAlpha(ol, dim), sq);
+                    if (node.UseBackgroundGradient)
+                        DrawRoundedVerticalGradient(clipped, WithAlpha(gradientTop, dim), WithAlpha(gradientBottom, dim), 0f);
+                    else
+                        GUIUtils.DrawRect(clipped, WithAlpha(bg, dim));
+                    if (node.UseOutlineGradient)
+                        DrawRectOutlineGradient(clipped, WithAlpha(outlineGradientTop, dim), WithAlpha(outlineGradientBottom, dim), sq);
+                    else
+                        DrawRectOutline(clipped, WithAlpha(ol, dim), sq);
                 }
                 string label = node.NodeType == 1
                     ? (string.IsNullOrEmpty(node.CustomText) ? "KPS" : node.CustomText)
@@ -2714,6 +2789,14 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorHelpMarker("fm_help_rain_row");
                 GUILayout.EndHorizontal();
                 DrawEditorHelpBox("fm_help_rain_row");
+                GUILayout.Label(I18n.Tr("fm_rain_alignment"));
+                string[] rainAlignments = { I18n.Tr("fm_rain_align_left"), I18n.Tr("fm_rain_align_center"), I18n.Tr("fm_rain_align_right") };
+                int rainAlignment = GUILayout.SelectionGrid(Mathf.Clamp(first.RainAlignment, 0, 2), rainAlignments, 3);
+                if (rainAlignment != first.RainAlignment)
+                {
+                    foreach (FmNode n in editorSelection) n.RainAlignment = rainAlignment;
+                    EditorPropertyChanged();
+                }
                 if (rainRow >= 0 && rainRow <= 2 && rainRow != first.RainRow)
                 {
                     foreach (FmNode n in editorSelection) n.RainRow = rainRow;
@@ -2831,6 +2914,59 @@ namespace JipperKeyViewer.KeyViewer
                         EditorPropertyChanged();
                     }, "fm_help_rain_outline");
                 }
+                DrawEditorToggle(I18n.Tr("fm_rain_corner_custom"), first.UseCustomRainCornerRadius, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseCustomRainCornerRadius = v;
+                        if (v) n.RainCornerRadius = Settings.Data.RainOutlineCornerRadius;
+                    }
+                }, "fm_help_rain_corner");
+                if (first.UseCustomRainCornerRadius)
+                {
+                    DrawEditorFloatField(I18n.Tr("fm_rain_corner_radius"), "fme_rcr_" + first.Id, n => n.RainCornerRadius, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainCornerRadius = Mathf.Clamp(v, 0f, 20f);
+                    }, "fm_help_rain_corner");
+                }
+                DrawEditorToggle(I18n.Tr("fm_rain_border_sides_custom"), first.UseCustomRainBorderSides, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseCustomRainBorderSides = v;
+                }, "fm_help_rain_border_sides");
+                if (first.UseCustomRainBorderSides)
+                {
+                    GUILayout.Label(I18n.Tr("rain_outline_sides"));
+                    string[] sides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+                    int selectedSides = GUILayout.SelectionGrid(Mathf.Clamp(first.RainBorderSides, 0, 2), sides, 3);
+                    if (selectedSides != first.RainBorderSides)
+                    {
+                        foreach (FmNode n in editorSelection) n.RainBorderSides = selectedSides;
+                        EditorPropertyChanged();
+                    }
+                }
+                DrawEditorToggle(I18n.Tr("fm_rain_dotted_custom"), first.UseCustomRainDotted, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseCustomRainDotted = v;
+                        if (v)
+                        {
+                            n.RainDotLength = Settings.Data.RainDotLength;
+                            n.RainGapLength = Settings.Data.RainGapLength;
+                        }
+                    }
+                }, "fm_help_rain_dotted");
+                if (first.UseCustomRainDotted)
+                {
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dot_length"), "fme_rdl_" + first.Id, n => n.RainDotLength, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainDotLength = Mathf.Clamp(v, 1f, 100f);
+                    }, "fm_help_rain_dotted");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_gap_length"), "fme_rgl_" + first.Id, n => n.RainGapLength, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainGapLength = Mathf.Clamp(v, 0f, 100f);
+                    }, "fm_help_rain_dotted");
+                }
                 // Per-node GHOST rain shadow/outline — only meaningful with a ghost key bound. /
                 // 节点级鬼雨阴影/描边——仅在绑定了鬼键时有意义。
                 if (!string.IsNullOrWhiteSpace(first.GhostKey))
@@ -2912,6 +3048,44 @@ namespace JipperKeyViewer.KeyViewer
                             EditorPropertyChanged();
                         }, "fm_help_ghost_rain");
                     }
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_corner_custom"), first.UseCustomGhostRainCornerRadius, v =>
+                    {
+                        foreach (FmNode n in editorSelection)
+                        {
+                            n.UseCustomGhostRainCornerRadius = v;
+                            if (v) n.GhostRainCornerRadius = Settings.Data.RainOutlineCornerRadius;
+                        }
+                    }, "fm_help_ghost_rain_corner");
+                    if (first.UseCustomGhostRainCornerRadius)
+                    {
+                        DrawEditorFloatField(I18n.Tr("fm_ghost_rain_corner_radius"), "fme_gcr_" + first.Id, n => n.GhostRainCornerRadius, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.GhostRainCornerRadius = Mathf.Clamp(v, 0f, 20f);
+                        }, "fm_help_ghost_rain_corner");
+                    }
+                    DrawEditorToggle(I18n.Tr("fm_ghost_rain_dotted_custom"), first.UseCustomGhostRainDotted, v =>
+                    {
+                        foreach (FmNode n in editorSelection)
+                        {
+                            n.UseCustomGhostRainDotted = v;
+                            if (v)
+                            {
+                                n.GhostRainDotLength = Settings.Data.RainDotLength;
+                                n.GhostRainGapLength = Settings.Data.RainGapLength;
+                            }
+                        }
+                    }, "fm_help_ghost_rain_dotted");
+                    if (first.UseCustomGhostRainDotted)
+                    {
+                        DrawEditorFloatField(I18n.Tr("fm_ghost_rain_dot_length"), "fme_gdl_" + first.Id, n => n.GhostRainDotLength, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.GhostRainDotLength = Mathf.Clamp(v, 1f, 100f);
+                        }, "fm_help_ghost_rain_dotted");
+                        DrawEditorFloatField(I18n.Tr("fm_ghost_rain_gap_length"), "fme_ggl_" + first.Id, n => n.GhostRainGapLength, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.GhostRainGapLength = Mathf.Clamp(v, 0f, 100f);
+                        }, "fm_help_ghost_rain_dotted");
+                    }
                 }
                 // Per-node press scale (the Display tab's press animation per key). /
                 // 节点级按压缩放（显示页的按压缩放，按按键配置）。
@@ -2955,7 +3129,145 @@ namespace JipperKeyViewer.KeyViewer
             DrawEditorToggle(I18n.Tr("fm_hidden"), first.Hidden, v => { foreach (FmNode n in editorSelection) n.Hidden = v; });
             DrawEditorFontSize(first);
             DrawEditorToggle(I18n.Tr("fm_hide_label"), first.HideLabel, v => { foreach (FmNode n in editorSelection) n.HideLabel = v; });
+            DrawEditorToggle(I18n.Tr("fm_hide_label_while_pressed"), first.HideLabelWhilePressed, v => { foreach (FmNode n in editorSelection) n.HideLabelWhilePressed = v; });
             DrawEditorToggle(I18n.Tr("fm_hide_count"), first.HideCount, v => { foreach (FmNode n in editorSelection) n.HideCount = v; });
+            DrawEditorToggle(I18n.Tr("fm_count_show_while_pressed"), first.CountShowWhilePressed, v => { foreach (FmNode n in editorSelection) n.CountShowWhilePressed = v; });
+            DrawEditorFloatField(I18n.Tr("fm_count_offset_x"), "fme_cox_" + first.Id, n => n.CountOffsetX, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountOffsetX = Mathf.Clamp(v, -200f, 200f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_count_offset_y"), "fme_coy_" + first.Id, n => n.CountOffsetY, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountOffsetY = Mathf.Clamp(v, -200f, 200f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_label_offset_x"), "fme_lox_" + first.Id, n => n.LabelOffsetX, v =>
+            {
+                foreach (FmNode n in editorSelection) n.LabelOffsetX = Mathf.Clamp(v, -200f, 200f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_label_offset_y"), "fme_loy_" + first.Id, n => n.LabelOffsetY, v =>
+            {
+                foreach (FmNode n in editorSelection) n.LabelOffsetY = Mathf.Clamp(v, -200f, 200f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_label_rotation"), "fme_lrot_" + first.Id, n => n.LabelRotation, v =>
+            {
+                foreach (FmNode n in editorSelection) n.LabelRotation = Mathf.Clamp(v, -180f, 180f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_count_rotation"), "fme_crot_" + first.Id, n => n.CountRotation, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountRotation = Mathf.Clamp(v, -180f, 180f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_label_scale"), "fme_lscale_" + first.Id, n => n.LabelScale, v =>
+            {
+                foreach (FmNode n in editorSelection) n.LabelScale = Mathf.Clamp(v, 0.5f, 2f);
+                EditorPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_count_scale"), "fme_cscale_" + first.Id, n => n.CountScale, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountScale = Mathf.Clamp(v, 0.5f, 2f);
+                EditorPropertyChanged();
+            });
+            DrawEditorToggle(I18n.Tr("fm_pressed_label_scale_custom"), first.UsePressedLabelScale, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UsePressedLabelScale = v;
+                    if (v) n.PressedLabelScale = n.LabelScale;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedLabelScale)
+                DrawEditorFloatField(I18n.Tr("fm_pressed_label_scale"), "fme_pls_" + first.Id, n => n.PressedLabelScale, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedLabelScale = Mathf.Clamp(v, 0.5f, 2f);
+                    EditorPropertyChanged();
+                });
+            DrawEditorToggle(I18n.Tr("fm_pressed_count_scale_custom"), first.UsePressedCountScale, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UsePressedCountScale = v;
+                    if (v) n.PressedCountScale = n.CountScale;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedCountScale)
+                DrawEditorFloatField(I18n.Tr("fm_pressed_count_scale"), "fme_pcs_" + first.Id, n => n.PressedCountScale, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedCountScale = Mathf.Clamp(v, 0.5f, 2f);
+                    EditorPropertyChanged();
+                });
+            DrawEditorToggle(I18n.Tr("fm_pressed_label_rotation_custom"), first.UsePressedLabelRotation, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UsePressedLabelRotation = v;
+                    if (v) n.PressedLabelRotation = n.LabelRotation;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedLabelRotation)
+                DrawEditorFloatField(I18n.Tr("fm_pressed_label_rotation"), "fme_plr_" + first.Id, n => n.PressedLabelRotation, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedLabelRotation = Mathf.Clamp(v, -180f, 180f);
+                    EditorPropertyChanged();
+                });
+            DrawEditorToggle(I18n.Tr("fm_pressed_count_rotation_custom"), first.UsePressedCountRotation, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UsePressedCountRotation = v;
+                    if (v) n.PressedCountRotation = n.CountRotation;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedCountRotation)
+                DrawEditorFloatField(I18n.Tr("fm_pressed_count_rotation"), "fme_pcr_" + first.Id, n => n.PressedCountRotation, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedCountRotation = Mathf.Clamp(v, -180f, 180f);
+                    EditorPropertyChanged();
+                });
+            DrawEditorToggle(I18n.Tr("fm_pressed_label_offset_custom"), first.UsePressedLabelOffset, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UsePressedLabelOffset = v;
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedLabelOffset)
+            {
+                DrawEditorFloatField(I18n.Tr("fm_pressed_label_offset_x"), "fme_plox_" + first.Id, n => n.PressedLabelOffsetX, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedLabelOffsetX = Mathf.Clamp(v, -200f, 200f);
+                    EditorPropertyChanged();
+                });
+                DrawEditorFloatField(I18n.Tr("fm_pressed_label_offset_y"), "fme_ploy_" + first.Id, n => n.PressedLabelOffsetY, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedLabelOffsetY = Mathf.Clamp(v, -200f, 200f);
+                    EditorPropertyChanged();
+                });
+            }
+            DrawEditorToggle(I18n.Tr("fm_pressed_count_offset_custom"), first.UsePressedCountOffset, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UsePressedCountOffset = v;
+                EditorPropertyChanged();
+            });
+            if (first.UsePressedCountOffset)
+            {
+                DrawEditorFloatField(I18n.Tr("fm_pressed_count_offset_x"), "fme_pcox_" + first.Id, n => n.PressedCountOffsetX, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedCountOffsetX = Mathf.Clamp(v, -200f, 200f);
+                    EditorPropertyChanged();
+                });
+                DrawEditorFloatField(I18n.Tr("fm_pressed_count_offset_y"), "fme_pcoy_" + first.Id, n => n.PressedCountOffsetY, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.PressedCountOffsetY = Mathf.Clamp(v, -200f, 200f);
+                    EditorPropertyChanged();
+                });
+            }
 
             // Layer group assignment / 图层组指派
             if (!string.IsNullOrEmpty(first.GroupId))
@@ -3002,6 +3314,262 @@ namespace JipperKeyViewer.KeyViewer
                     Color fbTxtP = isKps || isTotal ? fbTxt : Settings.Data.TextClicked;
                     DrawEditorColorField(I18n.Tr("color_text"), first.TextColor, fbTxt, arr => { foreach (FmNode n in editorSelection) n.TextColor = arr; });
                     DrawEditorColorField(I18n.Tr("color_text_clicked"), first.TextColorPressed, fbTxtP, arr => { foreach (FmNode n in editorSelection) n.TextColorPressed = arr; });
+                    DrawEditorToggle(I18n.Tr("fm_count_color_custom"), first.UseCustomCountTextColor, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.UseCustomCountTextColor = v;
+                        EditorPropertyChanged();
+                    }, "fm_help_count_color");
+                    if (first.UseCustomCountTextColor)
+                    {
+                        DrawEditorColorField(I18n.Tr("fm_count_color"), first.CountTextColor, fbTxt, arr => { foreach (FmNode n in editorSelection) n.CountTextColor = arr; });
+                        DrawEditorColorField(I18n.Tr("fm_count_color_pressed"), first.CountTextColorPressed, fbTxtP, arr => { foreach (FmNode n in editorSelection) n.CountTextColorPressed = arr; });
+                    }
+                }
+            }
+
+            GUILayout.Space(4f);
+            DrawEditorFloatField(I18n.Tr("fm_text_opacity"), "fme_to_" + first.Id, n => n.TextOpacity, v =>
+            {
+                foreach (FmNode n in editorSelection) n.TextOpacity = Mathf.Clamp01(v);
+                EditorTextGradientPropertyChanged();
+            });
+            DrawEditorFloatField(I18n.Tr("fm_count_text_opacity"), "fme_cto_" + first.Id, n => n.CountTextOpacity, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountTextOpacity = Mathf.Clamp01(v);
+                EditorTextGradientPropertyChanged();
+            });
+            Color textFallback = first.NodeType == 1 ? Settings.Data.KpsText
+                : first.NodeType == 2 ? Settings.Data.TotalText : Settings.Data.Text;
+            DrawEditorToggle(I18n.Tr("fm_text_gradient"), first.UseTextGradient, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UseTextGradient = v;
+                EditorTextGradientPropertyChanged();
+            }, "fm_help_text_gradient");
+            if (first.UseTextGradient)
+            {
+                DrawEditorColorField(I18n.Tr("fm_text_gradient_left"), first.TextGradientLeft, textFallback, arr =>
+                {
+                    foreach (FmNode n in editorSelection) n.TextGradientLeft = arr;
+                    EditorTextGradientPropertyChanged();
+                });
+                DrawEditorColorField(I18n.Tr("fm_text_gradient_right"), first.TextGradientRight, textFallback, arr =>
+                {
+                    foreach (FmNode n in editorSelection) n.TextGradientRight = arr;
+                    EditorTextGradientPropertyChanged();
+                });
+                DrawEditorToggle(I18n.Tr("fm_text_gradient_pressed"), first.UsePressedTextGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UsePressedTextGradient = v;
+                    EditorTextGradientPropertyChanged();
+                }, "fm_help_text_gradient_pressed");
+                if (first.UsePressedTextGradient)
+                {
+                    Color pressedFallback = first.NodeType == 1 || first.NodeType == 2 ? textFallback : Settings.Data.TextClicked;
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_left_pressed"), first.TextGradientLeftPressed, pressedFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientLeftPressed = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_right_pressed"), first.TextGradientRightPressed, pressedFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientRightPressed = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                }
+            }
+            DrawEditorToggle(I18n.Tr("fm_count_text_gradient"), first.UseCountTextGradient, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UseCountTextGradient = v;
+                EditorTextGradientPropertyChanged();
+            }, "fm_help_text_gradient");
+            if (first.UseCountTextGradient)
+            {
+                DrawEditorColorField(I18n.Tr("fm_count_text_gradient_left"), first.CountTextGradientLeft, textFallback, arr =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextGradientLeft = arr;
+                    EditorTextGradientPropertyChanged();
+                });
+                DrawEditorColorField(I18n.Tr("fm_count_text_gradient_right"), first.CountTextGradientRight, textFallback, arr =>
+                {
+                    foreach (FmNode n in editorSelection) n.CountTextGradientRight = arr;
+                    EditorTextGradientPropertyChanged();
+                });
+                DrawEditorToggle(I18n.Tr("fm_count_text_gradient_pressed"), first.UsePressedCountTextGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UsePressedCountTextGradient = v;
+                    EditorTextGradientPropertyChanged();
+                }, "fm_help_text_gradient_pressed");
+                if (first.UsePressedCountTextGradient)
+                {
+                    Color pressedFallback = first.NodeType == 1 || first.NodeType == 2 ? textFallback : Settings.Data.TextClicked;
+                    DrawEditorColorField(I18n.Tr("fm_count_text_gradient_left_pressed"), first.CountTextGradientLeftPressed, pressedFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientLeftPressed = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_count_text_gradient_right_pressed"), first.CountTextGradientRightPressed, pressedFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientRightPressed = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                }
+            }
+
+            GUILayout.Space(4f);
+            DrawEditorToggle(I18n.Tr("fm_custom_glow"), first.UseGlow, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UseGlow = v;
+                EditorGlowPropertyChanged();
+            }, "fm_help_custom_glow");
+            if (first.UseGlow)
+            {
+                DrawEditorToggle(I18n.Tr("fm_glow_follow_body"), first.GlowFollowBody, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.GlowFollowBody = v;
+                    EditorGlowPropertyChanged();
+                }, "fm_help_glow_follow_body");
+                DrawEditorFloatField(I18n.Tr("fm_glow_size"), "fme_gs_" + first.Id, n => n.GlowSize, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.GlowSize = Mathf.Clamp(v, 0f, 50f);
+                    EditorGlowPropertyChanged();
+                }, "fm_help_glow_params");
+                DrawEditorPercentField(I18n.Tr("fm_glow_opacity"), "fme_go_" + first.Id, n => n.GlowOpacity, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.GlowOpacity = Mathf.Clamp01(v);
+                    EditorGlowPropertyChanged();
+                }, "fm_help_glow_params");
+                if (!first.GlowFollowBody)
+                {
+                    Color glowFallback = first.NodeType == 1 ? Settings.Data.KpsBackground
+                        : first.NodeType == 2 ? Settings.Data.TotalBackground
+                        : first.NodeType == 3 ? Settings.Data.Outline : Settings.Data.Background;
+                    DrawEditorColorField(I18n.Tr("fm_glow_color"), first.GlowColor, glowFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.GlowColor = arr;
+                        EditorGlowPropertyChanged();
+                    });
+                }
+
+                DrawEditorToggle(I18n.Tr("fm_glow_pressed_override"), first.GlowPressedOverride, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.GlowPressedOverride = v;
+                    EditorGlowPropertyChanged();
+                }, "fm_help_glow_pressed");
+                if (first.GlowPressedOverride)
+                {
+                    DrawEditorToggle(I18n.Tr("fm_glow_pressed_follow_body"), first.GlowFollowBodyPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.GlowFollowBodyPressed = v;
+                        EditorGlowPropertyChanged();
+                    }, "fm_help_glow_pressed_follow");
+                    DrawEditorFloatField(I18n.Tr("fm_glow_pressed_size"), "fme_gps_" + first.Id, n => n.GlowSizePressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.GlowSizePressed = Mathf.Clamp(v, 0f, 50f);
+                        EditorGlowPropertyChanged();
+                    }, "fm_help_glow_params");
+                    DrawEditorPercentField(I18n.Tr("fm_glow_pressed_opacity"), "fme_gpo_" + first.Id, n => n.GlowOpacityPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.GlowOpacityPressed = Mathf.Clamp01(v);
+                        EditorGlowPropertyChanged();
+                    }, "fm_help_glow_params");
+                    if (!first.GlowFollowBodyPressed)
+                    {
+                        Color pressedGlowFallback = first.NodeType == 1 ? Settings.Data.KpsBackground
+                            : first.NodeType == 2 ? Settings.Data.TotalBackground
+                            : first.NodeType == 3 ? Settings.Data.Outline : Settings.Data.BackgroundClicked;
+                        DrawEditorColorField(I18n.Tr("fm_glow_pressed_color"), first.GlowColorPressed, pressedGlowFallback, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) n.GlowColorPressed = arr;
+                            EditorGlowPropertyChanged();
+                        });
+                    }
+                }
+            }
+
+            if (first.NodeType != 3)
+            {
+                GUILayout.Space(4f);
+                DrawEditorToggle(I18n.Tr("fm_background_gradient"), first.UseBackgroundGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseBackgroundGradient = v;
+                    EditorGradientPropertyChanged();
+                }, "fm_help_background_gradient");
+                if (first.UseBackgroundGradient)
+                {
+                    Color normalFallback = first.NodeType == 1 ? Settings.Data.KpsBackground
+                        : first.NodeType == 2 ? Settings.Data.TotalBackground : Settings.Data.Background;
+                    Color activeFallback = first.NodeType == 1 ? Settings.Data.KpsBackground
+                        : first.NodeType == 2 ? Settings.Data.TotalBackground : Settings.Data.BackgroundClicked;
+                    DrawEditorColorField(I18n.Tr("fm_background_gradient_top"), first.BackgroundGradientTop, normalFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.BackgroundGradientTop = arr;
+                        EditorGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_background_gradient_bottom"), first.BackgroundGradientBottom, normalFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.BackgroundGradientBottom = arr;
+                        EditorGradientPropertyChanged();
+                    });
+                    DrawEditorToggle(I18n.Tr("fm_background_gradient_pressed"), first.UsePressedBackgroundGradient, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.UsePressedBackgroundGradient = v;
+                        EditorGradientPropertyChanged();
+                    }, "fm_help_background_gradient_pressed");
+                    if (first.UsePressedBackgroundGradient)
+                    {
+                        DrawEditorColorField(I18n.Tr("fm_background_gradient_top_pressed"), first.BackgroundGradientTopPressed, activeFallback, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) n.BackgroundGradientTopPressed = arr;
+                            EditorGradientPropertyChanged();
+                        });
+                        DrawEditorColorField(I18n.Tr("fm_background_gradient_bottom_pressed"), first.BackgroundGradientBottomPressed, activeFallback, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) n.BackgroundGradientBottomPressed = arr;
+                            EditorGradientPropertyChanged();
+                        });
+                    }
+                }
+
+                GUILayout.Space(4f);
+                DrawEditorToggle(I18n.Tr("fm_outline_gradient"), first.UseOutlineGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseOutlineGradient = v;
+                    EditorGradientPropertyChanged();
+                }, "fm_help_outline_gradient");
+                if (first.UseOutlineGradient)
+                {
+                    Color normalOutline = first.NodeType == 1 ? Settings.Data.KpsOutline
+                        : first.NodeType == 2 ? Settings.Data.TotalOutline : Settings.Data.Outline;
+                    Color activeOutline = first.NodeType == 1 ? Settings.Data.KpsOutline
+                        : first.NodeType == 2 ? Settings.Data.TotalOutline : Settings.Data.OutlineClicked;
+                    DrawEditorColorField(I18n.Tr("fm_outline_gradient_top"), first.OutlineGradientTop, normalOutline, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.OutlineGradientTop = arr;
+                        EditorGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_outline_gradient_bottom"), first.OutlineGradientBottom, normalOutline, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.OutlineGradientBottom = arr;
+                        EditorGradientPropertyChanged();
+                    });
+                    DrawEditorToggle(I18n.Tr("fm_outline_gradient_pressed"), first.UsePressedOutlineGradient, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.UsePressedOutlineGradient = v;
+                        EditorGradientPropertyChanged();
+                    }, "fm_help_outline_gradient_pressed");
+                    if (first.UsePressedOutlineGradient)
+                    {
+                        DrawEditorColorField(I18n.Tr("fm_outline_gradient_top_pressed"), first.OutlineGradientTopPressed, activeOutline, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) n.OutlineGradientTopPressed = arr;
+                            EditorGradientPropertyChanged();
+                        });
+                        DrawEditorColorField(I18n.Tr("fm_outline_gradient_bottom_pressed"), first.OutlineGradientBottomPressed, activeOutline, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) n.OutlineGradientBottomPressed = arr;
+                            EditorGradientPropertyChanged();
+                        });
+                    }
                 }
             }
 
@@ -3230,6 +3798,98 @@ namespace JipperKeyViewer.KeyViewer
                 foreach (FmNode n in editorSelection) n.FontSize = size;
                 EditorPropertyChanged();
             }
+            DrawEditorFontStyle(first);
+            DrawEditorToggle(I18n.Tr("fm_count_font_style_custom"), first.UseCustomCountFontStyle, v =>
+            {
+                foreach (FmNode n in editorSelection)
+                {
+                    n.UseCustomCountFontStyle = v;
+                    if (v && n.CountFontStyleFlags == 0) n.CountFontStyleFlags = n.FontStyleFlags;
+                }
+                EditorPropertyChanged();
+            });
+            if (first.UseCustomCountFontStyle) DrawEditorCountFontStyle(first);
+            DrawEditorFloatField(I18n.Tr("fm_count_font_size"), "fme_cfs_" + first.Id, n => n.CountFontSize, v =>
+            {
+                foreach (FmNode n in editorSelection) n.CountFontSize = Mathf.Clamp(v, 0f, 72f);
+                EditorPropertyChanged();
+            });
+        }
+
+        private void DrawEditorFontStyle(FmNode first)
+        {
+            GUILayout.Label(I18n.Tr("fm_font_style"));
+            GUILayout.BeginHorizontal();
+            // TMP FontStyles values: Bold=1, Italic=2, Underline=4, Strikethrough=64.
+            // Keep the numeric masks local to the serialized int field; no per-frame parsing.
+            // TMP FontStyles 数值：Bold=1、Italic=2、Underline=4、Strikethrough=64；
+            // 序列化 int 只在编辑器属性变更时解析，不做逐帧扫描。
+            int flags = first.FontStyleFlags;
+            bool mixed = false;
+            for (int i = 1; i < editorSelection.Count; i++)
+                if (editorSelection[i].FontStyleFlags != flags) { mixed = true; break; }
+            if (mixed) GUILayout.Label("—", GUILayout.Width(24f));
+            int mask = 0;
+            bool bold = (flags & 1) != 0;
+            bool italic = (flags & 2) != 0;
+            bool underline = (flags & 4) != 0;
+            bool strike = (flags & 64) != 0;
+            bool newBold = GUILayout.Toggle(bold, I18n.Tr("fm_font_bold"), GUILayout.Width(58f));
+            bool newItalic = GUILayout.Toggle(italic, I18n.Tr("fm_font_italic"), GUILayout.Width(58f));
+            bool newUnderline = GUILayout.Toggle(underline, I18n.Tr("fm_font_underline"), GUILayout.Width(78f));
+            bool newStrike = GUILayout.Toggle(strike, I18n.Tr("fm_font_strikethrough"), GUILayout.Width(82f));
+            mask = (newBold ? 1 : 0) | (newItalic ? 2 : 0) | (newUnderline ? 4 : 0) | (newStrike ? 64 : 0);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            bool lower = (flags & 8) != 0;
+            bool upper = (flags & 16) != 0;
+            bool smallCaps = (flags & 32) != 0;
+            bool superscript = (flags & 128) != 0;
+            bool subscript = (flags & 256) != 0;
+            bool newLower = GUILayout.Toggle(lower, I18n.Tr("fm_font_lowercase"), GUILayout.Width(78f));
+            bool newUpper = GUILayout.Toggle(upper, I18n.Tr("fm_font_uppercase"), GUILayout.Width(82f));
+            bool newSmallCaps = GUILayout.Toggle(smallCaps, I18n.Tr("fm_font_smallcaps"), GUILayout.Width(78f));
+            bool newSuperscript = GUILayout.Toggle(superscript, I18n.Tr("fm_font_superscript"), GUILayout.Width(92f));
+            bool newSubscript = GUILayout.Toggle(subscript, I18n.Tr("fm_font_subscript"), GUILayout.Width(88f));
+            mask |= (newLower ? 8 : 0) | (newUpper ? 16 : 0) | (newSmallCaps ? 32 : 0)
+                | (newSuperscript ? 128 : 0) | (newSubscript ? 256 : 0);
+            GUILayout.EndHorizontal();
+            if (mask != flags)
+            {
+                foreach (FmNode n in editorSelection) n.FontStyleFlags = mask;
+                EditorPropertyChanged();
+            }
+        }
+
+        private void DrawEditorCountFontStyle(FmNode first)
+        {
+            GUILayout.Label(I18n.Tr("fm_count_font_style"));
+            GUILayout.BeginHorizontal();
+            int flags = first.CountFontStyleFlags;
+            bool mixed = false;
+            for (int i = 1; i < editorSelection.Count; i++)
+                if (editorSelection[i].CountFontStyleFlags != flags) { mixed = true; break; }
+            if (mixed) GUILayout.Label("—", GUILayout.Width(24f));
+            bool newBold = GUILayout.Toggle((flags & 1) != 0, I18n.Tr("fm_font_bold"), GUILayout.Width(58f));
+            bool newItalic = GUILayout.Toggle((flags & 2) != 0, I18n.Tr("fm_font_italic"), GUILayout.Width(58f));
+            bool newUnderline = GUILayout.Toggle((flags & 4) != 0, I18n.Tr("fm_font_underline"), GUILayout.Width(78f));
+            bool newStrike = GUILayout.Toggle((flags & 64) != 0, I18n.Tr("fm_font_strikethrough"), GUILayout.Width(82f));
+            int mask = (newBold ? 1 : 0) | (newItalic ? 2 : 0) | (newUnderline ? 4 : 0) | (newStrike ? 64 : 0);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            bool newLower = GUILayout.Toggle((flags & 8) != 0, I18n.Tr("fm_font_lowercase"), GUILayout.Width(78f));
+            bool newUpper = GUILayout.Toggle((flags & 16) != 0, I18n.Tr("fm_font_uppercase"), GUILayout.Width(82f));
+            bool newSmallCaps = GUILayout.Toggle((flags & 32) != 0, I18n.Tr("fm_font_smallcaps"), GUILayout.Width(78f));
+            bool newSuperscript = GUILayout.Toggle((flags & 128) != 0, I18n.Tr("fm_font_superscript"), GUILayout.Width(92f));
+            bool newSubscript = GUILayout.Toggle((flags & 256) != 0, I18n.Tr("fm_font_subscript"), GUILayout.Width(88f));
+            mask |= (newLower ? 8 : 0) | (newUpper ? 16 : 0) | (newSmallCaps ? 32 : 0)
+                | (newSuperscript ? 128 : 0) | (newSubscript ? 256 : 0);
+            GUILayout.EndHorizontal();
+            if (mask != flags)
+            {
+                foreach (FmNode n in editorSelection) n.CountFontStyleFlags = mask;
+                EditorPropertyChanged();
+            }
         }
 
         // ---- Inline "?" help markers on editor property rows / 编辑器属性行的行内「?」帮助 ----
@@ -3339,6 +3999,34 @@ namespace JipperKeyViewer.KeyViewer
             // ——多选的主流程（选一堆、输一个值、全体生效）等于失效。
             if (float.TryParse(text.Replace("—", "").Trim(), out float parsed) && IsFiniteFloat(parsed) && (mixed || Math.Abs(parsed - v0) > 0.001f))
                 apply(parsed);
+            GUILayout.EndHorizontal();
+            DrawEditorHelpBox(helpKey);
+        }
+
+        private void DrawEditorPercentField(string label, string ctrl, Func<FmNode, float> getNormalized,
+            Action<float> applyNormalized, string helpKey = null)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, GUILayout.Width(96f));
+            DrawEditorHelpMarker(helpKey);
+            float value = getNormalized(editorSelection[0]);
+            if (float.IsNaN(value) || float.IsInfinity(value)) value = 0f;
+            bool mixed = false;
+            for (int i = 1; i < editorSelection.Count; i++)
+            {
+                float other = getNormalized(editorSelection[i]);
+                if (float.IsNaN(other) || float.IsInfinity(other) || Mathf.Abs(other - value) > 0.001f)
+                {
+                    mixed = true;
+                    break;
+                }
+            }
+            string text = TextInputField(ctrl, mixed ? "—" : (value * 100f).ToString("0.##"), GUILayout.Width(110f));
+            if (float.TryParse(text.Replace("—", "").Trim(), out float percent) && IsFiniteFloat(percent))
+            {
+                float normalized = Mathf.Clamp01(percent / 100f);
+                if (mixed || Mathf.Abs(normalized - value) > 0.001f) applyNormalized(normalized);
+            }
             GUILayout.EndHorizontal();
             DrawEditorHelpBox(helpKey);
         }
@@ -3525,6 +4213,46 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         private static float[] ColorArray(Color c) => new[] { c.r, c.g, c.b, c.a };
+
+        private void EditorGlowPropertyChanged()
+        {
+            PushEditorHistoryNudge();
+            SaveSettingsFromGui();
+            foreach (FmNode node in editorSelection)
+            {
+                if (node == null) continue;
+                ApplyCustomGlow(node, node.RuntimeKey != null && node.RuntimeKey.isPressed);
+            }
+        }
+
+        private void EditorTextGradientPropertyChanged()
+        {
+            PushEditorHistoryNudge();
+            SaveSettingsFromGui();
+            foreach (FmNode node in editorSelection)
+            {
+                if (node == null || node.RuntimeKey == null) continue;
+                bool pressed = node.RuntimeKey.isPressed;
+                if (node.NodeType == 0 || node.NodeType == 3)
+                    ApplyCustomKeyColors(node.RuntimeKey, node, pressed);
+                else
+                    ApplyCustomSpecialColors(node.RuntimeKey, node, pressed);
+            }
+            TickTextGradients();
+        }
+
+        private void EditorGradientPropertyChanged()
+        {
+            PushEditorHistoryNudge();
+            SaveSettingsFromGui();
+            foreach (FmNode node in editorSelection)
+            {
+                if (node == null) continue;
+                bool pressed = node.RuntimeKey != null && node.RuntimeKey.isPressed;
+                ApplyCustomBackgroundGradient(node, pressed);
+                ApplyCustomOutlineGradient(node, pressed);
+            }
+        }
 
         private void EditorPropertyChanged()
         {

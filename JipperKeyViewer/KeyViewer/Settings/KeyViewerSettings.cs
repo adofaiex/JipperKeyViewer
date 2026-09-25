@@ -122,11 +122,58 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public Color TotalOutline = KeyViewer.Outline;
         public Color TotalText = KeyViewer.Text;
 
+        // Global fixed-layout glow (FreeMake node glow is stored on FmNode separately).
+        // Default off so existing fixed profiles remain unchanged. / 固定布局全局光效
+        // （FreeMake 节点光效单独存于 FmNode）。默认关闭，既有固定布局配置不受影响。
+        public bool EnableFixedKeyGlow;
+        public bool FixedKeyGlowFollowBody = true;
+        public Color FixedKeyGlowColor = Color.white;
+        public float FixedKeyGlowSize = 20f;
+        public float FixedKeyGlowOpacity = 0.7f;
+        public bool FixedKeyGlowPressedOverride;
+        public bool FixedKeyGlowFollowBodyPressed = true;
+        public Color FixedKeyGlowColorPressed = Color.white;
+        public float FixedKeyGlowSizePressed = 20f;
+        public float FixedKeyGlowOpacityPressed = 0.7f;
+        public bool EnableFixedBackgroundGradient;
+        public Color FixedBackgroundGradientTop = Color.white;
+        public Color FixedBackgroundGradientBottom = Color.black;
+        public bool FixedBackgroundGradientPressedOverride;
+        public Color FixedBackgroundGradientTopPressed = Color.white;
+        public Color FixedBackgroundGradientBottomPressed = Color.black;
+        public bool EnableFixedOutlineGradient;
+        public Color FixedOutlineGradientTop = Color.white;
+        public Color FixedOutlineGradientBottom = Color.black;
+        public bool FixedOutlineGradientPressedOverride;
+        public Color FixedOutlineGradientTopPressed = Color.white;
+        public Color FixedOutlineGradientBottomPressed = Color.black;
+        public bool EnableKeyTextGradient;
+        public Color KeyTextGradientLeft = Color.white;
+        public Color KeyTextGradientRight = Color.white;
+        public bool EnableCountTextGradient;
+        public Color CountTextGradientLeft = Color.white;
+        public Color CountTextGradientRight = Color.white;
+        public bool KeyTextGradientPressedOverride;
+        public Color KeyTextGradientLeftPressed = Color.white;
+        public Color KeyTextGradientRightPressed = Color.white;
+        public bool CountTextGradientPressedOverride;
+        public Color CountTextGradientLeftPressed = Color.white;
+        public Color CountTextGradientRightPressed = Color.white;
+
         public bool EnableRainEffect = true;
         public bool EnableRainFade = true;
         public bool EnableGhostRain = false;
         public float RainFadeDuration = 0.5f;
         public bool EnableRainGradient = false;
+        // Quartz-style rounded corners for the optional rain outline. Disabled by default and
+        // never creates rain for Full108 (the existing no-rain guard remains authoritative).
+        // Quartz 风格的可选雨滴描边圆角；默认关闭，Full108 仍由既有无雨守卫处理。
+        public bool EnableRainRoundedOutline;
+        public float RainOutlineCornerRadius;
+        public int RainOutlineSides; // 0 = all, 1 = vertical, 2 = horizontal
+        public bool EnableRainDotted;
+        public float RainDotLength = 12f;
+        public float RainGapLength = 8f;
         public float RainFadePx = 40f;
         public bool EnableRainForRow1 = true;
         public bool EnableRainForRow2 = true;
@@ -684,6 +731,60 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // 节点级文本颜色（null = 跟随全局 Text/TextClicked）。
         public float[] TextColor;
         public float[] TextColorPressed;
+        public bool UseCustomCountTextColor;
+        public float[] CountTextColor;
+        public float[] CountTextColorPressed;
+        public float TextOpacity = 1f;
+        public float CountTextOpacity = 1f;
+
+        // Per-node box glow, following Quartz's cached soft-sprite approach rather than
+        // generating transparent shells. FollowBody keeps the glow tied to the current body
+        // color; disabling it uses GlowColor. / 节点级盒子光效，参考 Quartz 的缓存柔光
+        // Sprite 方案，不生成透明外壳。FollowBody 开启时跟随主体色，关闭后使用 GlowColor。
+        public bool UseGlow;
+        public bool GlowFollowBody = true;
+        public float[] GlowColor;
+        public float GlowSize = 20f;
+        public float GlowOpacity = 0.7f;
+        // Quartz keeps idle and active box shadows separate. Override is opt-in so old
+        // profiles continue using the idle glow while a key is held. / Quartz 将常态与
+        // 按下盒子阴影分开；该覆盖默认关闭，旧配置按住时仍沿用常态光效。
+        public bool GlowPressedOverride;
+        public bool GlowFollowBodyPressed = true;
+        public float[] GlowColorPressed;
+        public float GlowSizePressed = 20f;
+        public float GlowOpacityPressed = 0.7f;
+
+        // Optional vertical background gradient. Pressed colors are opt-in and otherwise the
+        // idle gradient stays in place while held. / 可选垂直背景渐变；按下色独立选择，
+        // 未启用时按住仍沿用常态渐变。
+        public bool UseBackgroundGradient;
+        public float[] BackgroundGradientTop;
+        public float[] BackgroundGradientBottom;
+        public bool UsePressedBackgroundGradient;
+        public float[] BackgroundGradientTopPressed;
+        public float[] BackgroundGradientBottomPressed;
+        public bool UseOutlineGradient;
+        public float[] OutlineGradientTop;
+        public float[] OutlineGradientBottom;
+        public bool UsePressedOutlineGradient;
+        public float[] OutlineGradientTopPressed;
+        public float[] OutlineGradientBottomPressed;
+        // Static left-to-right glyph gradients. Unlike Quartz's animated path this is applied only
+        // when the text/colors change, so counts do not trigger per-frame character scans.
+        // 静态左右文字渐变；只在文字或颜色变化时重算，不按帧扫描字符。
+        public bool UseTextGradient;
+        public float[] TextGradientLeft;
+        public float[] TextGradientRight;
+        public bool UseCountTextGradient;
+        public float[] CountTextGradientLeft;
+        public float[] CountTextGradientRight;
+        public bool UsePressedTextGradient;
+        public float[] TextGradientLeftPressed;
+        public float[] TextGradientRightPressed;
+        public bool UsePressedCountTextGradient;
+        public float[] CountTextGradientLeftPressed;
+        public float[] CountTextGradientRightPressed;
 
         // ===== rain / 雨滴 =====
         // RainRow maps the node onto the three global rain parameter rows (speed / height /
@@ -707,6 +808,20 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // 节点级雨滴偏移（像素）：X 平移雨滴列，Y 平移轨道起点。
         public float RainOffsetX;
         public float RainOffsetY;
+        /// <summary>0 = left, 1 = center, 2 = right / 雨滴在节点内的水平对齐</summary>
+        public int RainAlignment = 1;
+        public bool UseCustomRainCornerRadius;
+        public float RainCornerRadius;
+        public bool UseCustomRainBorderSides;
+        public int RainBorderSides;
+        public bool UseCustomRainDotted;
+        public float RainDotLength;
+        public float RainGapLength;
+        public bool UseCustomGhostRainCornerRadius;
+        public float GhostRainCornerRadius;
+        public bool UseCustomGhostRainDotted;
+        public float GhostRainDotLength;
+        public float GhostRainGapLength;
         // ===== counter bounce / 计数器弹跳 =====
         // counter bounce animation: bezier ease, scale peak, duration. The bezier is a
         // float[4] (NOT Vector4 — Vector4's computed 'normalized' property sends Newtonsoft
@@ -786,9 +901,36 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // 图片按键：按下时切换到该图片（按压语义）。
         public string ImagePathPressed = "";
         public bool HideLabel;
+        public bool HideLabelWhilePressed;
         // Per-node count hiding (independent of the global HideMainKeyCount). /
         // 逐节点隐藏计数（独立于全局「隐藏主按键计数」）。
         public bool HideCount;
+        /// <summary>Keep the count visible while this node is held / 按住时仍显示计数</summary>
+        public bool CountShowWhilePressed = true;
+        /// <summary>Independent count text offset in pixels / 计数字独立偏移（像素）</summary>
+        public float CountOffsetX;
+        public float CountOffsetY;
+        /// <summary>Independent label text offset in pixels / 标签文字独立偏移（像素）</summary>
+        public float LabelOffsetX;
+        public float LabelOffsetY;
+        public float LabelRotation;
+        public float CountRotation;
+        public float LabelScale = 1f;
+        public float CountScale = 1f;
+        public bool UsePressedLabelScale;
+        public float PressedLabelScale = 1f;
+        public bool UsePressedCountScale;
+        public float PressedCountScale = 1f;
+        public bool UsePressedLabelOffset;
+        public float PressedLabelOffsetX;
+        public float PressedLabelOffsetY;
+        public bool UsePressedCountOffset;
+        public float PressedCountOffsetX;
+        public float PressedCountOffsetY;
+        public bool UsePressedLabelRotation;
+        public float PressedLabelRotation;
+        public bool UsePressedCountRotation;
+        public float PressedCountRotation;
         // Per-node count formatting: off = follow the global EnableCountFormatting; opting in
         // seeds the flag from the CURRENT global so the enabling action itself never changes
         // the rendered number. Applies to the node's own count AND, on stat nodes, the panel's
@@ -807,6 +949,12 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public float BorderThickness;
         // 0 = use the global key font size / 0 = 使用全局按键字号
         public float FontSize;
+        /// <summary>Per-node count font size (0 = follow the label/global size) / 节点级计数字号</summary>
+        public float CountFontSize;
+        /// <summary>Per-node TMP font style flags (bold/italic/underline/strikethrough) / 节点级 TMP 字体样式标志</summary>
+        public int FontStyleFlags;
+        public bool UseCustomCountFontStyle;
+        public int CountFontStyleFlags;
         // Temporarily excluded from the runtime build; the editor dims it. /
         // 暂时从运行时构建中排除；编辑器里以低透明度显示。
         public bool Hidden;

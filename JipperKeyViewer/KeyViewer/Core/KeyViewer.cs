@@ -7,6 +7,7 @@ using Newtonsoft.Json;
 using TMPro;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 using JipperKeyViewer.KeyViewer.Settings;
 using JipperKeyViewer.KeyViewer.Rain;
@@ -210,6 +211,10 @@ namespace JipperKeyViewer.KeyViewer
         KeyShapeLayer keyShapeLayer;
         /// <summary>Merged outline-shape layer (shares state with keyShapeLayer) / 合并描边形状层（与背景层共享状态）</summary>
         KeyShapeLayer keyOutlineLayer;
+        /// <summary>Quartz-style cached soft-glow layer for FreeMake nodes / FreeMake 节点缓存柔光层</summary>
+        Transform keyGlowLayer;
+        /// <summary>Cached glow Images for fixed-layout keys / 固定布局按键的缓存光效 Image</summary>
+        readonly Dictionary<Key, Image> fixedGlowImages = new Dictionary<Key, Image>();
         /// <summary>Sub-canvas holding all key texts (isolates text rebatching from shape layer) / 持有全部按键文本的子画布（文本重批与形状层隔离）</summary>
         Transform textLayer;
         /// <summary>Merged rain layer (solid quads: normal bodies + ghost shadow/outline) / 合并雨滴层（纯色四边形：普通本体 + 鬼雨阴影/描边）</summary>
@@ -506,6 +511,7 @@ namespace JipperKeyViewer.KeyViewer
                 ProcessKpsInUpdate(now);            // Update KPS counter / 更新 KPS 计数器
                 ProcessPerKeyKpsInUpdate(now);       // Update per-key KPS / 更新每键 KPS
                 if (IsCustomLayout) TickCounterBounces(); // counter bounce animations / 计数器弹跳动画
+                TickTextGradients(); // static glyph gradients / 静态字形渐变
             }
         }
 

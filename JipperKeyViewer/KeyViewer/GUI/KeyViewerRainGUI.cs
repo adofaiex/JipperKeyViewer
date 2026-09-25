@@ -294,6 +294,58 @@ namespace JipperKeyViewer.KeyViewer
                 if (!Mathf.Approximately(newW3, Settings.Data.RainWidthRow3)) { Settings.Data.RainWidthRow3 = newW3; SaveSettingsFromGui(); }
             }
 
+            bool newRoundedOutline = GUILayout.Toggle(Settings.Data.EnableRainRoundedOutline, I18n.Tr("rain_rounded_outline"));
+            if (newRoundedOutline != Settings.Data.EnableRainRoundedOutline)
+            {
+                Settings.Data.EnableRainRoundedOutline = newRoundedOutline;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
+            if (Settings.Data.EnableRainRoundedOutline)
+            {
+                float newCornerRadius = FloatSliderField(I18n.Tr("rain_rounded_outline_radius"), Settings.Data.RainOutlineCornerRadius, 0f, 20f, "F0");
+                if (!Mathf.Approximately(newCornerRadius, Settings.Data.RainOutlineCornerRadius))
+                {
+                    Settings.Data.RainOutlineCornerRadius = newCornerRadius;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+            }
+            GUILayout.Label(I18n.Tr("rain_outline_sides") + ":");
+            string[] outlineSides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+            int newSides = GUILayout.SelectionGrid(Mathf.Clamp(Settings.Data.RainOutlineSides, 0, 2), outlineSides, 3);
+            if (newSides != Settings.Data.RainOutlineSides)
+            {
+                Settings.Data.RainOutlineSides = newSides;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
+
+            bool newDottedRain = GUILayout.Toggle(Settings.Data.EnableRainDotted, I18n.Tr("rain_dotted"));
+            if (newDottedRain != Settings.Data.EnableRainDotted)
+            {
+                Settings.Data.EnableRainDotted = newDottedRain;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
+            if (Settings.Data.EnableRainDotted)
+            {
+                float newDotLength = FloatSliderField(I18n.Tr("rain_dot_length"), Settings.Data.RainDotLength, 1f, 100f, "F0");
+                if (!Mathf.Approximately(newDotLength, Settings.Data.RainDotLength))
+                {
+                    Settings.Data.RainDotLength = newDotLength;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+                float newGapLength = FloatSliderField(I18n.Tr("rain_gap_length"), Settings.Data.RainGapLength, 0f, 100f, "F0");
+                if (!Mathf.Approximately(newGapLength, Settings.Data.RainGapLength))
+                {
+                    Settings.Data.RainGapLength = newGapLength;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+            }
+
             GUILayout.Label(I18n.Tr("rain_start_y") + ":");
             // Start-Y is read live at render time — sliders apply to existing drops directly. It
             // still persists through the debounced save like every other slider on this page: the
