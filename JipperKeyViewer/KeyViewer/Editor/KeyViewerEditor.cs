@@ -1071,7 +1071,18 @@ namespace JipperKeyViewer.KeyViewer
         /// 关闭窗口只需中止捕获/拖拽；切换配置或替换文档时还会清理时间线、选区和剪贴板。 </summary>
         private void ClearEditorInteractionState()
         {
-            fmHasKeyFocus = false;
+            // NOT fmHasKeyFocus. That flag is the keyboard-shortcut gate, and it is only restored
+            // by a MouseDown inside the canvas. Clearing it here made Ctrl+Z a one-shot: the very
+            // first undo (which correctly calls this) armed the shortcut gate off, so every
+            // SUBSEQUENT undo/redo, Delete, Escape, copy, paste and arrow nudge silently did
+            // nothing until the user clicked the canvas again — and holding Ctrl+Z stepped back
+            // exactly one entry. Window focus is not a gesture: the editor window being open is
+            // already the precondition, and OnGUI returns early when it is not.
+            // 这里**不能**清 fmHasKeyFocus。那是键盘快捷键的门槛，且只有画布内的 MouseDown 会
+            // 恢复它。在此清掉会让 Ctrl+Z 变成一次性：第一次撤销（正确地调了本方法）就把门槛
+            // 关掉，于是此后**所有**撤销/重做、删除、Esc、复制、粘贴与方向键微调都静默失效，
+            // 直到用户再点一次画布——按住 Ctrl+Z 只退一步。窗口焦点不是手势：编辑器窗口已打开
+            // 本身已是前提，未打开时 OnGUI 本就早退。
             fmPointerDown = false;
             fmGesture = FmGesture.None;
             fmDragArmed = false;
@@ -1178,12 +1189,24 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorUndo()
         {
+            // Clear here too, not only at the keyboard call site. Undo/redo swap the whole node
+            // list for freshly deserialized instances, so a live gesture holding the pre-undo
+            // instances in fmDragStart/fmResizeOrig would keep writing coordinates into objects
+            // that are no longer in the document — the node appears stuck and the canvas lies.
+            // The keyboard path already did this; the TOOLBAR buttons did not, so the same undo
+            // behaved differently depending on how it was triggered. Clearing is idempotent, so
+            // doing it in both places costs nothing. / 撤销/重做会把整份节点表换成反序列化出的
+            // 新实例；仍在进行的手势持有的是撤销前的旧实例，后续每帧都会往已不在文档里的对象写
+            // 坐标，表现为节点卡住不动。键盘路径原本已清理，**工具栏按钮没有**，于是同一个撤销
+            // 因触发方式不同而行为不同。清理是幂等的，两处都做没有代价。
+            ClearEditorInteractionState();
             string current = SnapshotEditorDocument();
             RestoreEditorSnapshot(editorHistory.Undo(current));
         }
 
         private void EditorRedo()
         {
+            ClearEditorInteractionState();
             string current = SnapshotEditorDocument();
             RestoreEditorSnapshot(editorHistory.Redo(current));
         }
@@ -1343,10 +1366,24 @@ namespace JipperKeyViewer.KeyViewer
             // 仍持续生效。Use() 只对输入事件合法——Layout/Repaint 必须原样放行。
             if (fmMinimapDrag)
             {
-                HandleEditorMinimapDrag(rect, e);
-                if (e.type == EventType.MouseDrag || e.type == EventType.MouseUp || e.type == EventType.MouseDown)
-                    e.Use();
-                return;
+                // A MouseUp can be lost entirely — Alt-Tab, dragging outside the window, a focus
+                // change, a modal popup. Without this fallback the flag stayed true FOREVER and
+                // this branch swallowed every subsequent MouseDown/Drag/Up and returned, so
+                // selection, dragging, the resize handle, the marquee and all keyboard shortcuts
+                // silently died until the editor was reopened. The canvas drag path already had
+                // this guard; the minimap did not.
+                // MouseUp 可能彻底丢失——Alt-Tab、拖出窗口、焦点变化、弹窗。没有这层兜底，该标志
+                // 会**永久**为真，且本分支会吞掉此后每一次 MouseDown/Drag/Up 并返回，于是选中、
+                // 拖拽、缩放手柄、框选与全部键盘快捷键静默失效，直到重开编辑器。画布拖拽路径
+                // 本就有此守卫，小地图没有。
+                if (e.type != EventType.MouseDown && !Input.GetMouseButton(0)) fmMinimapDrag = false;
+                if (fmMinimapDrag)
+                {
+                    HandleEditorMinimapDrag(rect, e);
+                    if (e.type == EventType.MouseDrag || e.type == EventType.MouseUp || e.type == EventType.MouseDown)
+                        e.Use();
+                    return;
+                }
             }
             if (HandleEditorMinimapStart(rect, e)) return;
             // Keyboard shortcuts: only while the window has mouse focus (last press inside) and
@@ -2620,6 +2657,14 @@ namespace JipperKeyViewer.KeyViewer
                 fmResizing = true;
                 e.Use();
             }
+            // Same lost-MouseUp hazard as the minimap drag: a permanent true here makes EVERY
+            // later MouseDrag drag the editor WINDOW to the mouse shape, forever. The release is
+            // also restricted to button 0 — an unrelated right/middle release must not end a
+            // left-button window drag.
+            // 与小地图拖拽同样的丢失 MouseUp 风险：这里永久为真会让此后**每一次** MouseDrag 都
+            // 把编辑器窗口拖成鼠标形状，且永不停下。释放事件同时限定为 0 号键——无关的右键/中键
+            // 抬起不应结束一次左键窗口拖拽。
+            if (fmResizing && e.type != EventType.MouseDown && !Input.GetMouseButton(0)) fmResizing = false;
             if (fmResizing && e.type == EventType.MouseDrag)
             {
                 editorRect.width = Mathf.Clamp(e.mousePosition.x - editorRect.x + 12f, FmMinWindowWidth,
@@ -2628,7 +2673,7 @@ namespace JipperKeyViewer.KeyViewer
                     Mathf.Max(FmMinWindowHeight, Screen.height - editorRect.y));
                 e.Use();
             }
-            if (fmResizing && e.type == EventType.MouseUp)
+            if (fmResizing && e.type == EventType.MouseUp && e.button == 0)
             {
                 fmResizing = false;
                 e.Use();
@@ -3404,14 +3449,14 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             // Editor-only: the running game has no concept of "this node cannot be selected in the
-            // editor", so this must not tear the overlay down and rebuild it.
-            // 纯编辑器语义：运行中的游戏没有"此节点在编辑器里不可选中"的概念，不应为此拆掉
-            // 重建整层覆盖层。
+            // editor", so this must not tear the overlay down and rebuild it. The `after` argument
+            // is what makes that stick — the default path would still rebuild.
+            // 纯编辑器语义：运行中的游戏没有"此节点在编辑器里不可选中"的概念，不应为此拆掉重建
+            // 整层覆盖层。正是 `after` 参数让这一点生效——默认路径仍会重建。
             DrawEditorToggle(I18n.Tr("fm_unselectable"), first.Unselectable, v =>
             {
                 foreach (FmNode n in editorSelection) n.Unselectable = v;
-                EditorOnlyChanged();
-            });
+            }, null, EditorNothing);
             DrawEditorToggle(I18n.Tr("fm_hidden"), first.Hidden, v => { foreach (FmNode n in editorSelection) n.Hidden = v; });
             DrawEditorFontSize(first);
             DrawEditorToggle(I18n.Tr("fm_hide_label"), first.HideLabel, v => { foreach (FmNode n in editorSelection) n.HideLabel = v; });
@@ -3917,6 +3962,21 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(I18n.Tr("fm_reset_count"), GUILayout.MinWidth(140f)))
                 {
+                    // Record the PRE-reset state FIRST, while the counts are still real. EditorHistory
+                    // is a post-state timeline, and every ordinary entry is captured with
+                    // PreserveCounts=true (counters stripped) precisely so an undo never rolls a
+                    // play session's counts back. That is the right default — but it means the state
+                    // this button destroys never entered the timeline: with only a post-entry,
+                    // undoing lands on the previous (counter-less) entry and re-applies counts from
+                    // the LIVE document, which was just zeroed. One Ctrl+Z therefore permanently
+                    // wiped the entire count table and persisted the wipe through EditorMutated.
+                    // 先记录**重置前**的状态，此时计数还是真实值。EditorHistory 是后置状态时间线，
+                    // 而普通条目一律以 PreserveCounts=true 采集（剥离计数），正是为了让撤销永不
+                    // 回滚一次游玩的计数——这个默认是对的；但它意味着本按钮销毁的状态从未进过
+                    // 时间线：只压后置条目时，撤销落到前一条（无计数）并从**实时文档**回填计数，
+                    // 而实时文档刚被清零。于是按一次 Ctrl+Z 就永久抹掉整张计数表，并经
+                    // EditorMutated 落盘。
+                    PushEditorHistory(false, true);
                     foreach (FmNode n in editorSelection)
                     {
                         if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
@@ -3937,8 +3997,11 @@ namespace JipperKeyViewer.KeyViewer
                     RefreshAllCountDisplay();
                     // preserveCounts:false — the counters ARE the thing being edited here, so this
                     // entry must carry the real (zeroed) values instead of re-applying the live
-                    // ones on restore. / preserveCounts:false：计数正是本次编辑的对象，本条必须
-                    // 携带真实的（已清零）值，恢复时不能再从实时文档回填。
+                    // ones on restore. Together with the pre-reset entry pushed above, one undo
+                    // brings the counts back and a second undo still walks the ordinary timeline.
+                    // preserveCounts:false：计数正是本次编辑的对象，本条必须携带真实的（已清零）值，
+                    // 恢复时不能再从实时文档回填。与上面压入的重置前条目配合，一次撤销能把计数
+                    // 带回来，第二次撤销仍能正常走普通时间线。
                     PushEditorHistory(false, false);
                     SaveSettingsFromGui();
                 }
@@ -4245,7 +4308,20 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.EndHorizontal();
         }
 
-        private void DrawEditorToggle(string label, bool value, Action<bool> apply, string helpKey = null)
+        /// <summary>Toggle row. `after` decides what follows the apply callback: by default the
+        /// generic full-rebuild property change, but callers that already did their own (or that
+        /// deliberately do NOT need a rebuild) pass the right one. The old unconditional
+        /// EditorPropertyChanged() here silently undid every in-place refresh — EditorOnlyChanged
+        /// for the editor-only flag, and the colour/gradient/glow/text-gradient handlers — so
+        /// `fm_unselectable` still tore the whole overlay down despite the dedicated no-rebuild
+        /// path added for it, and several call sites ran the callback twice (a second full-document
+        /// snapshot plus a second teardown per click). / 开关行。`after` 决定 apply 回调之后做什么：
+        /// 默认走通用的整层重建属性变更，但已自行处理（或**刻意**不需重建）的调用方要传入对应的那
+        /// 个。此处此前无条件调用 EditorPropertyChanged()，悄悄抵消了所有就地刷新路径——
+        /// 专为此加的不重建路径被架空，`fm_unselectable` 仍会拆掉整层覆盖层，且若干调用点会
+        /// 跑两遍回调（每次点击多一次整档快照与多一次拆解）。
+        /// </summary>
+        private void DrawEditorToggle(string label, bool value, Action<bool> apply, string helpKey = null, Action after = null)
         {
             GUILayout.BeginHorizontal();
             bool newValue = GUILayout.Toggle(value, label);
@@ -4253,9 +4329,16 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.EndHorizontal();
             DrawEditorHelpBox(helpKey);
             if (newValue == value) return;
+            editorInPlaceRefresh = false;
             apply(newValue);
-            EditorPropertyChanged();
+            if (after != null) after();
+            else if (!editorInPlaceRefresh) EditorPropertyChanged();
+            editorInPlaceRefresh = false;
         }
+
+        /// <summary>No-op "after" for call sites whose apply callback already did all the work. /
+        /// apply 回调已完成全部工作的调用点所用的空「之后」动作。</summary>
+        private static void EditorNothing() { }
 
         private void DrawEditorTextField(string label, string ctrl, string value, Action<string> apply, string helpKey = null)
         {
@@ -4293,16 +4376,54 @@ namespace JipperKeyViewer.KeyViewer
                     break;
                 }
             }
-            string seed = mixed ? "—" : v0.ToString("0.##");
+            // "R" round-trips exactly, so merely DRAWING the field can never differ from the value
+            // it shows. The old "0.##" seed rounded: a node dragged to X=100.3333 rendered as
+            // "100.33", the parse-back differed by more than the 0.001 threshold, and the field
+            // therefore "committed" on EVERY Layout/Repaint — silently truncating the value, and
+            // running the apply callback (history push + save + full overlay rebuild) once per
+            // such field per repaint, i.e. dozens of full teardowns in a single frame. "R" can
+            // also be long, so keep the width and fall back to a shorter form when it is huge.
+            // "R" 可精确往返，因此**仅仅绘制**该字段永远不会与它显示的值不同。旧的 "0.##" 会
+            // 四舍五入：被拖到 X=100.3333 的节点渲染为 "100.33"，回解后差异超过 0.001 阈值，
+            // 于是该字段在**每个** Layout/Repaint 都"提交"一次——静默截断数值，并在每次重绘中
+            // 对每个此类字段跑一遍 apply 回调（压历史 + 存盘 + 整层重建），即单帧数十次完整拆解。
+            // "R" 可能较长，故限制显示宽度，过长时退回较短的写法。
+            string seed = mixed ? "—" : FormatFloatForDisplay(v0);
             string text = TextInputField(ctrl, seed, GUILayout.Width(110f));
             // Strip the mixed marker before parsing: clicking in and typing leaves "—60", which
             // never parsed — the primary multi-select flow (select many, type one value, all
             // apply) was dead. / 解析前剥掉混合标记：点击后直接输入会留下"—60"，此前永不解析
             // ——多选的主流程（选一堆、输一个值、全体生效）等于失效。
-            if (float.TryParse(text.Replace("—", "").Trim(), out float parsed) && IsFiniteFloat(parsed) && (mixed || Math.Abs(parsed - v0) > 0.001f))
+            // Guard on a TEXT change, not a numeric difference: the field only means to apply what
+            // the user actually committed. Comparing the parsed value against the displayed seed
+            // re-triggered the apply whenever rounding made them differ. / 判定改为「文本是否变化」
+            // 而非「数值是否不同」：该字段只想施加用户真正提交的内容；拿回解值与显示种子比较会在
+            // 四舍五入造成差异时重新触发施加。
+            string stripped = text.Replace("—", "").Trim();
+            if (stripped != seed && float.TryParse(stripped, out float parsed) && IsFiniteFloat(parsed))
                 apply(parsed);
             GUILayout.EndHorizontal();
             DrawEditorHelpBox(helpKey);
+        }
+
+        /// <summary>Shortest representation of a float that parses back to the same value, so the
+        /// editor never shows a number different from the one it would commit. / 能回解为同一值的
+        /// 最短浮点表示，使编辑器显示的数与它会提交的数永不不同。</summary>
+        private static string FormatFloatForDisplay(float v)
+        {
+            if (float.IsNaN(v) || float.IsInfinity(v)) return "0";
+            string s = v.ToString("R");
+            // A very small value can round-trip to an absurdly long string; fall back to the
+            // 6-decimal form rather than blowing out the 110px field. / 极小值可能往返成长串；退回
+            // 6 位小数形式而不是撑爆 110px 的输入框。
+            if (s.Length > 14)
+            {
+                string shorter = v.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+                if (float.TryParse(shorter, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out float back)
+                    && back == v) return shorter;
+            }
+            return s;
         }
 
         private void DrawEditorPercentField(string label, string ctrl, Func<FmNode, float> getNormalized,
@@ -4523,8 +4644,19 @@ namespace JipperKeyViewer.KeyViewer
 
         private static float[] ColorArray(Color c) => new[] { c.r, c.g, c.b, c.a };
 
+        /// <summary>Set by every in-place refresh handler below. DrawEditorToggle resets it before
+        /// the apply callback and skips the generic full rebuild when a handler already ran — so a
+        /// toggle wired to a glow/gradient/colour/text-gradient refresh does NOT additionally tear
+        /// down and rebuild the whole overlay, and does not push a second document snapshot.
+        /// / 下方每个就地刷新处理器都会置位。DrawEditorToggle 在调用 apply 前清零，并在有处理器
+        /// 跑过时跳过通用整层重建——因此接到光效/渐变/颜色/文字渐变刷新的开关**不会**额外拆掉
+        /// 重建整层覆盖层，也不会压第二份整档快照。
+        /// </summary>
+        private bool editorInPlaceRefresh;
+
         private void EditorGlowPropertyChanged()
         {
+            editorInPlaceRefresh = true;
             PushEditorHistoryNudge();
             SaveSettingsFromGui();
             foreach (FmNode node in editorSelection)
@@ -4536,6 +4668,7 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorTextGradientPropertyChanged()
         {
+            editorInPlaceRefresh = true;
             PushEditorHistoryNudge();
             SaveSettingsFromGui();
             foreach (FmNode node in editorSelection)
@@ -4552,6 +4685,7 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorGradientPropertyChanged()
         {
+            editorInPlaceRefresh = true;
             PushEditorHistoryNudge();
             SaveSettingsFromGui();
             foreach (FmNode node in editorSelection)
@@ -4574,6 +4708,7 @@ namespace JipperKeyViewer.KeyViewer
         /// 渐变字段已有就地路径，此处把实色也纳入。</summary>
         private void EditorColorPropertyChanged()
         {
+            editorInPlaceRefresh = true;
             RecalculateCustomTotalCount();
             PushEditorHistoryNudge();
             SaveSettingsFromGui();

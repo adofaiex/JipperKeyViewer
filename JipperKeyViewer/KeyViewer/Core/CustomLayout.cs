@@ -297,6 +297,10 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Ensure the custom node list: drop nulls and hidden inconsistencies,
         /// assign missing ids, enforce caps and sane bounds. / 校验并钳制节点列表：去空、补 id、
         /// 强制上限与合理边界。</summary>
+        /// <summary>Reused across EnsureCustomNodes calls so the id-uniqueness pass allocates
+        /// nothing. / 跨 EnsureCustomNodes 调用复用，使 id 唯一性检查零分配。</summary>
+        private static readonly HashSet<int> seenNodeIds = new HashSet<int>();
+
         private static void EnsureCustomNodes()
         {
             List<FmNode> nodes = Settings.Data.CustomNodes;
@@ -304,6 +308,7 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Settings.Data.CustomNodes = nodes = new List<FmNode>();
             }
+            seenNodeIds.Clear();
             for (int i = nodes.Count - 1; i >= 0; i--)
             {
                 FmNode node = nodes[i];
@@ -313,6 +318,15 @@ namespace JipperKeyViewer.KeyViewer
                     continue;
                 }
                 if (node.Id <= 0) node.Id = Settings.Data.CustomNodeNextId++;
+                // A hand-edited profile — or a merge of two documents — can carry the same Id twice.
+                // Ids are the identity used by the editor's selection remapping, by undo's live-count
+                // re-application, and by the capture state, so a duplicate silently made one of the
+                // two nodes unselectable-by-id and credited the other's press count to it. The
+                // original stayed authoritative; the later one is re-stamped.
+                // 手改的配置——或两份文档合并——可能带重复 Id。而 Id 是编辑器选区重映射、撤销时
+                // 实时计数回填与捕获状态共同使用的身份键，重复会让其中一个无法按 id 选中、并拿到
+                // 另一个的按压计数。保留首个，后到的重新打戳。
+                if (!seenNodeIds.Add(node.Id)) node.Id = Settings.Data.CustomNodeNextId++;
                 if (node.Id >= Settings.Data.CustomNodeNextId) Settings.Data.CustomNodeNextId = node.Id + 1;
                 // A legacy profile can reach here without SyncArraysFromLists (e.g. a package
                 // export/import path); restore non-zero field defaults before clamping would
@@ -1529,11 +1543,18 @@ namespace JipperKeyViewer.KeyViewer
                     if (current != key.isPressed)
                         ApplyCustomKeyEdge(key, node, current, nowMs, d);
 
-                    // Ghost binding: same edge semantics as the fixed layouts' ghost keys. /
-                    // 鬼键：与固定布局鬼键相同的边沿语义。
-                    if (!string.IsNullOrWhiteSpace(node.GhostKey)
-                        && Enum.TryParse(node.GhostKey, true, out KeyCode ghostCode)
-                        && ghostCode != KeyCode.None)
+                    // Ghost binding: same edge semantics as the fixed layouts' ghost keys, and the
+                    // same parse caching as the main binding above. / 鬼键：与固定布局鬼键相同的
+                    // 边沿语义，并复用上方主绑定那套解析缓存。
+                    if (!string.Equals(key.CustomGhostBindCached, node.GhostKey, StringComparison.Ordinal))
+                    {
+                        key.CustomGhostBindCached = node.GhostKey;
+                        key.CustomGhostCode = string.IsNullOrWhiteSpace(node.GhostKey)
+                            || !Enum.TryParse(node.GhostKey, true, out KeyCode parsedGhost)
+                            ? KeyCode.None : parsedGhost;
+                    }
+                    KeyCode ghostCode = key.CustomGhostCode;
+                    if (ghostCode != KeyCode.None)
                     {
                         bool ghostNow = KeySource.GetKey(ghostCode);
                         // First-sight default must be FALSE (key up), not the current reading —
@@ -1572,12 +1593,20 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 else
                 {
-                    // KPS/Total nodes only track press visuals (no counting of their own). /
-                    // KPS/Total 节点只跟踪按压视觉（自身不计数）。
-                    bool statPressed = !string.IsNullOrWhiteSpace(node.KeyBind)
-                        && Enum.TryParse(node.KeyBind, true, out KeyCode statCode)
-                        && statCode != KeyCode.None
-                        && KeySource.GetKey(statCode);
+                    // KPS/Total nodes only track press visuals (no counting of their own). The
+                    // binding is cached exactly like the main and ghost ones — parsing it every
+                    // frame was O(nodes × 500) OrdinalIgnoreCase comparisons.
+                    // KPS/Total 节点只跟踪按压视觉（自身不计数）。绑定与主键、鬼键一样缓存——
+                    // 此前每帧解析即 O(节点数 × 500) 次 OrdinalIgnoreCase 比较。
+                    if (!string.Equals(key.CustomPanelBindCached, node.KeyBind, StringComparison.Ordinal))
+                    {
+                        key.CustomPanelBindCached = node.KeyBind;
+                        key.CustomPanelCode = string.IsNullOrWhiteSpace(node.KeyBind)
+                            || !Enum.TryParse(node.KeyBind, true, out KeyCode parsedPanel)
+                            ? KeyCode.None : parsedPanel;
+                    }
+                    bool statPressed = key.CustomPanelCode != KeyCode.None
+                        && KeySource.GetKey(key.CustomPanelCode);
                     if (statPressed != key.isPressed)
                     {
                         key.isPressed = statPressed;

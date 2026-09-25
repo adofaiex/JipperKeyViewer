@@ -27,6 +27,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
         private readonly HashSet<int> rainActiveSet = new HashSet<int>();
 
         private const int MAX_RAWRAIN_POOL_SIZE = 60;
+        /// <summary>Ceiling on LIVE drops per key. The pool cap above bounds REUSE, not the number
+        /// of drops alive at once, and every live drop is rebuilt into the single shared merged
+        /// mesh each frame. Far above any sane trail (a 20 KPS key on the default 275px/100 speed
+        /// lives ~16) and far below anything that threatens the frame. / 每键存活雨滴上限。上面的
+        /// 池上限管的是**复用**，不是同时存活的数量，而每一滴存活雨滴每帧都要重建进那一个共享
+        /// 合并 mesh。该值远高于任何正常轨迹（默认 275px/100 速度下 20 KPS 的按键约 16 滴），
+        /// 又远低于任何会威胁帧时间的量。</summary>
+        private const int MaxLiveDropsPerKey = 128;
         /// <summary>Height of the old per-key rain container; drops measured their top from it / 旧每键雨滴容器的高度；雨滴顶边以此为基准</summary>
         private const float RainContainerHeight = 275f;
 
@@ -141,18 +149,33 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 落出轨道被回收;高度下限 1 保证离轨分支数学良定义。下限取 1px/s(1e-3 px/ms):
             // 零速雨滴在典型高度下数分钟内回收,而不是更小下限意味着的小时级。
             const float minSpeedFactor = 1e-3f;
+            // Clamp the per-row height to the same band the settings sliders use. A typed (or
+            // hand-edited, or .jkv-imported) height of 100000 with a speed of 1 gives a drop a
+            // lifetime of RainHeight*300/RainSpeed ≈ 8.3 HOURS, so one key at 10 presses/second
+            // accumulates hundreds of thousands of live drops. Every one is written into the ONE
+            // shared merged mesh each frame (4 vertices apiece, ×2/×3 with shadow/outline) and the
+            // layer is marked dirty every frame — the frame time collapses completely. The pool
+            // cap does not help: it bounds reuse, not live count. A 2000px track is still far
+            // taller than any screen.
+            // 按排高度钳到设置滑杆同一区间。键入（或手改、或 .jkv 导入）的高度 100000 配速度 1，
+            // 雨滴寿命为 RainHeight*300/RainSpeed ≈ 8.3 **小时**，于是单键每秒 10 次按压会堆积
+            // 数十万滴存活雨滴。它们每一滴都每帧写进**同一个**合并 mesh（每滴 4 顶点，开阴影/描边
+            // 再 ×2/×3），且该层每帧都被标脏——帧时间彻底崩塌。池上限无能为力：它管的是复用，
+            // 不是存活数。2000px 的轨道仍远高于任何屏幕。
+            const float minHeight = 1f;
+            const float maxHeight = 2000f;
             rowSpeeds[0] = Mathf.Max(settings.Data.RainSpeedRow1 / 300f, minSpeedFactor);
             rowSpeeds[1] = Mathf.Max(settings.Data.RainSpeedRow2 / 300f, minSpeedFactor);
             rowSpeeds[2] = Mathf.Max(settings.Data.RainSpeedRow3 / 300f, minSpeedFactor);
-            rowHeights[0] = Mathf.Max(settings.Data.RainHeightRow1, 1f);
-            rowHeights[1] = Mathf.Max(settings.Data.RainHeightRow2, 1f);
-            rowHeights[2] = Mathf.Max(settings.Data.RainHeightRow3, 1f);
+            rowHeights[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow1, 275f), minHeight, maxHeight);
+            rowHeights[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow2, 275f), minHeight, maxHeight);
+            rowHeights[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow3, 275f), minHeight, maxHeight);
             ghostRowSpeeds[0] = Mathf.Max(settings.Data.GhostRainSpeedRow1 / 300f, minSpeedFactor);
             ghostRowSpeeds[1] = Mathf.Max(settings.Data.GhostRainSpeedRow2 / 300f, minSpeedFactor);
             ghostRowSpeeds[2] = Mathf.Max(settings.Data.GhostRainSpeedRow3 / 300f, minSpeedFactor);
-            ghostRowHeights[0] = Mathf.Max(settings.Data.GhostRainHeightRow1, 1f);
-            ghostRowHeights[1] = Mathf.Max(settings.Data.GhostRainHeightRow2, 1f);
-            ghostRowHeights[2] = Mathf.Max(settings.Data.GhostRainHeightRow3, 1f);
+            ghostRowHeights[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow1, 275f), minHeight, maxHeight);
+            ghostRowHeights[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow2, 275f), minHeight, maxHeight);
+            ghostRowHeights[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow3, 275f), minHeight, maxHeight);
             // Start-Y is the only per-row value with NO Mathf.Max floor, so a NaN/Infinity typed (or
             // imported) here survived every comparison and flowed into rawRain.rect — one NaN drop
             // wrote NaN vertices into the SHARED merged mesh, corrupting the whole rain canvas and
@@ -419,6 +442,17 @@ namespace JipperKeyViewer.KeyViewer.Rain
             if (float.IsNaN(value) || float.IsInfinity(value)) return -223f;
             return Mathf.Clamp(value, -4000f, 4000f);
         }
+
+        /// <summary>Per-row height/speed values come from unclamped text fields, hand-edited JSON and
+        /// .jkv imports, so NaN/Infinity must be rejected BEFORE any comparison — they pass every
+        /// one, and Mathf.Clamp hands NaN straight through. These rows were the only per-row
+        /// floats still missing this (RainStartY* was fixed earlier).
+        /// 按排高度/速度来自不钳制的文本框、手改 JSON 与 .jkv 导入，故 NaN/Inf 必须在任何比较
+        /// **之前**拒绝——它们能通过全部比较，而 Mathf.Clamp 会让 NaN 原样穿透。这几行是当时
+        /// 仅存仍缺此净化的按排浮点（RainStartY* 此前已修）。
+        /// </summary>
+        private static float SanitizeRowFloat(float value, float fallback)
+            => float.IsNaN(value) || float.IsInfinity(value) ? fallback : value;
 
         /// <summary>Do the cached settings still match? Compare with "same or both NaN" so a
         /// NaN value cannot make the cache permanently miss and re-run this every frame. / 缓存是否
@@ -701,6 +735,22 @@ namespace JipperKeyViewer.KeyViewer.Rain
             rawRain.isGhost = isGhost;
             rawRain.growing = true;
 
+            // Hard ceiling on LIVE drops per key, independent of every setting. The height clamp
+            // in SyncCachedSpeeds bounds the lifetime, but a fast key at an extreme speed with a
+            // tall track can still stack far more drops than the merged mesh should ever carry —
+            // each one is 4 vertices (×2/×3 with shadow/outline) uploaded every frame. Recycling
+            // the OLDEST drop keeps the visual steady: the trail is a stream, so dropping its tail
+            // is invisible, and the frame time stops depending on how fast the user plays.
+            // 每键存活雨滴的硬上限，与所有设置无关。SyncCachedSpeeds 里的高度钳制限制了寿命，
+            // 但高速按键配高轨道仍可能堆出远超合并 mesh 应承载的雨滴数——每滴 4 顶点（开阴影/描边
+            // 再 ×2/×3）每帧上传。回收**最老**的一滴使观感稳定：轨迹是一条流，砍掉其尾部不可见，
+            // 且帧时间不再取决于用户打得有多快。
+            if (key.rainList.Count >= MaxLiveDropsPerKey)
+            {
+                RawRain oldest = key.rainList[0];
+                key.rainList.RemoveAt(0);
+                if (oldest != null) ReturnRawRain(oldest);
+            }
             key.rainList.Add(rawRain);
 
             if (!rainActiveSet.Contains(keyIndex))

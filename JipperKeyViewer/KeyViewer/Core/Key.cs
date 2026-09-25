@@ -59,6 +59,18 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Parsed KeyBind of CustomNode, cached with the raw string it was parsed from / CustomNode 绑定键的解析缓存（附解析时的原始字符串）</summary>
         public KeyCode CustomKeyCode;
         public string CustomKeyBindCached;
+        /// <summary>Same caching for the node's GHOST binding. Enum.TryParse scans ~500 KeyCode
+        /// names with OrdinalIgnoreCase comparisons, so doing it per node per frame cost O(nodes ×
+        /// 500) string compares every frame while the main binding above was already cached.
+        /// 与节点**鬼键**绑定同款的缓存。Enum.TryParse 会对约 500 个 KeyCode 名字做
+        /// OrdinalIgnoreCase 比较，故逐节点逐帧解析即每帧 O(节点数 × 500) 次字符串比较——而上面
+        /// 的主绑定早已缓存。</summary>
+        public KeyCode CustomGhostCode;
+        public string CustomGhostBindCached;
+        /// <summary>Same caching for a stat panel's own KeyBind (KPS/Total nodes bind a key too).
+        /// 统计面板自身 KeyBind 的同款缓存（KPS/Total 节点也绑定按键）。</summary>
+        public KeyCode CustomPanelCode;
+        public string CustomPanelBindCached;
         /// <summary>Per-key KPS press log for Custom nodes (ephemeral, rebuilt with the overlay) / 自定义节点的每键 KPS 队列（临时态，随覆盖层重建）</summary>
         public readonly Queue<long> KpsLog = new Queue<long>(32);
         /// <summary>Last per-key KPS value written to the counter text / 上一次写入计数文本的每键 KPS 值</summary>

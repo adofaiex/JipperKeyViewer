@@ -56,7 +56,15 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         private void ProcessKeySelection()
         {
-            if (SelectedKey == -1 || changeState == 1 || !Application.isFocused) return;
+            if (SelectedKey == -1 || changeState == 1) return;
+            // An unfocused window must DISARM, not merely skip. Every other exit below resets
+            // SelectedKey/changeState; this one returned without, so after an Alt-Tab the next
+            // physical keypress was swallowed into a rebind and written to the slot via
+            // SaveSettings — with no capture UI on screen to explain it. / 窗口失焦必须**解除**
+            // 武装，而不只是跳过。下方其余出口都会复位 SelectedKey/changeState，唯独这里直接
+            // 返回——于是 Alt-Tab 回来后，下一次物理按键被吞成改绑并经 SaveSettings 写进槽位，
+            // 屏幕上却没有任何捕获 UI 能解释这件事。
+            if (!Application.isFocused) { SelectedKey = -1; changeState = 0; return; }
             // Loader-reported visibility is authoritative: a closed window (hotkey toggle, UMM
             // panel hidden) must disarm immediately — the frame heuristic below only catches it
             // a couple of frames later. / loader 上报的可见性是权威判定:窗口关闭(热键切换、UMM
@@ -151,7 +159,7 @@ namespace JipperKeyViewer.KeyViewer
             if (Keys != null && SelectedKey < Keys.Length && Keys[SelectedKey] != null)
             {
                 string displayText;
-                if (SelectedKey < FootKeyBase && SelectedKey < keyTexts.Length && !string.IsNullOrEmpty(keyTexts[SelectedKey]))
+                if (SelectedKey < FootKeyBase && keyTexts != null && SelectedKey < keyTexts.Length && !string.IsNullOrEmpty(keyTexts[SelectedKey]))
                     displayText = keyTexts[SelectedKey];
                 else if (SelectedKey >= FootKeyBase)
                 {
@@ -461,8 +469,16 @@ namespace JipperKeyViewer.KeyViewer
         private void ProcessPerKeyKpsInUpdate(long elapsedMilliseconds)
         {
             if (!_hasKeyPressActivity) return;
-            if (IsCustomLayout) return; // custom nodes drain their own KPS logs / 自定义节点消费自己的 KPS 队列
-            if (!Settings.Data.EnablePerKeyKps || keyPressTimes == null || Keys == null) return;
+            // All three early returns MUST drop the latch, not just the last one. They returned
+            // above the line that recomputes it, so switching to the custom layout (or turning
+            // per-key KPS off) left the flag true forever: every frame then ran the full 40-queue
+            // drain loop with nothing to write, permanently. The flag exists precisely to avoid
+            // that, and it could never fall back. / 三个早退**都必须**清掉闩锁，而不只是最后一个。
+            // 它们都在重算该标志的代码之前返回，于是切到自定义布局（或关掉每键 KPS）后该标志
+            // 永远为真：此后每帧都跑完 40 个队列的排空循环却无任何写入，且永久如此。该标志的存在
+            // 正是为了避免这一点，而它再也无法回落。
+            if (IsCustomLayout) { _hasKeyPressActivity = false; return; } // custom nodes drain their own KPS logs / 自定义节点消费自己的 KPS 队列
+            if (!Settings.Data.EnablePerKeyKps || keyPressTimes == null || Keys == null) { _hasKeyPressActivity = false; return; }
             for (int i = 0; i < Keys.Length && i < keyPressTimes.Length; i++)
             {
                 var q = keyPressTimes[i];
