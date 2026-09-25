@@ -82,15 +82,16 @@ namespace JipperKeyViewer
                 // If the loader is ever swapped (a reload, a second loader in the same process)
                 // they would keep pointing at the OLD mod directory, splitting reads and writes
                 // across two folders. Clearing them here makes every cache follow the active
-                // loader. / 这些都是惰性缓存的字符串。若加载器被换掉（重载、同进程内第二个加载
-                // 器），它们仍会指向**旧**模组目录，读写分裂到两个文件夹。在此清空让所有缓存跟随
-                // 当前加载器。
-                if (value != null)
-                {
-                    global::JipperKeyViewer.KeyViewer.KeyViewer.ResetCachedPaths();
-                    resolvedPath = null;
-                    warnedMissingPath = null;
-                }
+                // loader. Clearing on the null case too: Main.Shutdown() now assigns null, and a
+                // teardown that left the old paths cached would let a subsequent instance read and
+                // write a different folder than the one it reports.
+                // 这些都是惰性缓存的字符串。若加载器被换掉（重载、同进程内第二个加载器），它们仍会
+                // 指向**旧**模组目录，读写分裂到两个文件夹。在此清空让所有缓存跟随当前加载器。
+                // null 分支同样清空：Main.Shutdown() 现在会赋 null，而若拆解时留下旧路径缓存，
+                // 后续实例读写的文件夹就会与它报告的那个不是同一个。
+                if (value != null) resolvedPath = null;
+                warnedMissingPath = null;
+                global::JipperKeyViewer.KeyViewer.KeyViewer.ResetCachedPaths();
             }
         }
 

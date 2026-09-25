@@ -246,13 +246,18 @@ namespace JipperKeyViewer.KeyViewer
             // Unique control names allocated up-front in draw order so focus tracking stays stable.
             // 先按绘制顺序分配唯一的控件名,保证焦点跟踪一致。
             // The two prefixes are a closed set, so the per-pass sequence can be expanded once into
-            // a lookup table instead of concatenating five strings per picker per event.
+            // a lookup table instead of concatenating five strings per picker per event. `prefix`
+            // selects WHICH table — indexing the table with the bare sequence (the first version
+            // of this optimisation) handed the editor "cpi_N" names too, silently undoing the
+            // fme_cpi_ namespacing this very method documents.
             // 两个前缀是封闭集合，故每次 pass 的序号可一次性展开成查表，而不必每个取色器每事件
-            // 拼接五个字符串。
-            string[] names = colorPickerFieldSeq >= 0 && colorPickerFieldSeq + 5 <= ColorPickerNames.Length
-                ? ColorPickerNames : null;
+            // 拼接五个字符串。`prefix` 决定用**哪一张**表——最初的优化拿裸序号去索引，于是编辑器
+            // 也拿到了 "cpi_N"，静默废掉了本方法注释里写明的那套 fme_cpi_ 隔离。
+            string[] names = string.Equals(prefix, EditorColorPickerPrefix, System.StringComparison.Ordinal)
+                ? EditorColorPickerNames
+                : SettingsColorPickerNames;
             string ctrlR, ctrlG, ctrlB, ctrlA, ctrlHex;
-            if (names != null)
+            if (colorPickerFieldSeq >= 0 && colorPickerFieldSeq + 5 <= names.Length)
             {
                 int n = colorPickerFieldSeq;
                 ctrlR = names[n]; ctrlG = names[n + 1]; ctrlB = names[n + 2];
@@ -533,14 +538,17 @@ namespace JipperKeyViewer.KeyViewer
             return PerKeyCountCtrlNames[slot];
         }
 
-        /// <summary>Pre-expanded "<prefix><n>" control names for both pickers. The prefixes are a
-        /// closed set ("cpi_" for the settings window, "fme_cpi_" for the FreeMake editor), and the
-        /// per-pass sequence counter only ever grows from 0, so every name a pass can produce is
-        /// known up front. Falls back to concatenation if a pass ever exceeds the table. /
-        /// 两个取色器的「前缀 + 序号」控件名预展开表。前缀是封闭集合（设置窗口 "cpi_"、
+        /// <summary>Pre-expanded "<prefix><n>" control names, one table per window. The prefixes
+        /// are a closed set ("cpi_" for the settings window, "fme_cpi_" for the FreeMake editor)
+        /// and the per-pass sequence counter only ever grows from 0, so every name a pass can
+        /// produce is known up front. Falls back to concatenation if a pass ever exceeds the
+        /// table. / 每个窗口一张「前缀 + 序号」控件名预展开表。前缀是封闭集合（设置窗口 "cpi_"、
         /// FreeMake 编辑器 "fme_cpi_"），且每次 pass 的序号只会从 0 递增，故某个 pass 可能产生的
         /// 每个名字都是预先已知的。若某个 pass 超出表长则退回拼接。</summary>
-        private static readonly string[] ColorPickerNames = BuildColorPickerNames(512);
+        private const int ColorPickerNameCount = 512;
+        private const string EditorColorPickerPrefix = "fme_cpi_";
+        private static readonly string[] SettingsColorPickerNames = BuildColorPickerNames("cpi_");
+        private static readonly string[] EditorColorPickerNames = BuildColorPickerNames(EditorColorPickerPrefix);
         private readonly GUILayoutOption ChannelLabelWidth = GUILayout.Width(20f);
         private readonly GUILayoutOption ChannelSliderWidth = GUILayout.Width(150f);
         private readonly GUILayoutOption ChannelEditWidth = GUILayout.Width(40f);
@@ -548,11 +556,10 @@ namespace JipperKeyViewer.KeyViewer
         private float lastChannelValue = float.NaN;
         private string lastChannelText;
 
-        private static string[] BuildColorPickerNames(int count)
+        private static string[] BuildColorPickerNames(string prefix)
         {
-            var names = new string[count * 2];
-            for (int i = 0; i < count; i++) names[i] = "cpi_" + i;
-            for (int i = 0; i < count; i++) names[count + i] = "fme_cpi_" + i;
+            var names = new string[ColorPickerNameCount];
+            for (int i = 0; i < ColorPickerNameCount; i++) names[i] = prefix + i;
             return names;
         }
 

@@ -1428,6 +1428,34 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>Run a storage write that does NOT warrant a full SaveSettings (a meta-only
+        /// write, a profile save, a directory resync) with the same try/catch and the same
+        /// user-visible failure banner. IMGUI call sites MUST use this: an exception thrown out of a
+        /// GUILayout callback leaves the Begin/End group stack unbalanced, which corrupts the layout
+        /// of the whole window from that frame on — the controls misplace and stop responding until
+        /// the game restarts — while the red banner never appears, because lastSaveError was never
+        /// set. The tab bar is the widest trigger: a full disk makes every single tab click one.
+        /// 执行不需要完整 SaveSettings 的写盘操作（仅 meta、仅配置、目录重扫）时，用同一套
+        /// try/catch 与同一个用户可见的失败横幅。IMGUI 调用点**必须**走这里：从 GUILayout 回调
+        /// 抛出的异常会让 Begin/End 组栈失衡，自该帧起破坏**整个窗口**的布局——控件错位且不再
+        /// 响应，直到重启游戏——而红色横幅永远不会出现，因为 lastSaveError 从未被设置。标签栏
+        /// 触发面最广：磁盘一满，点任意一次标签页就触发一次。
+        /// </summary>
+        internal void GuardedSave(string what, Action write)
+        {
+            if (write == null) return;
+            try
+            {
+                write();
+                lastSaveError = null;
+            }
+            catch (Exception e)
+            {
+                lastSaveError = e.Message;
+                Loader.Error($"Failed to save {what}: {e.Message}");
+            }
+        }
+
         /// <summary>Message from the most recent failed save, or null once a save has succeeded.
         /// Rendered as a persistent warning in the settings window. / 最近一次保存失败的消息；
         /// 保存成功后清空。在设置窗口作为持续警告显示。</summary>

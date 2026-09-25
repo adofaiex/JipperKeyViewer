@@ -190,7 +190,9 @@ namespace JipperKeyViewer.KeyViewer
                 // 展开那一刻与磁盘同步一次，而不是展开期间每个 GUI 事件都同步——IMGUI 每帧触发
                 // Layout+Repaint 多次，旧实现等于每帧数次目录扫描。列表按钮的各种操作自身会维护
                 // ProfileNames 的同步。
-                if (profileExpanded) SyncProfilesWithDisk();
+                // 加保护：SyncProfilesWithDisk 内部有 CreateDirectory/GetFiles/SaveCurrentProfile
+                // /SaveMetaOnly 且原本全无 try，异常从 GUILayout 回调抛出会让整个设置窗口布局错乱。
+                if (profileExpanded) GuardedSave("the profile list", () => SyncProfilesWithDisk());
             }
         }
 
@@ -231,8 +233,12 @@ namespace JipperKeyViewer.KeyViewer
                 var list = new List<string>(Settings.ProfileNames ?? new string[0]) { name };
                 Settings.ProfileNames = list.ToArray();
                 Settings.CurrentProfile = name;
-                SaveCurrentProfile();
-                SaveMetaOnly();
+                // Guarded: both writes below throw on a full disk / read-only profile folder, and
+                // an exception escaping this GUILayout callback permanently corrupts the window's
+                // layout. GuardedSave also shows the red banner the plain calls never reached.
+                // 加保护：下面两次写盘在磁盘满/目录只读时会抛，而从 GUILayout 回调抛出会**永久**
+                // 破坏窗口布局；GuardedSave 还会显示此前根本到不了的红色横幅。
+                GuardedSave("the new profile", () => { SaveCurrentProfile(); SaveMetaOnly(); });
                 profileSaveAsBuffer = "";
                 profileExpanded = false;
             }

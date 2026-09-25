@@ -57,6 +57,25 @@ namespace JipperKeyViewer.LoaderMelon
             Main.Init(_handler);
         }
 
+        public override void OnDeinitializeMelon()
+        {
+            // MelonLoader does NOT fire OnToggle(false) when a mod is unloaded or reloaded, so
+            // without this the DontDestroyOnLoad overlay GameObject survived: it kept drawing, kept
+            // running Update, and kept counting presses with no UI left to stop it. Reloading a
+            // NEWER DLL then added a SECOND JipperKeyViewer component next to the first — two
+            // canvases stacked, two Update loops reading the same physical keys, so every keypress
+            // counted twice while the older component kept writing the profile.
+            // MelonLoader 卸载或重载 Mod 时**不会**触发 OnToggle(false)，故没有这一句时带
+            // DontDestroyOnLoad 的覆盖层会存活：继续绘制、继续跑 Update、继续计数，而界面上已没有
+            // 任何东西能关掉它。随后用**新版 DLL** 重载会在旁边多出**第二个** JipperKeyViewer
+            // 组件——两层画布叠加、两条 Update 循环读同一批物理按键，于是每次按压计数翻倍，
+            // 而旧组件仍在写配置。
+            Main.Shutdown();
+            _handler = null;
+            _initialized = false;
+            _hotkeyEntry = null;
+        }
+
         public override void OnSceneWasInitialized(int buildIndex, string sceneName)
         {
             if (!_initialized)
@@ -74,17 +93,42 @@ namespace JipperKeyViewer.LoaderMelon
 
         public override void OnUpdate()
         {
+            // Init nulls this when preference creation fails (the mod stays disabled). MelonLoader
+            // still calls OnUpdate every frame regardless, so without this guard the disabled state
+            // produced a NullReferenceException 60+ times a second — burying the one real error
+            // line under thousands of stack traces, and making "stays disabled" look like "spams
+            // errors". / Init 在偏好创建失败时把它置 null（Mod 保持关闭）。MelonLoader 无论如何都
+            // 每帧调 OnUpdate，故无此守卫时"保持关闭"的状态每秒产生 60+ 次 NullReferenceException
+            // ——真正的那行错误会被上千条堆栈淹没，让"保持关闭"看起来像"疯狂报错"。
+            if (_hotkeyEntry == null) return;
+
             if (_capturingHotkey)
             {
                 if (Input.anyKeyDown)
                 {
+                    // Clear the capture BEFORE doing anything that can throw. MelonPreferences
+                    // .Save() is exactly what throws when the cfg file is locked or corrupt — and
+                    // because `_capturingHotkey = false` sat AFTER it, the capture latched forever:
+                    // OnUpdate returned early every frame, so the settings hotkey stopped responding
+                    // entirely and the user could no longer close the window by keyboard.
+                    // 在做任何可能抛异常的事情**之前**先清捕获态。MelonPreferences.Save() 恰是
+                    // cfg 被锁/损坏时会抛的那一个——而 `_capturingHotkey = false` 原本在它**之后**，
+                    // 于是捕获态永久卡住：OnUpdate 每帧提前返回，设置热键彻底失灵，用户再也无法用
+                    // 键盘关窗。
+                    _capturingHotkey = false;
                     KeyCode captured = ReadPressedKey();
                     if (captured != KeyCode.None)
                     {
-                        _hotkeyEntry.Value = captured.ToString();
-                        MelonPreferences.Save();
+                        try
+                        {
+                            _hotkeyEntry.Value = captured.ToString();
+                            MelonPreferences.Save();
+                        }
+                        catch (System.Exception e)
+                        {
+                            LoggerInstance.Error($"[JipperKeyViewer] could not save the settings hotkey: {e.Message}");
+                        }
                     }
-                    _capturingHotkey = false;
                 }
                 return;
             }

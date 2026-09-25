@@ -534,6 +534,63 @@
   静默不符。现额外记录该表所依据的 `ProfileData` 实例，身份不同即重建——缓存自愈，不再依赖
   枚举调用点。
 
+### 两份全新审计的修复（2026-09-26，第 47 轮）
+两份子代理分别审 DmNote 导入/`.jkv` 包与加载器/启动路径，合计 16 条；本轮修掉其中 9 条。
+
+高危：
+- **【整层雨滴画布永久损坏】每节点雨滴几何三元组是唯一漏净化字段**：`RainWidth`/`RainHeight`/
+  `RainSpeed` 原样进入 `RawRain.UpdateLocation`，而那里失败形态不是「数字不对」——过大的速度让
+  y 溢出成 Inf，`sizeY = Inf - Inf + height` 变成 NaN，回收判据 `if (sizeY < 0)` **对 NaN 为
+  假**，于是该雨滴永不退役，其 NaN 顶点每帧写进**共享**合并雨滴 mesh，整块画布永久乱码。
+  触发源：不可信的 DmNote 预设 `"rainSpeed":1e38`，或用户在编辑器节点雨滴高度/速度文本框键入
+  （`Mathf.Max(0f,v)` 挡不住）。按排全局值在第 42 轮补了 1..2000 钳制，按节点这条路径没跟上。
+- **【`.jkv` 可写满磁盘】展开上限只按归档自报的 `entry.Length` 计算**，那是中央目录里由文件自己
+  提供的元数据；真正落盘的 `Stage()` 是一个不带计数器的 `CopyTo`。声明 1 字节、膨胀出数百 MB
+  的条目能通过每一项检查后被同步写入（主线程硬冻结）再 move 进 `CustomImages\`。现改为手写
+  拷贝循环累计**实际写出**的字节数，超 `MaxPackageEntryBytes` 即抛（`KvImageLoader` 的 16MB/
+  4096² 只在加载时生效，救不了落盘）。
+- **【每帧 NRE 淹没真错误 + 热键永久失灵】`MelonEntry.OnUpdate`**：偏好创建失败时 `_hotkeyEntry`
+  为 null，而 `OnUpdate` 无条件解引用——「保持关闭」的实际效果是每秒 60+ 次 NullReferenceException
+  把真正那行错误埋掉；热键捕获时 `MelonPreferences.Save()` 抛异常（cfg 被锁/损坏），而
+  `_capturingHotkey = false` 在它**之后**，捕获态永久卡住、`OnUpdate` 每帧提前返回，设置热键彻底
+  失灵、用户再也无法用键盘关窗。现开头判空，并把清捕获态移到任何可能抛异常的动作**之前**。
+- **【一次写盘失败毁掉整个窗口】四处 IMGUI 调用点绕过 `SaveSettings()`**：`DrawTabBar` 的
+  `SaveMetaOnly`、`DrawProfileSaveAs` 的两次写、`SyncProfilesWithDisk`、编辑器套用预设的
+  `SaveCurrentProfile` 都是裸调，磁盘满/目录只读时异常从 GUILayout 回调抛出——**已 Begin 未 End
+  的布局组留在栈上**，自该帧起该窗口布局错乱、控件不再响应直到重启，且 `lastSaveError` 从未被
+  设置所以红色横幅也不出现。标签页触发面最广（磁盘一满，点任意一次标签就触发）。现新增
+  `GuardedSave(what, write)` 统一走同一套 try/catch + 横幅。
+- **【【回归，上一轮引入】取色器控件名查表忽略了 `prefix`**：预展开表被裸序号索引，编辑器也拿到
+  `cpi_N`，静默废掉 `fme_cpi_` 隔离（即「在一个窗口打字改写另一个窗口的字段」那条老 bug 复发）。
+  越界判据也比错了长度（表实为 1024 而判 1024 意味着序号可取到 `fme_cpi_*` 段）。现改为**每个
+  窗口一张表**，由 `prefix` 选表，判据用该表自身长度。
+
+中/低危：
+- **【重载后每次按键计数翻倍】加载器卸载无拆解**：MelonLoader 卸载不触发 `OnToggle(false)`，
+  带 `DontDestroyOnLoad` 的覆盖层存活并继续绘制/计数，而界面上已没有任何东西能关掉它；用**新版
+  DLL** 重载会多出第二个组件——两层画布叠加、两条 Update 读同一批物理按键，每次按压计数 **+2**，
+  旧组件仍在写配置。现新增 `Main.Shutdown()`（含委托退订）并在 Melon 入口的
+  `OnDeinitializeMelon` 调用。
+- **同进程第二个加载器被静默吞掉**：UMM 入口在**构造函数**里就挂好 handler 的事件、之后才调
+  `Main.Init`，而 `Init` 在 `initialized` 为真时直接 return ——于是这些委托一个都没订阅、
+  `Loader.Instance` 仍指向旧 handler、设置面板画不出内容，UMM 却仍报告「已加载」。现明确报错。
+  实现要点：C# 不允许在声明类型之外给事件赋 null，故把三个委托存进字段，`Shutdown` 才能 `-=`。
+- **武装中的改键在关掉显示时「冻结」**：`ProcessKeySelection`（失焦/关窗/UMM 隐藏时解除武装的
+  唯一出口）整段被 `Update` 的启用门控包住，而 `DisableKeyViewer` 不碰 `SelectedKey`。症状：武装
+  一个槽位 → 关掉总开关看干净画面 → 再打开 → 接下来按的**第一个**键被静默绑进该槽位并落盘。
+  现 `DisableKeyViewer` 开头解除武装。
+- **DmNote 雨滴字段名两种前缀**：宽度读 `noteWidth`、高度读 `rainHeight`、速度读 `rainSpeed`，
+  而同函数其它 note 作用域字段全是 `note*` 前缀。现两种拼写按 note 优先顺序都读。
+- **DmNote 标签跨表静默丢节点**：标签只要在任一表里就被选中，但每张表严格读取——两张表标签命名
+  不一致时只导入一张，提示却说「已导入 2 个节点」而 7 个按键节点整个消失。该导入器对其它一切
+  不支持项都发去重警告，唯独这条报告成功。现补 `dmnote_partial_tab` 警告（三语）。
+- **DmNote 回滚的 `SaveMetaOnly` 静默吞异常**：失败会让磁盘指向**已删除**的文件，下次启动走
+  「Profile not found」、用户原本在用的配置不被加载，且日志无、横幅无。`.jkv` 导入器对完全相同的
+  操作是会上报的——两条路径不一致。现上报并置横幅。
+- **`Loader.Instance = null` 不清缓存**：`Main.Shutdown()` 现在会赋 null，而拆解若留下旧路径
+  缓存，后续实例读写的文件夹就与它报告的不是同一个。现 null 分支同样清空。
+- Harness 增至 **123** 项（含每节点雨滴 NaN/Inf 净化、边界、以及键入 8 小时寿命被钳制的回归）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

@@ -159,7 +159,13 @@ namespace JipperKeyViewer.KeyViewer
                 changeState = 0;
                 settingsGuiTab = newTab;
                 Settings.UiTab = newTab;
-                SaveMetaOnly();
+                // Guarded: this is the single widest trigger for a storage failure (every tab
+                // click), and an IOException escaping a GUILayout callback breaks this window's
+                // layout permanently. Full SaveSettings also re-persists the profile, so the
+                // per-tab click did more work than it needed to.
+                // 加保护：这是写盘失败触发面最广的一处（每次点标签），而从 GUILayout 回调抛出的
+                // IOException 会**永久**破坏本窗口布局。
+                GuardedSave("the tab selection", () => SaveMetaOnly());
             }
             GUILayout.Space(5);
         }

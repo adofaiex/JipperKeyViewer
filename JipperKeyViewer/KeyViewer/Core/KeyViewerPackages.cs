@@ -117,9 +117,33 @@ namespace JipperKeyViewer.KeyViewer
                 string stagedPath = Path.Combine(stagingRoot, category, relative);
                 string stagedDirectory = Path.GetDirectoryName(stagedPath);
                 if (!string.IsNullOrEmpty(stagedDirectory)) Directory.CreateDirectory(stagedDirectory);
+                // Count the bytes WE actually write, not the length the archive declares. The
+                // expanded-size budget above is built from ZipArchiveEntry.Length, which comes from
+                // the central directory — metadata the file itself supplies. An entry that declares
+                // 1 byte and then inflates to hundreds of MB passes every check in ValidatePackage
+                // and still gets written to disk, synchronously, on the main thread (a hard game
+                // freeze), before moving into CustomImages\. KvImageLoader's 16 MB / 4096x4096
+                // checks only apply at LOAD time and cannot save the write.
+                // 统计**我们自己**写出的字节，而不是归档声明的长度。上面的展开体积预算由
+                // ZipArchiveEntry.Length 累加而来，那来自中央目录——由文件本身提供的元数据。一个
+                // 声明 1 字节、随后膨胀到数百 MB 的条目能通过 ValidatePackage 的每一项检查，
+                // 仍会被同步写入磁盘（主线程硬冻结），再 move 进 CustomImages\。
+                // KvImageLoader 的 16 MB / 4096x4096 只在**加载**时生效，救不了这次落盘。
+                long written = 0;
+                byte[] buffer = new byte[64 * 1024];
                 using (Stream source = entry.Open())
                 using (FileStream target = new FileStream(stagedPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                    source.CopyTo(target);
+                {
+                    int read;
+                    while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        written += read;
+                        if (written > MaxPackageEntryBytes)
+                            throw new InvalidDataException(
+                                $"Package entry expands beyond the safety limit: {entry.FullName}");
+                        target.Write(buffer, 0, read);
+                    }
+                }
 
                 stagedFiles.Add(new StagedFile
                 {

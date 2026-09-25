@@ -415,7 +415,12 @@ namespace JipperKeyViewer.KeyViewer
                 return;
             }
             // Flush the CURRENT layout to its file before switching. / 切换前先把当前布局落盘。
-            SaveCurrentProfile();
+            // Guarded: this is a GUILayout call site, so an IOException here would escape the
+            // callback and permanently corrupt the editor's layout — and the red banner (which
+            // only SaveSettings sets) would never appear.
+            // 加保护：这是 GUILayout 调用点，IOException 从此逃出会**永久**破坏编辑器布局，
+            // 而红色横幅（只有 SaveSettings 会设置）永远不会出现。
+            GuardedSave("the current layout", () => SaveCurrentProfile());
             // Free profile name: "16K-预设", "16K-预设 2", ... / 空闲配置名。
             string baseName = KeyLayoutNames[styleIndex] + "-" + I18n.Tr("fm_presets");
             var existing = new HashSet<string>(Settings.ProfileNames ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);

@@ -501,6 +501,25 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainShadowOffsetX = float.IsNaN(node.RainShadowOffsetX) ? 3f : Mathf.Clamp(node.RainShadowOffsetX, -50f, 50f);
                 node.RainShadowOffsetY = float.IsNaN(node.RainShadowOffsetY) ? -3f : Mathf.Clamp(node.RainShadowOffsetY, -50f, 50f);
                 node.RainOutlineWidth = float.IsNaN(node.RainOutlineWidth) ? 2f : Mathf.Clamp(node.RainOutlineWidth, 0f, 50f);
+                // The per-node geometry trio was the ONLY rain field left unsanitized — every other
+                // Rain*/GhostRain* value above gets NaN/Inf scrubbed and clamped. These three reach
+                // RawRain.UpdateLocation raw, and there the failure is not "a wrong number": a huge
+                // speed overflows y to Infinity, `sizeY = Inf - Inf + height` becomes NaN, and the
+                // recycle test is `if (sizeY < 0)` — which is FALSE for NaN. The drop is therefore
+                // never retired, and its NaN vertices go into the SHARED merged rain mesh every
+                // frame, permanently corrupting the whole rain canvas. The per-ROW globals got this
+                // clamp in an earlier round; the per-node path simply never followed. The editor's
+                // own node fields only did Mathf.Max(0f, v), so a typed value got through there too.
+                // 每节点几何三元组是**唯一**未被净化的雨滴字段——上面每一个 Rain*/GhostRain* 值都
+                // 过了 NaN/Inf 净化与钳制。这三个值原样进入 RawRain.UpdateLocation，而那里的失败
+                // 并非「数字不对」：过大的速度让 y 溢出成 Inf，`sizeY = Inf - Inf + height` 变成
+                // NaN，而回收判据是 `if (sizeY < 0)`——对 NaN 为**假**。于是该雨滴永不退役，其 NaN
+                // 顶点每帧写进**共享**合并雨滴 mesh，整块雨滴画布永久损坏。按排全局值在更早一轮
+                // 补上了同样钳制，按节点这条路径只是没跟上。编辑器自身的节点字段也只有
+                // Mathf.Max(0f, v)，故键入的值同样能溜过去。
+                node.RainWidth = float.IsNaN(node.RainWidth) || float.IsInfinity(node.RainWidth) ? 0f : Mathf.Clamp(node.RainWidth, 0f, 2000f);
+                node.RainHeight = float.IsNaN(node.RainHeight) || float.IsInfinity(node.RainHeight) ? 0f : Mathf.Clamp(node.RainHeight, 0f, 2000f);
+                node.RainSpeed = float.IsNaN(node.RainSpeed) || float.IsInfinity(node.RainSpeed) ? 0f : Mathf.Clamp(node.RainSpeed, 0f, 5000f);
                 node.GhostRainShadowOffsetX = float.IsNaN(node.GhostRainShadowOffsetX) ? 3f : Mathf.Clamp(node.GhostRainShadowOffsetX, -50f, 50f);
                 node.GhostRainShadowOffsetY = float.IsNaN(node.GhostRainShadowOffsetY) ? -3f : Mathf.Clamp(node.GhostRainShadowOffsetY, -50f, 50f);
                 node.GhostRainOutlineWidth = float.IsNaN(node.GhostRainOutlineWidth) ? 2f : Mathf.Clamp(node.GhostRainOutlineWidth, 0f, 50f);

@@ -114,6 +114,20 @@ namespace JipperKeyViewer.KeyViewer
         private void DisableKeyViewer()
         {
             if (KeyViewerObject == null) return;
+            // Disarm any pending key rebind. ProcessKeySelection — the one place that disarms on
+            // focus loss, a closed window or a hidden UMM panel — runs only inside the `enabled`
+            // block of Update, so an armed rebind would otherwise survive the display being turned
+            // off. Symptom: arm a slot on the Keys tab, flip the master switch off to get a clean
+            // screen, flip it back on, and the FIRST key you press is silently bound to that slot
+            // and saved — the key you meant to play simply stops registering. Switching tabs and
+            // hiding the panel both disarm; this path was the one that did not.
+            // 解除挂起的改键捕获。ProcessKeySelection（失焦/关窗/UMM 隐藏面板时解除武装的唯一出口）
+            // 只在 Update 的 `enabled` 块内运行，故关掉显示时武装态会残留。症状：在关键页武装一个
+            // 槽位 → 关掉总开关看干净画面 → 再打开 → 你按的**第一个**键被静默绑进该槽位并落盘，
+            // 本想按的键从此失灵。翻标签与隐藏面板都会解除，唯独这条路径没有。
+            SelectedKey = -1;
+            changeState = 0;
+            rainSystem.ClearActiveDrops(Keys);
             // Explicitly clear active rain state before dropping the Keys reference — the active
             // set only stayed valid by the implicit "rain indices < 24 < any array length"
             // invariant; clearing makes correctness independent of it.

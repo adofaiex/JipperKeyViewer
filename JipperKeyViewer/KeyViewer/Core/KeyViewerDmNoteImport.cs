@@ -193,7 +193,22 @@ namespace JipperKeyViewer.KeyViewer
                     // the profile file we just deleted and the next launch would silently fall back
                     // to a fresh empty profile. / SwitchProfile 已把新 Profile 名写进 meta；不回写
                     // 就会让 settings.json 指向刚删除的文件，下次启动静默回到空配置。
-                    try { SaveMetaOnly(); } catch { }
+                    //
+                    // Report it when it fails rather than swallowing: a failed meta rewrite here
+                    // leaves the disk pointing at a DELETED file, so the next launch takes the
+                    // "profile not found" path and the user's own profile is not loaded — with no
+                    // log line and no banner. The .jkv importer reports the identical operation.
+                    // 失败时上报而非静默吞掉：此处 meta 回写失败会让磁盘指向已**删除**的文件，下次
+                    // 启动走「Profile not found」而用户原本在用的配置不会被加载——日志无、界面无
+                    // 横幅。`.jkv` 导入器对完全相同的操作是会上报的。
+                    try { SaveMetaOnly(); }
+                    catch (Exception metaError)
+                    {
+                        lastSaveError = metaError.Message;
+                        Loader.Error("KeyViewer: DM Note import rollback could not rewrite the "
+                            + "profile metadata; the next launch may not find the active profile: "
+                            + metaError);
+                    }
                     throw;
                 }
 
@@ -238,6 +253,18 @@ namespace JipperKeyViewer.KeyViewer
                 if ((keyElements == null || keyElements.Count == 0)
                     && (statElements == null || statElements.Count == 0))
                     throw new FormatException("selected tab has no key or stat elements");
+                // The tab is selected if EITHER table has it, but each table is then read strictly.
+                // A preset whose two tables disagree on tab naming (a very plausible hand-edit, and
+                // also what a partial export produces) therefore imports one table and silently
+                // drops the other — the message then says "imported 2 nodes" while 7 key nodes are
+                // simply gone. Every other unsupported feature in this importer emits a deduped
+                // warning; this one reported success. Say so instead.
+                // 标签只要**任一**表里有就被选中，但随后每张表都严格读取。故两张表对标签命名不一致
+                // 的预设（手改很常见，部分导出也会这样）只会导入其中一张、静默丢掉另一张——提示却说
+                // 「已导入 2 个节点」而 7 个按键节点整个消失。本导入器对其它一切不支持项都发去重
+                // 警告，唯独这条报告成功。改为明确提示。
+                if ((keyElements == null || keyElements.Count == 0) != (statElements == null || statElements.Count == 0))
+                    result.Warnings.Add(I18n.Tr("dmnote_partial_tab"));
 
                 JArray names = root["keys"] is JObject keyNames
                     ? keyNames[result.Tab] as JArray : null;
@@ -474,11 +501,21 @@ namespace JipperKeyViewer.KeyViewer
 
         private static void ApplyDmNoteRain(FmNode node, JObject raw, JObject position, DmNoteWarnings warnings)
         {
-            float width = ReadNumber(raw, position, "noteWidth", 0f);
+            float width = ReadNumber(raw, position, "noteWidth", "rainWidth", 0f);
             if (width > 0f) node.RainWidth = width;
-            float height = ReadNumber(raw, position, "rainHeight", 0f);
+            // "noteHeight"/"noteSpeed" are tried FIRST because every other note-scoped field in
+            // this file uses the note* prefix (noteColor/noteOpacity/noteOffsetX,Y/noteBorder*/
+            // noteAlignment/noteEnabled/noteGradient/noteRadius), and only these two had a bare
+            // "rain" prefix. Read both spellings in note-first order: whichever DmNote actually
+            // writes wins, and a preset using the other one still imports instead of silently
+            // falling back to the global per-row value.
+            // 先试 "noteHeight"/"noteSpeed"，因为本文件里其它所有 note 作用域字段都用 note* 前缀
+            // （noteColor/noteOpacity/noteOffsetX,Y/noteBorder*/noteAlignment/noteEnabled/
+            // noteGradient/noteRadius），只有这两个用了裸 "rain" 前缀。按 note 优先的顺序两种
+            // 拼写都读：DmNote 实际写的那个胜出，用另一个的预设也能导入，而不是静默退回按排全局值。
+            float height = ReadNumber(raw, position, "noteHeight", "rainHeight", 0f);
             if (height > 0f) node.RainHeight = height;
-            float speed = ReadNumber(raw, position, "rainSpeed", 0f);
+            float speed = ReadNumber(raw, position, "noteSpeed", "rainSpeed", 0f);
             if (speed > 0f) node.RainSpeed = speed;
             Color top = Color.white;
             Color bottom = Color.white;
