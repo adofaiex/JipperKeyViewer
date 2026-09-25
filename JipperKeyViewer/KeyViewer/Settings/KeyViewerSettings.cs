@@ -422,24 +422,57 @@ namespace JipperKeyViewer.KeyViewer.Settings
             ImportLegacyCarriers();
             _customNodes = new List<FmNode>(CustomNodesData ?? new FmNode[0]);
             _layerGroups = new List<FmLayerGroup>(LayerGroupsData ?? new FmLayerGroup[0]);
-            ApplyLegacyFmNodeDefaults(_customNodes);
+            // Gate the legacy repair on the profile's OWN version stamp rather than on a value
+            // heuristic. The heuristic could only ever be a guess — a user who genuinely wants
+            // "no label, no glow" produces opacity 0 + scale 0.5 + GlowSize 0, which is exactly the
+            // shape the broken build wrote, and every load then silently reset ~30 of their fields
+            // and persisted the result. DataVersion removes the guess: it says whether the file on
+            // disk was written before the field existed, and SaveCurrentProfile stamps it forward,
+            // so the repair runs at most once per profile and never on a current one.
+            // 用 Profile 自身的版本戳做闸门，而不是值启发式。启发式永远只能是猜测——真的想要
+            // 「不要标签不要光晕」的用户做出的正是「不透明度 0 + 缩放 0.5 + GlowSize 0」，与错误构建
+            // 写下的形状完全一致，于是每次加载都会静默重置他们约 30 个字段并落盘。DataVersion
+            // 去掉了猜测：它说明磁盘上的文件是否写于该字段存在之前，而 SaveCurrentProfile 会把它
+            // 向前盖章，故该修复每个 Profile 最多跑一次，且绝不在当前版本的 Profile 上跑。
+            if (DataVersion < NodeTextDefaultsVersion) ApplyLegacyFmNodeDefaults(_customNodes);
         }
 
         /// <summary>Bump when a new defaulted FmNode field is added, so the one-shot legacy repair
-        /// below can re-run for profiles written before the field existed. / 新增带默认值的 FmNode
-        /// 字段时递增，让下面的旧字段修复对更早写出的 Profile 仍然有效。</summary>
+        /// below re-runs for profiles written before the field existed. Gate:
+        /// `DataVersion < NodeTextDefaultsVersion` in SyncArraysFromLists. The Harness asserts that
+        /// EVERY FmNode field carrying a non-zero field initializer is listed in the repair, so a
+        /// new field added without a repair entry fails a test instead of silently reading as 0.
+        /// 新增带默认值的 FmNode 字段时递增，让下面的旧字段修复对更早写出的 Profile 仍然有效。
+        /// 闸门：`SyncArraysFromLists` 里的 `DataVersion < NodeTextDefaultsVersion`。Harness 会断言
+        /// **每一个**带非零字段初始化器的 FmNode 字段都在修复清单里，故新增字段而漏加修复条目会
+        /// 让测试失败，而不是静默读成 0。</summary>
         public const int NodeTextDefaultsVersion = 1;
 
         /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
         /// legacy node object, leaving newly added non-zero defaults (notably TextOpacity and
         /// LabelScale) at 0. A zero label scale is an invalid runtime value and therefore an
-        /// unambiguous marker. The "already re-saved by the broken build" shape is NOT unique on its
-        /// own — a user may legitimately pick 0 opacity + 0.5 scale — so it additionally requires
-        /// evidence that only the broken path produces: a zero glow size and an empty press easing
-        /// string, neither of which EnsureCustomNodes ever repairs or the editor ever writes empty.
-        /// 旧节点缺失的新字段会变成 0；LabelScale=0 是不合法值可作标记。被错误构建重存的组合并非
-        /// 独占（用户也可能真的设 0 不透明度 + 0.5 缩放），因此额外要求只有错误路径才会产生的
-        /// 证据：GlowSize=0 且按压缓动字符串为空。</summary>
+        /// unambiguous marker.
+        ///
+        /// Callers MUST gate this on `DataVersion < NodeTextDefaultsVersion`. It used to carry its
+        /// own second heuristic — "both opacities 0, both scales ≤ 0.5, glow 0, empty easing" — to
+        /// catch nodes a broken build had already re-saved. That signature is not unique to the
+        /// broken path: "no label, no glow" is a perfectly ordinary node recipe, and nodes written
+        /// before the easing picker existed have an empty easing string naturally. Those nodes were
+        /// silently reset — about 30 fields — on every load and every overlay rebuild, and the
+        /// result was persisted. The version gate subsumes it: a re-saved broken profile has
+        /// already been stamped forward, so it is never examined again.
+        /// Also called from EnsureCustomNodes, which runs outside the versioned load path; there
+        /// the same gate is applied by the caller.
+        /// 旧节点缺失的新字段会变成 0；LabelScale=0 是不合法值可作标记。
+        ///
+        /// 调用方**必须**用 `DataVersion < NodeTextDefaultsVersion` 做闸门。它此前自带第二个启发式
+        /// ——「双不透明度 0、双缩放 ≤0.5、Glow 0、缓动串为空」——用来抓已被错误构建重存的节点。
+        /// 但该形状并非错误路径独有：「不要标签不要光晕」是完全正常的节点配方，而缓动选择器出现
+        /// 之前写下的节点其缓动串天然为空。这些节点在每次加载与每次覆盖层重建时被静默重置约 30
+        /// 个字段，结果还会被落盘。版本闸门覆盖了它：被错误构建重存过的 Profile 早已被向前盖章，
+        /// 故永不再被检查。
+        /// 另会被 EnsureCustomNodes 调用（它不在带版本控制的加载路径上），那里由调用方施加同样
+        /// 的闸门。</summary>
         internal static void ApplyLegacyFmNodeDefaults(List<FmNode> nodes)
         {
             if (nodes == null) return;
@@ -450,11 +483,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
         internal static void ApplyLegacyFmNodeDefaults(FmNode node)
         {
             if (node == null) return;
-            bool invalidScale = node.LabelScale <= 0f || node.CountScale <= 0f;
-            bool savedPoison = node.TextOpacity <= 0f && node.CountTextOpacity <= 0f
-                && node.LabelScale <= 0.5f && node.CountScale <= 0.5f
-                && node.GlowSize <= 0f && string.IsNullOrEmpty(node.PressAnimEasing);
-            if (!invalidScale && !savedPoison) return;
+            if (node.LabelScale > 0f && node.CountScale > 0f) return;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
             node.LabelScale = 1f;
@@ -495,6 +524,31 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.TrailFadeEnabled = true;
             node.TrailFadePx = 50f;
             node.ReleaseFadeDuration = 0.5f;
+            // The 1.7.2 text outline/shadow block, added together and therefore missed by every
+            // earlier version of this list. A legacy node reads all eight as 0/false, so it loses its
+            // outline and shadow entirely — cosmetic rather than fatal, but it is exactly the class
+            // of silent drift this repair exists to stop, and the Harness coverage test now fails
+            // until each one is listed. / 1.7.2 的文字描边/阴影块，成批加入，故此前每一版清单都
+            // 漏了它们。旧节点把这八个全读成 0/false，于是描边与阴影整个消失——是外观问题而非致命
+            // 问题，但正是本修复要杜绝的那类静默漂移，且 Harness 覆盖测试会要求逐个列出。
+            node.KeyTextOutlineThickness = 0.2f;
+            node.KeyTextShadowEnabled = true;
+            node.KeyTextShadowOffsetX = 1f;
+            node.KeyTextShadowOffsetY = -1f;
+            node.CountTextOutlineThickness = 0.2f;
+            node.CountTextShadowEnabled = true;
+            node.CountTextShadowOffsetX = 1f;
+            node.CountTextShadowOffsetY = -1f;
+            // Membership switch and node opacity. Opacity 0 is the visible-node failure this whole
+            // repair was written for: EnsureCustomNodes clamps it to [0,1], so 0 stays 0 and a
+            // legacy node renders completely invisible with no way for the user to tell why.
+            // CountInTotal=false likewise drops the node out of the global Total on every load.
+            // 成员开关与节点不透明度。不透明度 0 正是本修复要解决的那种「节点看不见」故障：
+            // EnsureCustomNodes 把它钳到 [0,1]，0 原样保留，于是旧节点渲染得完全不可见，而用户
+            // 完全无从判断原因。CountInTotal=false 同理会让该节点在每次加载时都被排除在全局 Total
+            // 之外。
+            node.CountInTotal = true;
+            node.Opacity = 1f;
         }
 
         // Interim-build string carriers (that build persisted the lists as escaped JSON strings

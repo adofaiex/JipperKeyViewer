@@ -395,7 +395,14 @@ namespace JipperKeyViewer.KeyViewer
                 // A legacy profile can reach here without SyncArraysFromLists (e.g. a package
                 // export/import path); restore non-zero field defaults before clamping would
                 // otherwise turn LabelScale=0 into 0.5 and leave TextOpacity=0 invisible.
-                ProfileData.ApplyLegacyFmNodeDefaults(node);
+                // Same DataVersion gate as the load path — this runs on every overlay rebuild, so
+                // without the gate a current profile's deliberately-zero opacity/scale/glow would
+                // be reset (and persisted) on every single rebuild.
+                // 与加载路径用同一个 DataVersion 闸门——本方法每次覆盖层重建都跑，无闸门的话当前
+                // 版本 Profile 里用户**故意**设的 0 不透明度/0 缩放/无光晕会在**每次**重建时被
+                // 重置（并落盘）。
+                if (Settings.Data.DataVersion < ProfileData.NodeTextDefaultsVersion)
+                    ProfileData.ApplyLegacyFmNodeDefaults(node);
                 // Hand-edited profiles may carry an unknown node type — treat as a key node. /
                 // 手改配置可能带未知节点类型——按按键节点处理。
                 if (node.NodeType is not (0 or 1 or 2 or 3)) node.NodeType = 0;
