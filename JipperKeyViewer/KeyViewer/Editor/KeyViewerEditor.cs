@@ -267,6 +267,16 @@ namespace JipperKeyViewer.KeyViewer
                 // 关闭编辑器时冲刷挂起的去抖变更，并取消进行中的捕获/拖拽，避免旧节点引用吞掉下一次按键。
                 editorOpen = false;
                 ClearEditorInteractionState();
+                // Drop the undo timeline with the window. Every entry is a whole-document JSON
+                // snapshot (~0.5 MB at 112 nodes), and only a Profile switch used to release them
+                // — so a long session that opened and closed the editor dozens of times kept tens
+                // of megabytes of dead history resident, and reopening showed an undo stack whose
+                // base predated the window itself.
+                // 随窗口一并丢弃撤销时间线。每条都是整份文档的 JSON 快照（112 节点时约 0.5 MB），
+                // 而此前只有切换配置才释放——于是长时间会话里反复开关编辑器数十次，会常驻数十 MB
+                // 的无用历史，重开后还会看到一条基线早于窗口本身的撤销栈。
+                editorHistory.Clear();
+                editorBaselineSeeded = false;
                 SaveSettings();
             }
             GUILayout.EndHorizontal();
@@ -707,16 +717,50 @@ namespace JipperKeyViewer.KeyViewer
                 && n.NodeType == statType && n.GroupId == groupId);
         }
 
-        /// <param name="focusVideoPath">After creating an image node, focus the video-path field so
-        /// the user can type the file straight away. The toolbar's "video" button used to call this
-        /// with the exact same arguments as the "image" button, so it produced an unbound image
-        /// node with neither ImagePath nor VideoPath — a grey placeholder that still consumed one
+        /// <summary>Does this group id still name a real layer group? A node must never be filed
+        /// under an id that is not in the list: such a node is invisible in the group manager,
+        /// ignores that group's visibility toggle, and cannot be reached by "select group".
+        /// The empty id is the ungrouped default and always "exists". /
+        /// 该组 id 是否仍指向一个真实的图层组？节点绝不能被归到不在表中的 id 名下：这样的节点在
+        /// 组管理器里不可见、无视该组的可见性开关，也无法通过"选择该组"到达。空 id 是未分组
+        /// 默认值，恒"存在"。</summary>
+        private static bool EditorGroupExists(string groupId)
+            => EditorGroupExists(Settings.Data.LayerGroups, groupId);
+
+        /// <summary>Pure form, so the rule can be exercised without a live overlay. /
+        /// 纯函数形式，故该规则无需活动覆盖层即可被验证。</summary>
+        internal static bool EditorGroupExists(List<FmLayerGroup> groups, string groupId)
+        {
+            // The empty id is the ungrouped default and always "exists".
+            // 空 id 是未分组默认值，恒"存在"。
+            if (string.IsNullOrEmpty(groupId)) return true;
+            if (groups == null) return false;
+            for (int i = 0; i < groups.Count; i++)
+                if (groups[i] != null && string.Equals(groups[i].Id, groupId, StringComparison.Ordinal))
+                    return true;
+            return false;
+        }
+
+        /// <summary>Create an image node and focus the video-path field. The toolbar's "video"
+        /// button used to call this with the exact same arguments as the "image" button, producing
+        /// a node with neither ImagePath nor VideoPath — a grey placeholder that still consumed one
         /// of the group's 8 unbound-image slots. / 创建图片节点后聚焦视频路径输入框。工具栏的
         /// 「视频」按钮此前与「图片」按钮参数完全相同，产出的是既无 ImagePath 也无 VideoPath
-        /// 的未绑定节点——一个灰色占位框，还白占该组 8 个未绑定图片名额之一。</param>
+        /// 的未绑定节点——一个灰色占位框，还白占该组 8 个未绑定图片名额之一。</summary>
         private void EditorAddNode(int type, bool focusVideoPath = false)
         {
             string targetGroup = fmActiveGroupId;
+            // An active group that no longer EXISTS must not be inherited. fmActiveGroupId is only
+            // cleared by the group's delete button, so deleting a group through any other route (an
+            // undo, a document switch, a profile load) leaves a dead id behind — and the next node
+            // would be filed under it: invisible in the group manager, unaffected by that group's
+            // visibility toggle, and unreachable by "select group". The empty group is the
+            // documented default, so falling back to it is both safe and what the user expects.
+            // 不再存在的活动组不得被继承。fmActiveGroupId 只在组删除按钮里清，故经其它途径删组
+            // （撤销、文档切换、配置加载）会留下一个死 id——下一个节点就会被归到它名下：在组管理器
+            // 里不可见、不受该组可见性开关控制、也无法通过"选择该组"到达。空组是文档化的默认值，
+            // 落到它既安全又符合预期。
+            if (!EditorGroupExists(targetGroup)) targetGroup = "";
             if ((type == 1 || type == 2) && GroupHasStat(targetGroup, type)) return;
             if (type != 3 && KeyLikeCountInGroup(targetGroup) >= CustomKeyNodeCap) return;
             if (type == 3 && UnboundImageCountInGroup(targetGroup) >= 8) return;
@@ -795,17 +839,27 @@ namespace JipperKeyViewer.KeyViewer
             foreach (FmNode template in editorClipboard)
             {
                 if (template == null) continue;
-                if (template.NodeType == 1 && GroupHasStat(template.GroupId, 1)) continue;
-                if (template.NodeType == 2 && GroupHasStat(template.GroupId, 2)) continue;
+                // A clipboard entry can name a group that has since been deleted (the clipboard
+                // outlives the document's group list — it is only cleared on a Profile switch).
+                // Filing the paste under a dead id would reproduce the same invisible,
+                // toggle-immune node the add path guards against, so re-home it to the default
+                // group. The per-group budgets below then apply to that group, which is correct.
+                // 剪贴板条目可能指向此后已删除的组（剪贴板的生命周期长于文档的组表——只在切换配置
+                // 时清空）。把粘贴归到死 id 名下会复现与新增路径同样的问题：节点不可见且不受任何
+                // 开关控制。故改挂到默认组；下方的按组预算也就作用在该组上，这正是应有的结果。
+                string group = EditorGroupExists(template.GroupId) ? template.GroupId : "";
+                if (template.NodeType == 1 && GroupHasStat(group, 1)) continue;
+                if (template.NodeType == 2 && GroupHasStat(group, 2)) continue;
                 bool keyLike = template.NodeType != 3 || !string.IsNullOrWhiteSpace(template.KeyBind);
                 // Per-group budgets, recomputed per template (its group may differ). /
                 // 按组预算，逐模板重算（各组不同）。
-                int keyRoom = CustomKeyNodeCap - KeyLikeCountInGroup(template.GroupId);
-                int imageRoom = 8 - UnboundImageCountInGroup(template.GroupId);
+                int keyRoom = CustomKeyNodeCap - KeyLikeCountInGroup(group);
+                int imageRoom = 8 - UnboundImageCountInGroup(group);
                 if (keyLike && keyRoom <= 0) continue;
                 if (!keyLike && imageRoom <= 0) continue;
                 FmNode copy = template.Clone();
                 copy.Id = Settings.Data.CustomNodeNextId++;
+                copy.GroupId = group;
                 copy.X += offset;
                 copy.Y += offset;
                 Settings.Data.CustomNodes.Add(copy);
@@ -1076,6 +1130,19 @@ namespace JipperKeyViewer.KeyViewer
             if (fmCaptureGhostNode == node) fmCaptureGhostNode = null;
         }
 
+        /// <summary>Disarm the editor's node-capture, if any. Called from the SETTINGS window when
+        /// it arms a fixed-layout rebind, so one physical press cannot be consumed by both windows:
+        /// ProcessKeySelection polls Input.GetKeyDown in Update, which runs before the editor's
+        /// OnGUI KeyDown handling. / 解除编辑器的节点捕获（若有）。由**设置窗口**在武装固定布局
+        /// 改键时调用，使同一次物理按键不会被两个窗口同时消费：ProcessKeySelection 在 Update 里
+        /// 轮询 Input.GetKeyDown，早于编辑器的 OnGUI KeyDown 处理。
+        /// </summary>
+        internal void CancelEditorNodeCapture()
+        {
+            if (fmCaptureNode != null) fmCaptureNode = null;
+            if (fmCaptureGhostNode != null) fmCaptureGhostNode = null;
+        }
+
         /// <summary>Cancel editor input/gesture state that belongs to the current document.
         /// This is intentionally separate from the undo timeline: closing the window should
         /// abort a capture/drag, while Profile/document replacement additionally clears the
@@ -1244,8 +1311,20 @@ namespace JipperKeyViewer.KeyViewer
                 Settings.Data.LayerGroups = doc?.Groups ?? new List<FmLayerGroup>();
                 if (doc != null)
                 {
-                    if (doc.NodeNextId > 0) Settings.Data.CustomNodeNextId = doc.NodeNextId;
-                    if (doc.GroupNextId > 0) Settings.Data.LayerGroupNextId = doc.GroupNextId;
+                    // The id counter must only ever go UP. Restoring it verbatim rewinds it, and the
+                    // timeline is walked freely in both directions: paste ids 5..9 (counter → 10),
+                    // undo twice (counter → 5), add a node (takes id 5), redo (document now has TWO
+                    // id-5 nodes). Ids are the identity used by selection remapping, undo's count
+                    // re-application and the per-node IMGUI control names, so a collision silently
+                    // folded one node away. Taking the max keeps undo/redo of the DOCUMENT exact
+                    // while never re-issuing an id.
+                    // id 计数器只能**单调上升**。原样恢复会把它倒转，而时间线可自由双向走：粘贴出
+                    // id 5..9（计数器 → 10），撤销两次（计数器 → 5），新增节点（拿到 id 5），重做
+                    // （文档里于是有**两个** id 5 的节点）。Id 是选区重映射、撤销计数回填与每节点
+                    // IMGUI 控件名共用的身份键，冲突会静默吞掉其中一个。取最大值使文档的撤销/重做
+                    // 保持精确，同时永不重复发放 id。
+                    if (doc.NodeNextId > Settings.Data.CustomNodeNextId) Settings.Data.CustomNodeNextId = doc.NodeNextId;
+                    if (doc.GroupNextId > Settings.Data.LayerGroupNextId) Settings.Data.LayerGroupNextId = doc.GroupNextId;
                     if (doc.PreserveCounts)
                     {
                         // Re-apply the live counters onto the restored instances by id. A node that
@@ -1265,6 +1344,21 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 EnsureCustomNodes();
                 SetEditorSelectionById(doc?.Nodes);
+                // The restored document has a DIFFERENT group list, so the active group and the
+                // easing picker can both be left pointing at things that no longer exist — the
+                // Profile-switch path already cleared these, undo did not. A dangling group id
+                // would additionally be inherited by the next added node (now guarded, but the
+                // panel would still show a group that is not in the manager).
+                // 恢复出的文档有**不同的**组表，故活动组与缓动选择器都可能指向已不存在的东西——
+                // 切换配置的路径此前会清这两项，撤销不会。悬空的组 id 还会被下一个新增节点继承
+                // （现已加守卫，但面板仍会显示一个不在组管理器里的组）。
+                if (!EditorGroupExists(fmActiveGroupId)) fmActiveGroupId = "";
+                // The easing picker is a popup keyed by a per-node control NAME. Undo swaps the node
+                // list, so the node that owned that name may be gone and the popup would linger
+                // over a control that is no longer drawn.
+                // 缓动选择器是按每节点控件**名**为键的弹窗。撤销会换掉节点表，故拥有该名字的节点
+                // 可能已消失，弹窗会悬在一个不再绘制的控件上。
+                fmEasingPicker = null;
                 RefreshAllCountDisplay();
                 EditorMutated();
             }
@@ -4060,7 +4154,25 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.Label(I18n.Tr("fm_ghost_bind") + ": " + bound, GUILayout.Width(160f));
             bool capturing = fmCaptureGhostNode == node;
             if (GUILayout.Button(capturing ? I18n.Tr("fm_wait_key") : I18n.Tr("fm_bind"), GUILayout.MinWidth(90f)))
-                fmCaptureGhostNode = capturing ? null : node;
+            {
+                if (capturing) fmCaptureGhostNode = null;
+                else
+                {
+                    // Arming the ghost capture must (a) release the settings page's own arm, or the
+                    // next key writes BOTH the global ghostKeyCodes slot and this node's GhostKey,
+                    // and (b) release the editor's MAIN-key capture, or the same KeyDown would be
+                    // handled by both capture blocks in this pass. The main-key button below already
+                    // does both; this one did neither.
+                    // 武装鬼键捕获必须 (a) 解除设置页自身的武装，否则下一键会**同时**写入全局
+                    // ghostKeyCodes 槽位与本节点的 GhostKey；(b) 解除编辑器的**主键**捕获，否则
+                    // 同一次 KeyDown 会被本 pass 的两个捕获块都处理。主键按钮本就两者都做，
+                    // 鬼键按钮此前两者都没做。
+                    SelectedKey = -1;
+                    changeState = 0;
+                    fmCaptureNode = null;
+                    fmCaptureGhostNode = node;
+                }
+            }
             if (GUILayout.Button(I18n.Tr("fm_clear"), GUILayout.MinWidth(60f)))
             {
                 node.GhostKey = "";
@@ -4109,7 +4221,16 @@ namespace JipperKeyViewer.KeyViewer
                 // ProcessKeySelection 在 Update 里轮询，会顺带改掉固定布局的槽位绑定。
                 SelectedKey = -1;
                 changeState = 0;
-                fmCaptureNode = capturing ? null : node;
+                if (capturing) fmCaptureNode = null;
+                else
+                {
+                    // Also release the ghost capture: both blocks run in the same pass, so two
+                    // armed captures meant one KeyDown was handled twice.
+                    // 同时解除鬼键捕获：两个捕获块在同一 pass 运行，两个都武装时同一次 KeyDown
+                    // 会被处理两遍。
+                    fmCaptureGhostNode = null;
+                    fmCaptureNode = node;
+                }
             }
             if (GUILayout.Button(I18n.Tr("fm_clear"), GUILayout.MinWidth(60f)))
             {
@@ -4134,7 +4255,15 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     else if (e.keyCode != KeyCode.None
                         && (e.keyCode < KeyCode.Mouse0 || e.keyCode > KeyCode.Mouse6)
-                        && e.keyCode != KeyCode.Return)
+                        && e.keyCode != KeyCode.Return
+                        // The loader's settings hotkey must never bind, exactly as
+                        // ProcessKeySelection already excludes it: the core Update can run BEFORE
+                        // the loader consumes the hotkey, so pressing it to close the window while
+                        // armed would both bind the hotkey into the node AND close the window.
+                        // 加载器的设置热键绝不参与绑定，与 ProcessKeySelection 的排除保持一致：核心
+                        // Update 可能先于加载器消费热键运行，故武装中按它关窗会既把热键绑进节点、
+                        // 又关掉窗口。
+                        && e.keyCode != EditorSettingsHotkey())
                     {
                         node.KeyBind = e.keyCode.ToString();
                         node.CustomText = KeyToString(e.keyCode);
@@ -4145,6 +4274,13 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
         }
+
+        /// <summary>The active loader's settings hotkey, or KeyCode.None when unknown — the same
+        /// value ProcessKeySelection compares against, so both capture paths exclude it. /
+        /// 当前加载器的设置热键，未知时为 KeyCode.None——与 ProcessKeySelection 比较的是同一个值，
+        /// 故两条捕获路径都会排除它。</summary>
+        private static KeyCode EditorSettingsHotkey()
+            => Loader.Instance != null ? Loader.Instance.SettingsHotkey : KeyCode.None;
 
         /// <summary>Node font size (0 = follow the global key font size) / 节点字号（0 = 跟随全局按键字号）</summary>
         private void DrawEditorFontSize(FmNode first)

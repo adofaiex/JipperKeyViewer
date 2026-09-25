@@ -22,6 +22,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             GUILayout.BeginVertical("box");
             KeyCode[] keyCodes = GetKeyCode();
+            // Arming here must DISARM the editor's node capture, the mirror of what the editor does
+            // when it arms. The editor window and the settings window can both be open (Melon
+            // drives two IMGUI passes), and ProcessKeySelection polls Input.GetKeyDown in Update —
+            // BEFORE the editor's OnGUI KeyDown handling — so a single physical press was consumed
+            // by BOTH: the fixed-layout slot binding changed and so did the FreeMake node's KeyBind.
+            // 每边武装时都必须解除另一边的武装，这与编辑器武装时的处理互为镜像。编辑器窗口与设置
+            // 窗口可同时打开（Melon 驱动两个 IMGUI pass），而 ProcessKeySelection 在 Update 里轮询
+            // Input.GetKeyDown——**早于**编辑器的 OnGUI KeyDown 处理——于是同一次物理按键被两边
+            // 同时消费：固定布局槽位绑定与 FreeMake 节点 KeyBind 一起被改。
+            CancelEditorNodeCapture();
             DrawMainKeyRows(I18n.Tr("row1_keys"), I18n.Tr("row2_keys"), I18n.Tr("row3_keys"),
                 keyCodes, (i, _) => { SelectedKey = i; changeState = 0; });
             DrawFootKeyRows(I18n.Tr("foot_keys_list"), FootKeyBase,
