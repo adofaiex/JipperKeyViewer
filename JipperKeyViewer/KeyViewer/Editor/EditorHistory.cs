@@ -15,6 +15,15 @@ namespace JipperKeyViewer.KeyViewer.Editor
         // How many snapshots the timeline keeps; older ones fall off the front. /
         // 时间线保留的快照数；更早的从头部淘汰。
         private const int TimelineCapacity = 64;
+        // …and a byte ceiling, because the count alone does not bound anything real. Every entry
+        // is a whole-document JSON snapshot: ~0.5 MB for a 112-node layout, so 64 entries is
+        // ~32 MB held for the whole time the editor is open. A small document is nowhere near
+        // that, and dropping those entries would only cost the user undo depth for nothing. Trim
+        // by whichever limit bites first, and never below the current position.
+        // …以及一个字节上限，因为单看条数根本没有约束任何真实成本。每条都是整份文档的 JSON 快照：
+        // 112 节点的布局约 0.5 MB，故 64 条 = 编辑器开着期间常驻约 32 MB。小文档远达不到，而淘汰
+        // 那些条目只会白白让用户损失撤销深度。取两个上限中先咬紧的那个，且永不越过当前位置。
+        private const long MaxTimelineBytes = 16L * 1024L * 1024L;
         // Nudge bursts within this window collapse into one timeline entry. /
         // 该窗口内的微调连发合并为一条时间线记录。
         private const float NudgeMergeWindow = 0.4f;
@@ -28,6 +37,12 @@ namespace JipperKeyViewer.KeyViewer.Editor
         private readonly List<string> snapshots = new List<string>();
         private int position = -1;
         private float lastNudgeStamp = float.NegativeInfinity;
+        /// <summary>Running total of the bytes held by `snapshots`, so the trim is O(1) instead of
+        /// re-summing the whole list on every push. Maintained by Push/ReplaceTop/Clear/Undo/Redo.
+        /// `snapshots` 持有字节数的running合计，使裁剪为 O(1) 而不必每次 Push 都重新求和。
+        /// 由 Push/ReplaceTop/Clear/Undo/Redo 维护。
+        /// </summary>
+        private long snapshotBytes;
 
         internal bool CanUndo => position > 0;
         internal bool CanRedo => position >= 0 && position < snapshots.Count - 1;
@@ -36,20 +51,44 @@ namespace JipperKeyViewer.KeyViewer.Editor
         {
             if (snapshot == null) return;
             if (position >= 0 && position < snapshots.Count - 1)
-                snapshots.RemoveRange(position + 1, snapshots.Count - 1 - position);
+                DropRange(position + 1, snapshots.Count - 1 - position);
             snapshots.Add(snapshot);
+            snapshotBytes += BytesOf(snapshot);
             position = snapshots.Count - 1;
-            if (snapshots.Count > TimelineCapacity)
-            {
-                snapshots.RemoveAt(0);
-                position--;
-            }
+            TrimFront();
             // Every recorded state closes the nudge burst: a structural edit landing mid-burst
             // must start a fresh entry for the next nudge instead of riding the same window
             // (PushNudge re-stamps after calling in, so its own entry keeps the window open). /
             // 每次记录都闭合微调连发：结构编辑落在连发中途时，下一次微调必须开新条目，而不是
             // 搭同一窗口的车（PushNudge 在调入后重新打戳，故它自己那条仍保持窗口打开）。
             EndNudge();
+        }
+
+        private static long BytesOf(string s) => s == null ? 0L : (long)s.Length * 2L;
+
+        private void DropRange(int index, int count)
+        {
+            for (int i = index; i < index + count && i < snapshots.Count; i++) snapshotBytes -= BytesOf(snapshots[i]);
+            if (snapshotBytes < 0) snapshotBytes = 0;
+            snapshots.RemoveRange(index, count);
+        }
+
+        /// <summary>Drop whole-document snapshots off the front until BOTH limits are satisfied,
+        /// never touching the current position (and never emptying the timeline, so the first
+        /// structural edit stays undoable — see the baseline seeding in OpenFreeMakeEditor).
+        /// 从头部丢弃整份文档快照，直到**两个**上限都满足；绝不越过当前位置，也绝不把时间线清空
+        /// （否则第一次结构编辑就不可撤销——见 OpenFreeMakeEditor 里的基线播种）。
+        /// </summary>
+        private void TrimFront()
+        {
+            while (snapshots.Count > 1
+                   && (snapshots.Count > TimelineCapacity || snapshotBytes > MaxTimelineBytes))
+            {
+                snapshotBytes -= BytesOf(snapshots[0]);
+                snapshots.RemoveAt(0);
+                if (position > 0) position--;
+            }
+            if (snapshotBytes < 0) snapshotBytes = 0;
         }
 
         /// <summary>Nudge variant: only the first nudge inside the merge window records. /
@@ -79,7 +118,9 @@ namespace JipperKeyViewer.KeyViewer.Editor
         internal bool ReplaceTop(string snapshot)
         {
             if (snapshot == null || position < 0 || position >= snapshots.Count) return false;
+            snapshotBytes -= BytesOf(snapshots[position]);
             snapshots[position] = snapshot;
+            snapshotBytes += BytesOf(snapshot);
             return true;
         }
 
@@ -90,7 +131,12 @@ namespace JipperKeyViewer.KeyViewer.Editor
         internal string Undo(string current)
         {
             if (!CanUndo) return null;
-            snapshots[position] = current ?? snapshots[position];
+            if (current != null)
+            {
+                snapshotBytes -= BytesOf(snapshots[position]);
+                snapshots[position] = current;
+                snapshotBytes += BytesOf(current);
+            }
             position--;
             return snapshots[position];
         }
@@ -99,7 +145,12 @@ namespace JipperKeyViewer.KeyViewer.Editor
         internal string Redo(string current)
         {
             if (!CanRedo) return null;
-            snapshots[position] = current ?? snapshots[position];
+            if (current != null)
+            {
+                snapshotBytes -= BytesOf(snapshots[position]);
+                snapshots[position] = current;
+                snapshotBytes += BytesOf(current);
+            }
             position++;
             return snapshots[position];
         }
@@ -108,6 +159,7 @@ namespace JipperKeyViewer.KeyViewer.Editor
         {
             snapshots.Clear();
             position = -1;
+            snapshotBytes = 0;
             EndNudge();
         }
     }
