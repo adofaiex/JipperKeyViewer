@@ -1203,6 +1203,20 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
 **附带核实**：`new Font(` 共 3 处，全部在 `KeyViewerResources.cs`（不在 `Core\`），且**三处都有
    `finally` 销毁源字体**。第 38 轮的字体泄漏修复完好。
 
+### 热路径核验（2026-09-26，第 74 轮）
+用户对 FPS 极敏感，故本轮专门核验「每帧分配」与「每帧重建」两类历史上反复出现的问题。**全部完好**。
+
+- **`SinglePanel(Key)` 的 5 个调用点全部是冷路径**：第 35 轮修掉了「固定布局路径每帧
+  `new List<Key>(1)`」并把 `SinglePanel` 的注释明写为**不可用于逐帧热路径**。逐个核实调用点：
+  `RefreshKpsTotalLabels`（用户改 KPS/Total 标签后）、`AutoAssignRainbowColors`（点按钮）、
+  以及 `KeyViewerSettingsGUI` 的每键颜色面板（仅在该页绘制时、每 IMGUI 事件一次）。
+  **没有一处在 `Update` 里。** 修复完好。
+- **`RainSystem.UpdateEffects` 的 `MarkDirty()` 有门**：`RainSystem.cs:135` 那句看起来是循环后
+  无条件执行，但方法在 :82 就 `if (rainActiveKeys.Count == 0) return;`——故只有**真的有雨滴在飞**
+  时才每帧重建合并 mesh。这本就是架构固有的（雨滴每帧都在动），不是浪费。门完好。
+- `RainSystem` 里唯一的两个集合字段是 `readonly`（`rainActiveKeys` / `rainActiveSet`），
+  逐帧路径上无 `new`、无 `ToArray`、无 `ToList`。✓
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
