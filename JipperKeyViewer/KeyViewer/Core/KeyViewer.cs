@@ -545,28 +545,69 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (KeyViewerObject != null && enabled)
             {
-                CheckResolutionChanged();
+                RunStage("resolution", CheckResolutionChanged);
                 long now = Stopwatch.ElapsedMilliseconds;
-                ProcessKeySelection();              // Handle key rebinding input / 处理按键重新绑定输入
+                RunStage("key selection", ProcessKeySelection);   // Handle key rebinding input / 处理按键重新绑定输入
                 if (IsCustomLayout)
                 {
                     // FreeMake nodes: bindings/counters live on the nodes; ghosts included. /
                     // FreeMake 节点：绑定与计数在节点上，鬼键一并处理。
-                    ProcessCustomKeysInUpdate(now);
+                    RunStage("custom keys", () => ProcessCustomKeysInUpdate(now));
                 }
                 else
                 {
-                    ProcessMainAndFootKeysInUpdate(now); // Detect key presses / 检测按键按下
-                    ProcessGhostKeysInUpdate();          // Process ghost key inputs / 处理鬼键输入
-                    if (Settings.Data.EnableRainEffect) rainSystem.UpdateEffects(Keys); // Update rain drop positions / 更新雨滴位置
+                    RunStage("main/foot keys", () => ProcessMainAndFootKeysInUpdate(now)); // Detect key presses / 检测按键按下
+                    RunStage("ghost keys", ProcessGhostKeysInUpdate);          // Process ghost key inputs / 处理鬼键输入
+                    if (Settings.Data.EnableRainEffect) RunStage("rain", () => rainSystem.UpdateEffects(Keys)); // Update rain drop positions / 更新雨滴位置
                     else rainSystem.ClearActiveDrops(Keys); // 清掉在途雨滴
                 }
-                ProcessKpsInUpdate(now);            // Update KPS counter / 更新 KPS 计数器
-                ProcessPerKeyKpsInUpdate(now);       // Update per-key KPS / 更新每键 KPS
-                if (IsCustomLayout) TickCounterBounces(); // counter bounce animations / 计数器弹跳动画
-                TickTextGradients(); // static glyph gradients / 静态字形渐变
+                RunStage("kps", () => ProcessKpsInUpdate(now));            // Update KPS counter / 更新 KPS 计数器
+                RunStage("per-key kps", () => ProcessPerKeyKpsInUpdate(now));       // Update per-key KPS / 更新每键 KPS
+                if (IsCustomLayout) RunStage("counter bounce", TickCounterBounces); // counter bounce animations / 计数器弹跳动画
+                RunStage("text gradients", TickTextGradients); // static glyph gradients / 静态字形渐变
             }
         }
+
+        /// <summary>Run one per-frame subsystem so a throw in it cannot take the others down with
+        /// it, and so it is reported once rather than every frame. Unity catches an exception out
+        /// of Update and carries on next frame, so a persistently faulting stage is a per-frame
+        /// log flood AND it silently cancels the rest of that frame: press counting, KPS, rain and
+        /// the glyph gradients all stop for as long as it lasts, with no user-visible signal beyond
+        /// the log. Segmented guards keep an unrelated subsystem alive and turn the failure into a
+        /// single reported line that re-arms if the message changes (so a genuinely new fault is
+        /// still surfaced).
+        /// 运行单个逐帧子系统，使其抛出时不拖垮其余部分，且只**报告一次**而非每帧。Unity 会捕获
+        /// Update 中逃出的异常并在下一帧继续，故一个持续故障的阶段既是逐帧日志洪水，也会静默
+        /// 取消该帧的其余工作：按键计数、KPS、雨滴与字形渐变在它持续期间全部停止，用户侧除了
+        /// 日志没有任何信号。分段守卫让无关子系统继续存活，并把故障变成一行报告；消息变化时
+        /// 重新武装，使真正的新故障仍会被暴露。
+        /// </summary>
+        private void RunStage(string stage, Action work)
+        {
+            if (work == null) return;
+            try
+            {
+                work();
+                if (stageFailures.Remove(stage))
+                    Loader.Warning($"KeyViewer: '{stage}' recovered after an earlier failure");
+            }
+            catch (Exception e)
+            {
+                // Report the FIRST failure of a given message, then stay quiet while it repeats.
+                // A stage that fails every frame would otherwise bury every other log line — the
+                // same trap the MelonLoader OnUpdate NullReferenceException used to be.
+                // 同一消息的首次失败才报告，随后重复时保持安静。一个每帧都失败的阶段否则会淹没
+                // 所有其它日志行——正是 MelonLoader OnUpdate 那个 NullReferenceException 曾经的陷阱。
+                string message = e.GetType().Name + ": " + e.Message;
+                if (!stageFailures.TryGetValue(stage, out string last) || last != message)
+                {
+                    stageFailures[stage] = message;
+                    Loader.Error($"KeyViewer: per-frame stage '{stage}' failed — {message}");
+                }
+            }
+        }
+
+        private readonly Dictionary<string, string> stageFailures = new Dictionary<string, string>();
 
         // ======================== Config Management / 配置管理 ========================
 

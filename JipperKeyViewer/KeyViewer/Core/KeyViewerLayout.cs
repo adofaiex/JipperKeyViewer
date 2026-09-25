@@ -173,6 +173,12 @@ namespace JipperKeyViewer.KeyViewer
             // 本想按的键从此失灵。翻标签与隐藏面板都会解除，唯独这条路径没有。
             SelectedKey = -1;
             changeState = 0;
+            // A stage that faulted against the old overlay says nothing about the new one, and the
+            // dedupe table in RunStage would suppress the new overlay's first failure as a
+            // "repeat". Clear it with the rest of the per-overlay state.
+            // 针对旧覆盖层报过故障的阶段对新的毫无说明，而 RunStage 的去重表会把新覆盖层的首次
+            // 故障当作「重复」压掉。随其余每覆盖层状态一并清空。
+            stageFailures.Clear();
             rainSystem.ClearActiveDrops(Keys);
             // Explicitly clear active rain state before dropping the Keys reference — the active
             // set only stayed valid by the implicit "rain indices < 24 < any array length"
