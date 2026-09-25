@@ -744,6 +744,43 @@
   雨滴走 60-120 遍，**且拖动过程中轨迹明显反复弹出**。现改用同一个 `RefreshDropColors`——同样
   的遍历、同样的成本，但没有弹出。
 
+### 设置窗口审计（2026-09-26，第 55 轮）
+子代理审设置窗口五个文件 + 数据模型，逐一打开每个「只有一次命中」的读取点以排除「读在死代码里」。
+
+- **主问题：死端字段一个也没有**（与第 54 轮我自己的脚本结论一致，两条独立路径互证）。唯一
+  零运行时读取的字段是 `LegacyCustomNodesJson`/`LegacyLayerGroupsJson`（由**加载**路径
+  `ImportLegacyCarriers` 读取，不是渲染路径）与 `FmNode.Unselectable`（纯编辑器语义）——都不是死端。
+  故用户反复报的「控件不起作用」在本版本上**不复现为死字段**，真正的原因是下面两条**陈旧**问题。
+- **【一个存储异常就能毁掉整个设置窗口】`SyncProfilesWithDisk` 的第二处调用点漏了 `GuardedSave`**：
+  `:308`（点 `.jkv` 导入按钮展开列表）是裸调，而同一函数的**另一处**调用点 `:195` 已被加保护，
+  第 47 轮的记录也把它列为「已转换」——只是这一处被漏掉了。该函数内部
+  `Directory.CreateDirectory`/`GetFiles`/`SaveCurrentProfile`/`SaveMetaOnly` **全无 try**。磁盘满或
+  `Profiles\` 只读时异常从 GUILayout 回调逃出，留下未闭合的布局组（窗口错乱直到重启），且从不
+  设置 `lastSaveError`，连红色横幅都不出现。
+- **雨排阴影/描边的颜色、宽度、偏移不刷新在途雨滴**：这四项只在 `SetRowEffect` 里写模型，
+  没有清雨滴；而这些值只在 `CreateRainDropForKey` 里烙入、从不逐帧重读。**同一方法**里 20 行之上
+  的启用开关会清，下方六个圆角/描边/点状控件也都会清——唯独这四项漏了。于是屏幕上每滴都保持旧值、
+  只有新生成的才用新值：轨迹明显双色，在高度 2000 / 速度 50 下可持续约 40 秒；鬼雨永不淡出，最糟。
+  现接入 `RefreshInFlightDrops()`。
+  **刻意清空而非就地重绘**：阴影/描边的解析是 `CreateRainDropForKey` 里约 60 行按排索引的设置读取，
+  在第二处重新实现会让两者漂移，而漂移的症状正是雨滴渲染出设置页声称已关闭的阴影。
+- **两个未加保护的 `Process.Start`/`Directory.CreateDirectory`**：`:561-573` 的「打开配置文件夹」
+  与「打开字体文件夹」，而同文件几百行外结构完全相同的 Packages(`:312`) 与 DmNote(`:367`) 按钮都包了
+  try。只读 Mod 目录下 `CreateDirectory` 抛 `UnauthorizedAccessException`（正是 `ResolveModPath` 要
+  回退的那种情况），`explorer.exe` 起不来时 `Process.Start` 抛 `Win32Exception`——任一者逃出 GUILayout
+  回调都会让整个设置窗口失效直到重启，且这些路径不是保存、没有横幅可显示。现一并包上。
+- **每键字号按钮每事件分配两个对象**（第 43/45 轮那类缺陷漏掉的双胞胎）：`DrawPerKeyTextSizeBtn`
+  内联拼字符串 + `GUILayout.MinWidth(50)`，而该排每事件最多调用 42 次（8+8+8+16+2）→ 每事件约 84
+  个对象、60fps 下约 1 万/秒，只要折叠面板开着就一直付。**同族的 `DrawPerKeyColorBtn` 本来就是对的**。
+  现按槽缓存标签 + 实例 `GUILayoutOption`（实例是强制的：静态 `GUILayoutOption` 会把 IMGUIModule
+  拖进静态构造）。
+- **颜色页两个数组字面量每事件重建**：颜色页正是人们一直开着的那一页，`string[12]` + `Color[12]`
+  在每个 IMGUI 事件重建。现标签表按语言缓存（与 `DrawTabBar` 同一套）。
+- **第 1/2 排每键字号缺边界守卫**：第 1 排无守卫地索引 `keyCodes[i]`、第 2 排只判了 `b < 8` 就索引
+  `keyCodes[backSequence[b]]`，而紧随其后的**第 3 排循环反倒有守卫**。今天由 `EnsureSettingsArrays`
+  兜住，属纵深防御；但 IMGUI 回调里的越界会让整个设置窗口失效直到重启。另删掉一个从未被显示的
+  `sizeLabel`（每事件一次 `ToString` + 拼接）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

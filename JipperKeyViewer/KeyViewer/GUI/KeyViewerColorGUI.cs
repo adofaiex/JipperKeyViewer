@@ -22,21 +22,45 @@ namespace JipperKeyViewer.KeyViewer
             if (rain != null) rain.RefreshDropColors(Keys);
         }
 
+        /// <summary>Translated colour-slot labels, rebuilt only when the language changes. Plain
+        /// strings — NOT a static GUIContent, which would drag IMGUIModule into the static ctor. /
+        /// 已翻译的颜色槽标签，仅在语言变化时重建。必须是纯字符串——静态 GUIContent 会把 IMGUIModule
+        /// 拖进静态构造。
+        /// </summary>
+        private string[] ColorNames = new string[12];
+        private string colorLabelLang;
+
         private void DrawColorSettings()
         {
             GUILayout.BeginVertical("box");
-            string[] colorNames = {
-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
-                I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
-                I18n.Tr("color_rain1"), I18n.Tr("color_rain2"), I18n.Tr("color_rain3"),
-                I18n.Tr("ghost_rain_color1"), I18n.Tr("ghost_rain_color2"), I18n.Tr("ghost_rain_color3")
-            };
             Color[] defaultColors = {
                 Background, BackgroundClicked, Outline, OutlineClicked,
                 Text, TextClicked,
                 RainColor, RainColor2, RainColor3,
                 GhostRainColorDefault, GhostRainColor2Default, GhostRainColor3Default
             };
+            // Hoisted to static readonly: the Colors tab is the one people leave open, and these
+            // two array literals were rebuilt on EVERY IMGUI event (IMGUI fires Layout + Repaint
+            // per frame). I18n.Tr does not allocate, so the keys can be resolved once per language
+            // and the label table rebuilt only when the language changes — the same caching
+            // DrawTabBar already uses. Must stay non-GUI types: a static GUIContent/GUILayoutOption
+            // would drag UnityEngine.IMGUIModule into this type's static ctor.
+            // 提为 static readonly：颜色页正是人们一直开着的那一页，而这两个数组字面量此前在
+            // **每个** IMGUI 事件（每帧 Layout + Repaint）都重建一次。I18n.Tr 本身不分配，故键可
+            // 按语言解析一次、标签表只在语言变化时重建——与 DrawTabBar 同一套缓存。
+            // 必须保持非 GUI 类型：静态 GUIContent/GUILayoutOption 会把 UnityEngine.IMGUIModule
+            // 拖进本类型的静态构造。
+            if (colorLabelLang != I18n.Lang)
+            {
+                colorLabelLang = I18n.Lang;
+                ColorNames = new[] {
+                    I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
+                    I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
+                    I18n.Tr("color_rain1"), I18n.Tr("color_rain2"), I18n.Tr("color_rain3"),
+                    I18n.Tr("ghost_rain_color1"), I18n.Tr("ghost_rain_color2"), I18n.Tr("ghost_rain_color3")
+                };
+            }
+            string[] colorNames = ColorNames;
             for (int i = 0; i < 12; i++)
             {
                 if (i >= 6 && i < 9 && !Settings.Data.EnableRainEffect)

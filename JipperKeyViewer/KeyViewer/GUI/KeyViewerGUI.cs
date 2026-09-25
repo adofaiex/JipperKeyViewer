@@ -169,5 +169,35 @@ namespace JipperKeyViewer.KeyViewer
             }
             GUILayout.Space(5);
         }
+
+        /// <summary>Re-apply the current rain style to the drops that are already falling, after a
+        /// shadow/outline colour, width or offset was edited.
+        ///
+        /// A drop's shadow/outline state is baked in by CreateRainDropForKey and never re-read per
+        /// frame, so without this every drop already on screen kept the old values and only newly
+        /// spawned ones (one per key press) picked up the change — a visibly two-tone trail, for
+        /// up to ~40 s at height 2000 / speed 50.
+        ///
+        /// Clearing (rather than repainting in place, as RefreshDropColors does for the body colour)
+        /// is the deliberate choice here: the shadow/outline resolution is ~60 lines of row-indexed
+        /// settings reads inside CreateRainDropForKey, and re-implementing it in a second place
+        /// would let the two drift — a divergence that shows up as drops rendering a shadow the
+        /// settings page says is disabled. Every other effect control on the same rain page already
+        /// clears. Both handle a null rain system (overlay disabled) and a null Keys (mid-rebuild).
+        /// 雨排阴影/描边的颜色、宽度、偏移被改动后，让**已在下落**的雨滴套用新样式。
+        ///
+        /// 雨滴的阴影/描边状态由 CreateRainDropForKey 烙入、且从不逐帧重读，故若不做这件事，
+        /// 屏幕上每一滴都保持旧值，只有新生成的（每次按压一滴）才用新值——于是轨迹明显双色，
+        /// 在高度 2000 / 速度 50 下可持续约 40 秒。
+        ///
+        /// 此处刻意**清空**（而非像 RefreshDropColors 对本体色那样就地重绘）：阴影/描边的解析是
+        /// CreateRainDropForKey 里约 60 行按排索引的设置读取，在第二处重新实现会让两者漂移——
+        /// 而漂移的症状正是雨滴渲染出设置页声称已关闭的阴影。同一雨排页上的其它效果控件本来就
+        /// 都清空。两者都能处理雨滴系统为 null（覆盖层关闭）与 Keys 为 null（正在重建）。
+        /// </summary>
+        private void RefreshInFlightDrops()
+        {
+            if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+        }
     }
 }

@@ -173,6 +173,7 @@ namespace JipperKeyViewer.KeyViewer
                     if (newCol != curCol)
                     {
                         SetRowEffect(ghost, isOutline, r, null, newCol, null, null);
+                        RefreshInFlightDrops();
                         SaveSettingsFromGui();
                     }
                 }
@@ -184,6 +185,7 @@ namespace JipperKeyViewer.KeyViewer
                     if (newW != curW)
                     {
                         SetRowEffect(ghost, isOutline, r, null, null, newW, null);
+                        RefreshInFlightDrops();
                         SaveSettingsFromGui();
                     }
                 }
@@ -194,6 +196,7 @@ namespace JipperKeyViewer.KeyViewer
                     if (newX != curX)
                     {
                         SetRowEffect(ghost, isOutline, r, null, null, newX, null);
+                        RefreshInFlightDrops();
                         SaveSettingsFromGui();
                     }
                     float curY = v2;
@@ -201,6 +204,7 @@ namespace JipperKeyViewer.KeyViewer
                     if (newY != curY)
                     {
                         SetRowEffect(ghost, isOutline, r, null, null, null, newY);
+                        RefreshInFlightDrops();
                         SaveSettingsFromGui();
                     }
                 }

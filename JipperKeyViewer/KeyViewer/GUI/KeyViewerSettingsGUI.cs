@@ -305,7 +305,13 @@ namespace JipperKeyViewer.KeyViewer
                 // directory scan. / 展开时刷新而非每事件刷新：IMGUI 每帧触发 Layout+Repaint 多次，
                 // 而这是一次目录扫描。
                 packageListExpanded = !packageListExpanded;
-                if (packageListExpanded) { packageCache = null; SyncProfilesWithDisk(); }
+                // Guarded like the other SyncProfilesWithDisk call site at :195. The bare call
+                // here let a storage exception escape into the GUILayout callback, which leaves
+                // Begin/End groups unbalanced — the settings window mislays and stops responding
+                // until restart — and never set lastSaveError, so not even the red banner appeared.
+                // 磁盘满/只读时抛出的异常会从 GUILayout 回调逃出，留下未闭合的布局组（窗口错乱直到
+                // 重启），且从不设置 lastSaveError，连红色横幅都不出现。
+                if (packageListExpanded) { packageCache = null; GuardedSave("the profile list", SyncProfilesWithDisk); }
             }
             if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f)))
             {
@@ -558,18 +564,38 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawFolderButtons()
         {
             GUILayout.BeginHorizontal();
+            // Both branches are wrapped, matching the structurally identical Packages (:312) and
+            // DmNote (:367) folder buttons a few hundred lines down. CreateDirectory throws
+            // UnauthorizedAccessException on a read-only mod folder — precisely the situation
+            // Loader.ResolveModPath falls back to — and Process.Start throws Win32Exception where
+            // explorer.exe cannot be launched; either one escaping a GUILayout callback unbalances
+            // the Begin/End groups and disables the whole settings window until restart, with no
+            // banner (these paths are not saves, so there is no lastSaveError to show).
+            // 两处都加保护，与几百行外结构完全相同的 Packages(:312) 与 DmNote(:367) 按钮一致。
+            // 只读 Mod 目录下 CreateDirectory 抛 UnauthorizedAccessException（正是 ResolveModPath
+            // 要回退的那种情况），explorer.exe 起不来时 Process.Start 抛 Win32Exception；任一者从
+            // GUILayout 回调逃出都会让布局组失衡、整个设置窗口失效直到重启，且没有横幅可显示
+            // （这些路径不是保存，不存在 lastSaveError）。
             if (GUILayout.Button(I18n.Tr("open_config_folder"), GUILayout.MinWidth(120)))
             {
-                string dir = Path.GetDirectoryName(ConfigPath);
-                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
-                    System.Diagnostics.Process.Start("explorer.exe", dir);
+                try
+                {
+                    string dir = Path.GetDirectoryName(ConfigPath);
+                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                        System.Diagnostics.Process.Start("explorer.exe", dir);
+                }
+                catch (Exception e) { Loader.Error($"KeyViewer: could not open the config folder: {e.Message}"); }
             }
             if (GUILayout.Button(I18n.Tr("open_font_folder"), GUILayout.MinWidth(120)))
             {
-                string modPath = Loader.ResolveModPath();
-                string customFontDir = Path.Combine(modPath, "CustomFont");
-                if (!Directory.Exists(customFontDir)) Directory.CreateDirectory(customFontDir);
-                System.Diagnostics.Process.Start("explorer.exe", customFontDir);
+                try
+                {
+                    string modPath = Loader.ResolveModPath();
+                    string customFontDir = Path.Combine(modPath, "CustomFont");
+                    if (!Directory.Exists(customFontDir)) Directory.CreateDirectory(customFontDir);
+                    System.Diagnostics.Process.Start("explorer.exe", customFontDir);
+                }
+                catch (Exception e) { Loader.Error($"KeyViewer: could not open the font folder: {e.Message}"); }
             }
             GUILayout.EndHorizontal();
 
@@ -756,6 +782,15 @@ namespace JipperKeyViewer.KeyViewer
 
         // ===== Per-key text size section / 每键字号 区块 =====
         int perKeyTextSelected = -1;
+        /// <summary>Per-slot cached button label for DrawPerKeyTextSizeBtn, plus the cached
+        /// GUILayoutOption. Both must be INSTANCE fields: a static GUILayoutOption would drag
+        /// UnityEngine.IMGUIModule into this type's static constructor and make every caller need
+        /// that assembly (the Harness fails to load the type immediately). / 每槽缓存的按钮标签与
+        /// 宽度。两者都必须是**实例**字段：静态 GUILayoutOption 会把 UnityEngine.IMGUIModule 拖进
+        /// 本类型的静态构造，使每个调用方都需要该程序集（Harness 会立刻加载失败）。
+        /// </summary>
+        private readonly PerKeyTextSizeBtnLabel[] perKeyTextSizeBtnLabels = new PerKeyTextSizeBtnLabel[MaxKeySlots + 2];
+        private GUILayoutOption perKeyTextSizeMinWidth;
         bool perKeyTextExpanded = false;
 
         private void DrawPerKeyTextSizeSection()
@@ -789,6 +824,22 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.BeginVertical("box");
                 KeyCode[] keyCodes = GetKeyCode();
                 KeyCode[] footKeyCodes = GetFootKeyCode();
+                // Same guard the per-key COLOUR panel has (KeyViewerColorGUI.cs:330). Row 1 indexed
+                // keyCodes[i] unguarded and row 2 indexed keyCodes[backSequence[b]] with only the
+                // `b < 8` bound — while the row-3 loop right below DID guard the same thing. Today
+                // EnsureSettingsArrays forces both arrays to their exact default lengths, so this is
+                // defence in depth rather than a live crash; but an IndexOutOfRangeException inside
+                // an IMGUI callback disables the whole settings window until restart, so any future
+                // path that swaps Settings.Data without EnsureSettingsArrays would be very
+                // expensive. / 与每键**颜色**面板同款守卫。第 1 排无守卫地索引 keyCodes[i]、第 2 排
+                // 只判了 `b < 8` 就索引 keyCodes[backSequence[b]]，而紧随其后的第 3 排循环**反倒**
+                // 有守卫。今天 EnsureSettingsArrays 会把两个数组强制成精确默认长度，故这是纵深
+                // 防御而非现存崩溃；但 IMGUI 回调里的越界会让整个设置窗口失效直到重启。
+                if (keyCodes == null || keyCodes.Length < 8)
+                {
+                    GUILayout.EndVertical();
+                    return;
+                }
 
                 GUILayout.Label(I18n.Tr("row1_keys") + ":");
                 GUILayout.BeginHorizontal();
@@ -796,16 +847,17 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.EndHorizontal();
 
                 byte[] backSequence = GetBackSequence();
-                if (backSequence.Length > 0)
+                if (backSequence != null && backSequence.Length > 0)
                 {
                     GUILayout.Label(I18n.Tr("row2_keys") + ":");
                     GUILayout.BeginHorizontal();
                     for (int b = 0; b < backSequence.Length && b < 8; b++)
-                        DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                        if (backSequence[b] < keyCodes.Length)
+                            DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
                     GUILayout.EndHorizontal();
                 }
 
-                if (backSequence.Length > 8)
+                if (backSequence != null && backSequence.Length > 8)
                 {
                     GUILayout.Label(I18n.Tr("row3_keys") + ":");
                     GUILayout.BeginHorizontal();
@@ -857,10 +909,37 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawPerKeyTextSizeBtn(int idx, string label)
         {
             bool selected = perKeyTextSelected == idx;
-            if (GUILayout.Button((selected ? "[ " : "  ") + label + (selected ? " ]" : ""), GUILayout.MinWidth(50)))
+            if (perKeyTextSizeMinWidth == null) perKeyTextSizeMinWidth = GUILayout.MinWidth(50);
+            // Cached label + cached width, so an open foldout costs zero allocations per IMGUI event.
+            // This row is up to 42 calls per event (8 + 8 + 8 + 16 + 2), and the previous inline
+            // string concatenation plus GUILayout.MinWidth allocated 2 objects each time — the same
+            // defect class already fixed in FloatSliderField and DrawTabBar, missed on the per-key
+            // TEXT-SIZE twin of DrawPerKeyColorBtn (which does it right). 缓存标签与宽度，使展开状态
+            // 下每个 IMGUI 事件零分配。该排每事件最多调用 42 次（8+8+8+16+2），此前的内联字符串
+            // 拼接加 GUILayout.MinWidth 每次分配 2 个对象——与 FloatSliderField/DrawTabBar 已修的
+            // 同类缺陷，只是漏在了每键**字号**这一支（颜色那一支本来就是对的）。
+            PerKeyTextSizeBtnLabel cached = perKeyTextSizeBtnLabels[idx];
+            if (perKeyTextSizeBtnLabels[idx] == null
+                || !perKeyTextSizeBtnLabels[idx].Key.Equals(label, StringComparison.Ordinal)
+                || perKeyTextSizeBtnLabels[idx].Selected != selected)
+            {
+                perKeyTextSizeBtnLabels[idx] = new PerKeyTextSizeBtnLabel(
+                    (selected ? "[ " : "  ") + label + (selected ? " ]" : ""), label, selected);
+                cached = perKeyTextSizeBtnLabels[idx];
+            }
+            if (GUILayout.Button(cached.Label, perKeyTextSizeMinWidth))
             {
                 perKeyTextSelected = perKeyTextSelected == idx ? -1 : idx;
             }
+        }
+
+        private sealed class PerKeyTextSizeBtnLabel
+        {
+            public readonly string Label;
+            public readonly string Key;
+            public readonly bool Selected;
+            public PerKeyTextSizeBtnLabel(string label, string key, bool selected)
+            { Label = label; Key = key; Selected = selected; }
         }
 
         private void DrawPerKeyTextSizeEditor(int s)
@@ -869,9 +948,15 @@ namespace JipperKeyViewer.KeyViewer
             string label = s == MaxKeySlots ? "KPS" : s == MaxKeySlots + 1 ? "Total" : "Key " + s;
             GUILayout.Label("<b>" + label + " " + I18n.Tr("key_font_size") + "</b>");
 
-            // Font size: 0 = use global, 1-72 = per-key override
+            // Font size: 0 = use global, 1-72 = per-key override.
+            // The PerKeyFontSize length check is done by the caller, not repeated here: this local
+            // used to index it unguarded on a path an IMGUI exception would take the whole window
+            // down over. It also built a `sizeLabel` string that nothing ever displayed — a
+            // ToString plus a concatenation per event for as long as a key stayed selected.
+            // 字号：0 = 跟随全局，1-72 = 每键覆盖。PerKeyFontSize 的长度检查由调用方负责，不在此
+            // 重复：此前的本地变量在一条会让整个窗口崩掉的路径上无守卫地索引它。它还拼了一个
+            // 从未被显示的 sizeLabel 字符串——选中某个键期间每事件一次 ToString 加拼接。
             float curSize = s < Settings.Data.PerKeyFontSize.Length ? Settings.Data.PerKeyFontSize[s] : 0f;
-            string sizeLabel = curSize <= 0f ? "(Global: " + Settings.Data.KeyFontSize.ToString("F0") + ")" : curSize.ToString("F0");
             float newSize = FloatSliderField(label + " " + I18n.Tr("key_font_size"), curSize, 0f, 72f, "F0");
             if (newSize != curSize)
             {
