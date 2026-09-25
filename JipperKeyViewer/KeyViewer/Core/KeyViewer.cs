@@ -1899,6 +1899,19 @@ namespace JipperKeyViewer.KeyViewer
                         ResetKeyViewer();
                         UpdateAllFonts();
                         UpdateAllKeyColors();
+                        // Mirror the success path above. ResetKeyViewer rebuilds the keys but does
+                        // NOT re-derive the per-slot KPS logs, so without this they survive a failed
+                        // switch holding a blend of both profiles' readings: the new profile's keys
+                        // were already pressed and written into the same slot-indexed arrays before
+                        // the rebuild threw, and the old profile's panels then display them until the
+                        // rate window fills. Clearing says "we do not know what was on screen",
+                        // which is the honest state after a switch that did not happen.
+                        // 与上方成功路径保持对称。ResetKeyViewer 重建按键但**不**重新推导每槽位的
+                        // KPS 记录，故不做这一步，一次失败的切换后它们会残留两个配置读数的混合：新
+                        // 配置的按键在重建抛异常前已经被写入同一批按槽位索引的数组，而旧配置的面板
+                        // 会把它们显示出来，直到速率窗口被填满。清空即承认「不知道屏幕上原本是什
+                        // 么」——这正是一次**没有发生**的切换之后该有的状态。
+                        ClearKpsTimers();
                     }
                 }
                 catch (Exception rollbackError)
