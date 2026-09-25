@@ -491,6 +491,33 @@
 - Harness 增至 120 项（含 `EditorGroupExists` 纯函数形式的 4 条：活组接受、死组拒绝、空组恒存在、
   无组时任何非空 id 都是死组）。
 
+### OnGUI 分配与雨滴清理（2026-09-26，第 45 轮）
+- **`DrawTabBar` 每 IMGUI 事件 7 个对象**：`string[6]` 字面量 + 六次 `"tab_" + key` 拼接，
+  在**一直开着**的那个窗口上每帧持续分配。现 i18n 键表提为静态、已翻译标签按语言缓存。
+- **`DrawPerKeyColorEditor` 每按键每事件 3 个数组**：`string[8]` + `Color[8]` × 2 的数组字面量，
+  24 个按键 × 每帧 ≥2 事件即每帧 150+ 个对象，就在 Colors 页上。现改为三个复用暂存数组。
+- **`DrawPerKeyCountReset` 每按键每事件 3 次分配**：`Count[s].ToString()`、控件名拼接、
+  以及 `"reset_counts" + " (" + n + ")"` 的两次拼接——包括用户根本没滚到的按键。现按钮文本按
+  其显示的计数缓存、控件名按槽位预展开。
+- **`DrawColorPicker` 每取色器每事件约 11 次分配**：五个 `"prefix" + n` 拼接、四次
+  `channel.ToString("F2")`（Layout 与 Repaint 各格式化一次同一个值）、以及
+  `ColorToHex` 的插值串。现两个前缀是封闭集合故控件名预展开成表、通道回显只在值变化时重建、
+  Hex 串按颜色哈希缓存（有界 512 条）。
+- **静态初始化器把 IMGUI 拖进类型加载**：`static readonly GUILayoutOption` 会在该分部类首次被
+  触碰时运行静态构造，使**从不绘制界面的**调用方也需要 `UnityEngine.IMGUIModule`——Harness
+  立刻以程序集加载失败暴露了这一点。凡是 IMGUI 类型的缓存宽度/内容一律用**实例**字段。
+- **关掉雨滴后在途雨滴冻结**：`UpdateEffects` 不再跑，所有在途雨滴停在原地、合并 mesh 定格在最后
+  一帧的顶点，用户重新打开时会看到雨滴在半空"复活"。固定布局与自定义布局两条路径都改为关闭时
+  `ClearActiveDrops`（与 GUI 里其它雨滴子开关的做法一致）。
+- **`KvTextStyle.KeyViewerApplier` 静态委托在 `OnDestroy` 未摘除**：它是赋值故从不重复注册，
+  但会让静态字段在本组件销毁后仍持有它直到进程结束，此后任何 `Apply` 调用都会写向死组件。
+  现 `OnDestroy` 对称清理。
+- **刻意不改**：合并 shape mesh 每次按键全量重建。`OnPopulateMesh` 以 `VertexHelper.Clear()`
+  为前提，而 uGUI 的 `VertexHelper` **没有区间重建**能力，故「只重建脏区间」无法在单一合并 mesh
+  的架构下实现；为它拆成多个 mesh 会增加绘制批次，代价远大于收益。同理，按压动画的协程改为
+  字段驱动统一 tick 触及动画语义本身，而它每次按键边沿只分配 2 个迭代器（20 KPS 约 40/秒），
+  收益不足以承担按压缩放出现异常的风险。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

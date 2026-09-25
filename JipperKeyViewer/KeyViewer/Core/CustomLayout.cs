@@ -1704,6 +1704,14 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             if (rainEnabled) rainSystem.UpdateEffects(Keys);
+            // Same reason as the fixed layout: without this, turning rain off mid-play left every
+            // in-flight drop frozen, the merged mesh stuck on its last vertices, and the user saw
+            // the drops "come back to life" in mid-air when the toggle came back on. The other rain
+            // sub-toggles in the GUI already clear their drops the same way.
+            // 与固定布局同理：不加这句，游玩中关掉雨滴会让所有在途雨滴冻结、合并 mesh 停在最后
+            // 一帧的顶点，用户重新打开时会看到雨滴在半空"复活"。GUI 里其它雨滴子开关本就以同样
+            // 方式清理。
+            else rainSystem.ClearActiveDrops(Keys);
         }
 
         private void ApplyCustomKeyEdge(Key key, FmNode node, bool down, long timeMs, ProfileData d)

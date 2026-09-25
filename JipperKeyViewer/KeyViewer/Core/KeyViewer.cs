@@ -462,6 +462,13 @@ namespace JipperKeyViewer.KeyViewer
             SceneManager.sceneLoaded -= OnSceneLoaded;
             rainSystem?.ClearAll(Keys);
             ReleaseTextStyleMaterials();
+            // Unhook the static bridge KvTextStyle.Apply routes through. It is an ASSIGNMENT, so it
+            // never double-registered — but it left a static field holding this (now destroyed)
+            // component for the rest of the process, and any Apply call after teardown would write
+            // through it. / 摘掉 KvTextStyle.Apply 转发所用的静态桥接。它是**赋值**故从不重复注册，
+            // 但会让静态字段在本组件销毁后仍持有它直到进程结束，此后任何 Apply 调用都会写向死组件。
+            if (Rendering.KvTextStyle.KeyViewerApplier.Apply != null)
+                Rendering.KvTextStyle.KeyViewerApplier.Apply = null;
         }
 
         /// <summary>
@@ -547,6 +554,7 @@ namespace JipperKeyViewer.KeyViewer
                     ProcessMainAndFootKeysInUpdate(now); // Detect key presses / 检测按键按下
                     ProcessGhostKeysInUpdate();          // Process ghost key inputs / 处理鬼键输入
                     if (Settings.Data.EnableRainEffect) rainSystem.UpdateEffects(Keys); // Update rain drop positions / 更新雨滴位置
+                    else rainSystem.ClearActiveDrops(Keys); // 清掉在途雨滴
                 }
                 ProcessKpsInUpdate(now);            // Update KPS counter / 更新 KPS 计数器
                 ProcessPerKeyKpsInUpdate(now);       // Update per-key KPS / 更新每键 KPS

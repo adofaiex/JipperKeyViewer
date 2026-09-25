@@ -126,14 +126,30 @@ namespace JipperKeyViewer.KeyViewer
         /// Category tab bar (3-column grid so it wraps cleanly on narrow UMM panels) / 分类标签栏(3 列网格,窄面板下自动换行)
         /// Active tab persists across sessions via Settings.UiTab / 当前标签跨会话记忆(通过 Settings.UiTab)
         /// </summary>
+        /// <summary>Stable i18n keys per tab, in tab order / 每个标签页的固定 i18n 键（按标签顺序）
+        /// </summary>
+        private static readonly string[] TabKeys = { "general", "layout", "display", "rain", "keys", "colors" };
+
+        /// <summary>Translated tab labels, rebuilt only when the UI language changes. The old code
+        /// allocated a string[6] plus six "tab_" + key concatenations on EVERY IMGUI event, i.e.
+        /// seven objects per event, every event, for the whole session — on the window that is
+        /// always open. / 已翻译的标签文本，仅在界面语言变化时重建。旧代码在**每个** IMGUI 事件
+        /// 都分配一个 string[6] 加六次「"tab_" + 键」拼接，即每事件 7 个对象，整个会话持续不断
+        /// ——而这个窗口一直是开着的。</summary>
+        private string[] cachedTabLabels;
+        private string cachedTabLang;
+
         private void DrawTabBar()
         {
-            string[] keys = { "general", "layout", "display", "rain", "keys", "colors" };
-            string[] labels = new string[TabCount];
-            for (int i = 0; i < TabCount; i++)
-                labels[i] = I18n.Tr("tab_" + keys[i]);
+            if (cachedTabLabels == null || cachedTabLang != I18n.Lang)
+            {
+                cachedTabLang = I18n.Lang;
+                cachedTabLabels = new string[TabCount];
+                for (int i = 0; i < TabCount; i++)
+                    cachedTabLabels[i] = I18n.Tr("tab_" + TabKeys[i]);
+            }
 
-            int newTab = GUILayout.SelectionGrid(settingsGuiTab, labels, 3);
+            int newTab = GUILayout.SelectionGrid(settingsGuiTab, cachedTabLabels, 3);
             if (newTab != settingsGuiTab)
             {
                 // Cancel an armed rebind when leaving the Keys tab — the capture gate alone

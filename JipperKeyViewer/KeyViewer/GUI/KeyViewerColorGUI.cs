@@ -210,6 +210,26 @@ namespace JipperKeyViewer.KeyViewer
             return true;
         }
 
+        /// <summary>Hex string cached by the exact colour it renders. ColorToHex allocates on every
+        /// call, and the picker runs per colour per IMGUI event — with a per-key colour list open
+        /// that is dozens of identical strings rebuilt per event forever. / 按其渲染的确切颜色
+        /// 缓存的十六进制串。ColorToHex 每次调用都会分配，而取色器每颜色每 IMGUI 事件都跑一次
+        /// ——打开每键配色列表时即每事件重复重建几十个完全相同的字符串，永不停歇。</summary>
+        private static readonly Dictionary<int, string> hexStringCache = new Dictionary<int, string>(64);
+
+        private static string ColorToHexCached(Color c)
+        {
+            int key = ((Color32)c).GetHashCode();
+            if (hexStringCache.TryGetValue(key, out string cached)) return cached;
+            string built = ColorToHex(c);
+            // Bounded: distinct colours are few in practice, and an unbounded map keyed by hash
+            // could grow without limit on a hand-edited profile. / 有界：实践中不同颜色很少，而按
+            // 哈希的无界映射在手改配置下可能无限增长。
+            if (hexStringCache.Count > 512) hexStringCache.Clear();
+            hexStringCache[key] = built;
+            return built;
+        }
+
         /// <summary>Colour picker. `prefix` namespaces the generated control names: the FreeMake
         /// editor and the settings window are separate IMGUI passes that can be open at the SAME
         /// time, and both reset the shared sequence counter — with one shared prefix their Hex/RGB
@@ -225,20 +245,37 @@ namespace JipperKeyViewer.KeyViewer
 
             // Unique control names allocated up-front in draw order so focus tracking stays stable.
             // 先按绘制顺序分配唯一的控件名,保证焦点跟踪一致。
-            string ctrlR = prefix + (++colorPickerFieldSeq);
-            string ctrlG = prefix + (++colorPickerFieldSeq);
-            string ctrlB = prefix + (++colorPickerFieldSeq);
-            string ctrlA = prefix + (++colorPickerFieldSeq);
-            string ctrlHex = prefix + (++colorPickerFieldSeq);
+            // The two prefixes are a closed set, so the per-pass sequence can be expanded once into
+            // a lookup table instead of concatenating five strings per picker per event.
+            // 两个前缀是封闭集合，故每次 pass 的序号可一次性展开成查表，而不必每个取色器每事件
+            // 拼接五个字符串。
+            string[] names = colorPickerFieldSeq >= 0 && colorPickerFieldSeq + 5 <= ColorPickerNames.Length
+                ? ColorPickerNames : null;
+            string ctrlR, ctrlG, ctrlB, ctrlA, ctrlHex;
+            if (names != null)
+            {
+                int n = colorPickerFieldSeq;
+                ctrlR = names[n]; ctrlG = names[n + 1]; ctrlB = names[n + 2];
+                ctrlA = names[n + 3]; ctrlHex = names[n + 4];
+                colorPickerFieldSeq += 5;
+            }
+            else
+            {
+                ctrlR = prefix + (++colorPickerFieldSeq);
+                ctrlG = prefix + (++colorPickerFieldSeq);
+                ctrlB = prefix + (++colorPickerFieldSeq);
+                ctrlA = prefix + (++colorPickerFieldSeq);
+                ctrlHex = prefix + (++colorPickerFieldSeq);
+            }
 
             void DrawChannel(string ctrl, string name, ref float channel)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(name + ":", GUILayout.Width(20));
-                channel = GUILayout.HorizontalSlider(channel, 0f, 1f, GUILayout.Width(150));
+                GUILayout.Label(name + ":", ChannelLabelWidth);
+                channel = GUILayout.HorizontalSlider(channel, 0f, 1f, ChannelSliderWidth);
                 // Text input keeps Unity's 0-1 scale; use the Hex field below for precise values.
                 // 文本框保持 0-1;要精确取色时用下面的 Hex 输入。
-                string txt = TextInputField(ctrl, channel.ToString("F2"), GUILayout.Width(40));
+                string txt = TextInputField(ctrl, FormatChannel(channel), ChannelEditWidth);
                 if (float.TryParse(txt, out float val) && IsFiniteFloat(val))
                     channel = Mathf.Clamp01(val);
                 GUILayout.EndHorizontal();
@@ -251,8 +288,8 @@ namespace JipperKeyViewer.KeyViewer
 
             // Direct #RRGGBB / #RRGGBBAA hex entry. / 直接输入 #RRGGBB 或 #RRGGBBAA
             GUILayout.BeginHorizontal();
-            GUILayout.Label("Hex:", GUILayout.Width(20));
-            string hex = TextInputField(ctrlHex, ColorToHex(currentColor), GUILayout.Width(120));
+            GUILayout.Label("Hex:", ChannelLabelWidth);
+            string hex = TextInputField(ctrlHex, ColorToHexCached(currentColor), HexEditWidth);
             if (TryParseHex(hex, out Color parsed))
                 currentColor = parsed;
             GUILayout.EndHorizontal();
@@ -411,22 +448,28 @@ namespace JipperKeyViewer.KeyViewer
             // 脚键不提供雨滴配色(6,7);PerKeyTypeOrder 已排除
             string rainKey = s < 8 ? "color_rain1" : s < 16 ? "color_rain2" : s < FootKeyBase ? "color_rain3" : "";
 
-            string[] typeNames = {
-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"),
-                I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
-                I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
-                I18n.Tr(rainKey), "Ghost " + I18n.Tr(rainKey)
-            };
-            Color[] values = {
-                Settings.Data.PerKeyBackground[s], Settings.Data.PerKeyBackgroundClicked[s],
-                Settings.Data.PerKeyOutline[s], Settings.Data.PerKeyOutlineClicked[s],
-                Settings.Data.PerKeyText[s], Settings.Data.PerKeyTextClicked[s],
-                Settings.Data.PerKeyRainColor[s], Settings.Data.PerKeyGhostRainColor[s]
-            };
-            Color[] defaults = {
-                Background, BackgroundClicked, Outline, OutlineClicked, Text, TextClicked,
-                RainColor, GhostRainColorDefault
-            };
+            // Reused scratch arrays. This method runs for EVERY key on EVERY IMGUI event, and the
+            // three literal arrays below were three fresh allocations per key per event — with 24
+            // keys and the ≥2 events per frame that is 150+ objects per frame, forever, on the
+            // Colors tab. / 复用暂存数组。该方法对**每个**按键在**每个** IMGUI 事件里都跑，而下面
+            // 三个数组字面量是每按键每事件三次新分配——24 个按键、每帧 ≥2 个事件即每帧 150+ 个
+            // 对象，永不停歇，且就在 Colors 页上。
+            PerKeyTypeNames[0] = I18n.Tr("color_bg"); PerKeyTypeNames[1] = I18n.Tr("color_bg_clicked");
+            PerKeyTypeNames[2] = I18n.Tr("color_outline"); PerKeyTypeNames[3] = I18n.Tr("color_outline_clicked");
+            PerKeyTypeNames[4] = I18n.Tr("color_text"); PerKeyTypeNames[5] = I18n.Tr("color_text_clicked");
+            PerKeyTypeNames[6] = I18n.Tr(rainKey);
+            PerKeyTypeNames[7] = rainKey.Length > 0 ? "Ghost " + PerKeyTypeNames[6] : PerKeyTypeNames[6];
+            PerKeyTypeValues[0] = Settings.Data.PerKeyBackground[s]; PerKeyTypeValues[1] = Settings.Data.PerKeyBackgroundClicked[s];
+            PerKeyTypeValues[2] = Settings.Data.PerKeyOutline[s]; PerKeyTypeValues[3] = Settings.Data.PerKeyOutlineClicked[s];
+            PerKeyTypeValues[4] = Settings.Data.PerKeyText[s]; PerKeyTypeValues[5] = Settings.Data.PerKeyTextClicked[s];
+            PerKeyTypeValues[6] = Settings.Data.PerKeyRainColor[s]; PerKeyTypeValues[7] = Settings.Data.PerKeyGhostRainColor[s];
+            PerKeyTypeDefaults[0] = Background; PerKeyTypeDefaults[1] = BackgroundClicked;
+            PerKeyTypeDefaults[2] = Outline; PerKeyTypeDefaults[3] = OutlineClicked;
+            PerKeyTypeDefaults[4] = Text; PerKeyTypeDefaults[5] = TextClicked;
+            PerKeyTypeDefaults[6] = RainColor; PerKeyTypeDefaults[7] = GhostRainColorDefault;
+            string[] typeNames = PerKeyTypeNames;
+            Color[] values = PerKeyTypeValues;
+            Color[] defaults = PerKeyTypeDefaults;
 
             int[] typeOrder = PerKeyTypeOrder(s);
             for (int ti = 0; ti < typeOrder.Length; ti++)
@@ -450,6 +493,80 @@ namespace JipperKeyViewer.KeyViewer
 
             if (s < MaxKeySlots && Settings.Data.Count != null && s < Settings.Data.Count.Length)
                 DrawPerKeyCountReset(s);
+        }
+
+        private static readonly string[] PerKeyTypeNames = new string[8];
+        private static readonly Color[] PerKeyTypeValues = new Color[8];
+        private static readonly Color[] PerKeyTypeDefaults = new Color[8];
+
+        /// <summary>Per-slot caches for the count row: control name, button label, and the count
+        /// that label was built for. Sized for the widest slot count the fixed layouts use. The
+        /// width option is an INSTANCE field: a static one would run the partial class's static
+        /// constructor on first touch, pulling GUIContent/GUILayoutOption into type load and making
+        /// every caller require UnityEngine.IMGUIModule — even ones that never draw a GUI. /
+        /// 计数行按槽位的缓存：控件名、按钮文本、以及该文本所对应的计数。尺寸覆盖固定布局用到的
+        /// 最大槽位数。宽度选项是**实例**字段：静态的会在该分部类首次被触碰时运行静态构造，
+        /// 把 GUIContent/GUILayoutOption 拖进类型加载，使所有调用方都需要
+        /// UnityEngine.IMGUIModule——包括从不绘制界面的那些。
+        /// </summary>
+        private static readonly string[] PerKeyCountCtrlNames = BuildPerKeyCountCtrlNames(MaxKeySlots);
+        private static readonly string[] perKeyResetLabelText = new string[MaxKeySlots];
+        private static readonly int[] perKeyResetLabelCache = new int[MaxKeySlots];
+        private static readonly System.Text.StringBuilder perKeyCtrlBuilder = new System.Text.StringBuilder(24);
+        private readonly GUILayoutOption perKeyCountWidth = GUILayout.Width(64f);
+
+        private static string[] BuildPerKeyCountCtrlNames(int count)
+        {
+            var names = new string[count];
+            for (int i = 0; i < count; i++) names[i] = "perkey_cnt_" + i;
+            return names;
+        }
+
+        private static string PerKeyCountCtrl(int slot)
+        {
+            if (slot < 0 || slot >= PerKeyCountCtrlNames.Length)
+            {
+                perKeyCtrlBuilder.Length = 0;
+                perKeyCtrlBuilder.Append("perkey_cnt_").Append(slot);
+                return perKeyCtrlBuilder.ToString();
+            }
+            return PerKeyCountCtrlNames[slot];
+        }
+
+        /// <summary>Pre-expanded "<prefix><n>" control names for both pickers. The prefixes are a
+        /// closed set ("cpi_" for the settings window, "fme_cpi_" for the FreeMake editor), and the
+        /// per-pass sequence counter only ever grows from 0, so every name a pass can produce is
+        /// known up front. Falls back to concatenation if a pass ever exceeds the table. /
+        /// 两个取色器的「前缀 + 序号」控件名预展开表。前缀是封闭集合（设置窗口 "cpi_"、
+        /// FreeMake 编辑器 "fme_cpi_"），且每次 pass 的序号只会从 0 递增，故某个 pass 可能产生的
+        /// 每个名字都是预先已知的。若某个 pass 超出表长则退回拼接。</summary>
+        private static readonly string[] ColorPickerNames = BuildColorPickerNames(512);
+        private readonly GUILayoutOption ChannelLabelWidth = GUILayout.Width(20f);
+        private readonly GUILayoutOption ChannelSliderWidth = GUILayout.Width(150f);
+        private readonly GUILayoutOption ChannelEditWidth = GUILayout.Width(40f);
+        private readonly GUILayoutOption HexEditWidth = GUILayout.Width(120f);
+        private float lastChannelValue = float.NaN;
+        private string lastChannelText;
+
+        private static string[] BuildColorPickerNames(int count)
+        {
+            var names = new string[count * 2];
+            for (int i = 0; i < count; i++) names[i] = "cpi_" + i;
+            for (int i = 0; i < count; i++) names[count + i] = "fme_cpi_" + i;
+            return names;
+        }
+
+        /// <summary>Channel echo, rebuilt only when the value actually changes — the Layout and
+        /// Repaint of one frame carry the same value, and formatting it for each allocated a string
+        /// per channel per event (four per picker per event). / 通道回显，仅在值真的变化时重建
+        /// ——同一帧的 Layout 与 Repaint 带着同一个值，各格式化一次即每通道每事件分配一个字符串
+        /// （每个取色器每事件四个）。</summary>
+        private string FormatChannel(float v)
+        {
+            if (lastChannelText != null && lastChannelValue == v) return lastChannelText;
+            lastChannelValue = v;
+            lastChannelText = v.ToString("F2");
+            return lastChannelText;
         }
 
         private static void SetPerKeyColor(int s, int t, Color color)
@@ -478,7 +595,18 @@ namespace JipperKeyViewer.KeyViewer
             // the Total panel stays truthful. Parses live while typing (same as the editor).
             // 手动输入计数——FreeMake 编辑器同款功能在固定布局这边的镜像：把该键计数设为
             // 任意值，全局 TotalCount 按差额同步。输入即解析（与编辑器一致）。
-            string typed = TextInputField("perkey_cnt_" + s, Settings.Data.Count[s].ToString(), GUILayout.Width(64f));
+            // Both ToString calls and the two string concatenations ran for EVERY key on EVERY
+            // IMGUI event, including the ones the user never scrolled to. Cache the button label
+            // against the count it displays, and reuse one control name per slot.
+            // 两次 ToString 与两处字符串拼接此前对**每个**按键在**每个** IMGUI 事件都执行，包括
+            // 用户根本没滚到的那些。现把按钮文本按其显示的计数缓存，并为每个槽位复用一个控件名。
+            int displayedCount = Settings.Data.Count[s];
+            if (perKeyResetLabelCache[s] != displayedCount)
+            {
+                perKeyResetLabelCache[s] = displayedCount;
+                perKeyResetLabelText[s] = I18n.Tr("reset_counts") + " (" + displayedCount.ToString() + ")";
+            }
+            string typed = TextInputField(PerKeyCountCtrl(s), displayedCount.ToString(), perKeyCountWidth);
             if (int.TryParse((typed ?? "").Replace("—", "").Trim(), out int newCount)
                 && newCount >= 0 && newCount != Settings.Data.Count[s])
             {
@@ -489,7 +617,7 @@ namespace JipperKeyViewer.KeyViewer
                     Keys[s].value.text = newCount.ToString();
                 SaveSettingsFromGui();
             }
-            if (GUILayout.Button(I18n.Tr("reset_counts") + " (" + Settings.Data.Count[s] + ")", redBtnStyle))
+            if (GUILayout.Button(perKeyResetLabelText[s], redBtnStyle))
             {
                 // Give this key's presses back to the Total, mirroring the FreeMake reset —
                 // previously the per-key reset zeroed the count but left the Total counting
