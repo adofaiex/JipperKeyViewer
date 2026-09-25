@@ -98,17 +98,29 @@ namespace JipperKeyViewer.KeyViewer
             // 只有两处：ApplyCustomKeyEdge（一次按压，下方增量）与 RecalculateCustomTotalCount
             // （结构/成员变化，令缓存失效并重建）。重建后的首次使用走惰性构建，故该表始终由
             // 实时文档推导而来。
-            if (!groupTotalsValid) RebuildGroupTotals();
+            if (!groupTotalsValid || !ReferenceEquals(groupTotalsSource, Settings.Data)) RebuildGroupTotals();
             groupTotals.TryGetValue(g, out long cached);
             return cached;
         }
 
         private readonly Dictionary<string, long> groupTotals = new Dictionary<string, long>(StringComparer.Ordinal);
         private bool groupTotalsValid;
+        /// <summary>The ProfileData instance the table was derived from. Keying validity on the
+        /// document identity — not just on "did someone remember to call us" — makes the cache
+        /// self-healing: any path that swaps Settings.Data (Profile switch, preset apply, .jkv
+        /// import, DmNote import, a failed import's rollback) invalidates it automatically, even if
+        /// that path never heard of this table. Without it, a missed invalidation would show a
+        /// group total that silently disagrees with the document for the rest of the session.
+        /// 该表所依据的 ProfileData 实例。以**文档身份**（而不只是「有没有人记得调我们」）作为
+        /// 有效性判据，使缓存自愈：任何换掉 Settings.Data 的路径（切换配置、套用预设、.jkv
+        /// 导入、DmNote 导入、导入失败的回滚）都会自动失效，即便那条路径根本不知道这张表的存在。
+        /// 否则一次漏掉的失效会让某个组总数在**本次会话余下时间**里与文档静默不符。
+        /// </summary>
+        private ProfileData groupTotalsSource;
 
         private void BumpGroupTotal(string groupId, long delta)
         {
-            if (!groupTotalsValid) return; // a rebuild is pending; it recomputes from the document
+            if (!groupTotalsValid || !ReferenceEquals(groupTotalsSource, Settings.Data)) return;
             string g = groupId ?? "";
             long current = groupTotals.TryGetValue(g, out long v) ? v : 0L;
             current += delta;
@@ -135,6 +147,7 @@ namespace JipperKeyViewer.KeyViewer
                     groupTotals[g] = current;
                 }
             }
+            groupTotalsSource = Settings.Data;
             groupTotalsValid = true;
         }
 

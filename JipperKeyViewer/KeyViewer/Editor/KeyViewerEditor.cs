@@ -219,8 +219,20 @@ namespace JipperKeyViewer.KeyViewer
             fmPropsScroll = GUILayout.BeginScrollView(fmPropsScroll, GUILayout.Height(280f));
             DrawEditorProperties();
             GUILayout.EndScrollView();
-            EndTextInputPass();
-
+            // EditorGcBuffers() below is this window's scoped sweep. Calling the shared
+            // EndTextInputPass() here was wrong: it skips "fme_" entries (correct) but sweeps every
+            // NON-"fme_" one — and this pass had just CLEARED textCtrlsDrawnThisPass, so that set
+            // held only editor names. With both windows open, every settings-window text buffer was
+            // therefore judged "not drawn" and dropped: click the FreeMake editor while typing a
+            // hex colour or a slider value in the settings window and the in-progress text is
+            // silently discarded. The only escape was `key == focused`, which stops applying the
+            // moment focus moves into the editor — exactly the case that triggers it.
+            // 下方 EditorGcBuffers() 才是本窗口的清扫。此前在此处调用共用的 EndTextInputPass()
+            // 是错的：它跳过 "fme_" 条目（正确），却会清扫**所有非** "fme_" 的条目——而本 pass 刚
+            // 清空过 textCtrlsDrawnThisPass，故该集合里只有编辑器的名字。于是两个窗口同时打开时，
+            // 设置窗口的每一个文本缓冲都被判为「本 pass 未绘制」而丢弃：在设置窗口输入十六进制色或
+            // 滑杆值时点一下 FreeMake 编辑器，进行中的文本就被静默清掉。唯一的豁免是
+            // `key == focused`，而它恰好在焦点移进编辑器的那一刻失效——正是触发条件本身。
             HandleEditorResize(e);
             GUI.DragWindow(new Rect(0, 0, 10000f, 24f));
             EditorGcBuffers();
