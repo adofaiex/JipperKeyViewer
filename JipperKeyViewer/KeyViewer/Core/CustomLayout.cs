@@ -686,11 +686,10 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (node == null || keyShapeLayer == null || node.RuntimeKey == null) return;
             int slot = node.RuntimeKey.shapeSlot;
-            if (slot < 0)
-            {
-                keyShapeLayer.SetBackgroundGradient(slot, false, Color.white, Color.white);
-                return;
-            }
+            // slot < 0 means the node has no shape slot at all (unbound image / stat panel), so there
+            // is nothing to clear — calling the setter with a negative index was a dead call.
+            // slot<0 表示节点没有形状槽位（未绑定图片/面板），无需清理；此前是无效调用。
+            if (slot < 0) return;
             if (!node.UseBackgroundGradient)
             {
                 keyShapeLayer.SetBackgroundGradient(slot, false, Color.white, Color.white);

@@ -394,14 +394,14 @@ namespace JipperKeyViewer.KeyViewer
             {
                 lastKps = currentKps;
                 NumBuffer.Format(currentKps, Settings.Data.EnableCountFormatting, out var buf, out int off, out int len);
-                foreach (Key k in SinglePanel(Kps))
+                if (Kps != null)
                 {
                     if (KpsTotalCenteredApplies())
-                        SetKpsTotalDisplay(k, "KPS", new string(buf, off, len));
+                        SetKpsTotalDisplay(Kps, "KPS", new string(buf, off, len));
                     else if (!KpsTotalIsSlim() && Settings.Data.HideKpsTotalLabel)
-                        k.text.SetText(buf, off, len);
-                    else if (k.value != null)
-                        k.value.SetText(buf, off, len);
+                        Kps.text.SetText(buf, off, len);
+                    else if (Kps.value != null)
+                        Kps.value.SetText(buf, off, len);
                 }
             }
             // The Total display update lives HERE (not in ProcessMainAndFootKeys) so both input
@@ -412,14 +412,14 @@ namespace JipperKeyViewer.KeyViewer
             {
                 lastTotal = Settings.Data.TotalCount;
                 NumBuffer.Format(lastTotal, Settings.Data.EnableCountFormatting, out var buf2, out int off2, out int len2);
-                foreach (Key k in SinglePanel(Total))
+                if (Total != null)
                 {
                     if (KpsTotalCenteredApplies())
-                        SetKpsTotalDisplay(k, "Total", new string(buf2, off2, len2));
+                        SetKpsTotalDisplay(Total, "Total", new string(buf2, off2, len2));
                     else if (!KpsTotalIsSlim() && Settings.Data.HideKpsTotalLabel)
-                        k.text.SetText(buf2, off2, len2);
-                    else if (k.value != null)
-                        k.value.SetText(buf2, off2, len2);
+                        Total.text.SetText(buf2, off2, len2);
+                    else if (Total.value != null)
+                        Total.value.SetText(buf2, off2, len2);
                 }
             }
         }
@@ -444,8 +444,10 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Wrap a single (possibly null) panel ref as a list — keeps the fixed-layout
-        /// path uniform with the multi-panel iteration. / 把单个（可能为空的）面板引用包装成
-        /// 列表——让固定布局路径与多面板遍历统一。</summary>
+        /// path uniform with the multi-panel iteration. NOT for per-frame use: it allocates, and the
+        /// hot KPS/Total refresh path now handles the single ref directly. / 把单个（可能为空的）
+        /// 面板引用包装成列表——让固定布局路径与多面板遍历统一。不可用于逐帧热路径：它有分配，
+        /// 逐帧的 KPS/Total 刷新已改为直接处理单个引用。</summary>
         private static List<Key> SinglePanel(Key k)
         {
             var list = new List<Key>(1);
@@ -490,6 +492,13 @@ namespace JipperKeyViewer.KeyViewer
         private void ProcessGhostKeysInUpdate()
         {
             if (cachedGhostKeys == null) return;
+            // ProcessKeyGroup guards its Keys index explicitly; ghost keys indexed Keys[i] bare and
+            // relied on "GhostKey* never exceeds the Keys array". Any profile with a longer ghost
+            // binding array, or a Keys array shorter than the ghost one mid-rebuild, would throw
+            // here and abort the whole frame's input processing.
+            // ProcessKeyGroup 有显式边界守卫；鬼键路径此前裸索引 Keys[i]，靠“GhostKey* 不超过
+            // Keys 长度”这一巧合成立。绑定数组更长或重建中 Keys 变短都会在这里抛异常并中断整帧。
+            if (Keys == null || ghostKeyStates == null || ghostKeyStates.Length < cachedGhostKeys.Length) return;
             ProfileData d = Settings.Data;
             bool rainEnabled = d.EnableRainEffect;
             bool ghostRainEnabled = d.EnableGhostRain;
@@ -502,6 +511,9 @@ namespace JipperKeyViewer.KeyViewer
                 bool current = KeySource.GetKey(ghosts[i]);
                 if (current == ghostKeyStates[i]) continue;
                 ghostKeyStates[i] = current;
+                if (i >= Keys.Length) continue;
+                Key key = Keys[i];
+                if (key == null) continue;
                 // Keep tracking state even while the rain gates are off, so re-enabling them mid-hold
                 // doesn't desync — the old early-return left a held ghost key "pressed" and its next
                 // real press produced no rain until an extra release/press cycle.
@@ -509,9 +521,9 @@ namespace JipperKeyViewer.KeyViewer
                 // 按住的鬼键停留在“已按下”，下一次真实按键不触发雨滴，直到多松/按一次才恢复。
                 if (!rainEnabled || !ghostRainEnabled) continue;
                 if (current)
-                    rainSystem.TriggerGhostRain(i, Keys[i]);
+                    rainSystem.TriggerGhostRain(i, key);
                 else
-                    rainSystem.ReleaseGhostRain(i, Keys[i]);
+                    rainSystem.ReleaseGhostRain(i, key);
             }
         }
 
@@ -553,24 +565,26 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         private void UpdateKeyColors(int i, bool pressed, ProfileData d = null)
         {
-            if (IsFullKeyboard) {
-                var d2 = Settings.Data;
-                bool u = d2.EnableFullKeyboardUnifiedColor;
-                Key k = Keys[i];
-                SetShapeColors(k,
-                    pressed ? (u ? d2.FullKeyboardBackgroundClicked : d2.BackgroundClicked) : (u ? d2.FullKeyboardBackground : d2.Background),
-                    pressed ? (u ? d2.FullKeyboardOutlineClicked : d2.OutlineClicked) : (u ? d2.FullKeyboardOutline : d2.Outline));
-                k.text.color = pressed ? (u ? d2.FullKeyboardTextClicked : d2.TextClicked) : (u ? d2.FullKeyboardText : d2.Text);
-                if (k.value != null) k.value.color = k.text.color;
-                ApplyFixedGlow(k, i, pressed);
-                ApplyFixedBackgroundGradient(k, pressed);
-                ApplyFixedOutlineGradient(k, pressed);
-                return;
-            }
-            if (Keys == null || i >= Keys.Length) return;
+            // Bounds/null first: the full-keyboard branch used to index Keys BEFORE the guard, so a
+            // press arriving during an overlay rebuild (Keys rebuilt/short/null) threw here.
+            // 先做边界与判空：全键盘分支曾在判空之前索引 Keys，覆盖层重建瞬间的按压会在这里抛异常。
+            if (Keys == null || i < 0 || i >= Keys.Length) return;
             Key key = Keys[i];
             if (key == null) return;
             if (d == null) d = Settings.Data;
+            if (IsFullKeyboard) {
+                var d2 = d;
+                bool u = d2.EnableFullKeyboardUnifiedColor;
+                SetShapeColors(key,
+                    pressed ? (u ? d2.FullKeyboardBackgroundClicked : d2.BackgroundClicked) : (u ? d2.FullKeyboardBackground : d2.Background),
+                    pressed ? (u ? d2.FullKeyboardOutlineClicked : d2.OutlineClicked) : (u ? d2.FullKeyboardOutline : d2.Outline));
+                key.text.color = pressed ? (u ? d2.FullKeyboardTextClicked : d2.TextClicked) : (u ? d2.FullKeyboardText : d2.Text);
+                if (key.value != null) key.value.color = key.text.color;
+                ApplyFixedGlow(key, i, pressed);
+                ApplyFixedBackgroundGradient(key, pressed);
+                ApplyFixedOutlineGradient(key, pressed);
+                return;
+            }
             if (d.EnablePerKeyColors && i < MaxKeySlots && PerKeyColorArraysValid(d, i))
             {
                 SetShapeColors(key,

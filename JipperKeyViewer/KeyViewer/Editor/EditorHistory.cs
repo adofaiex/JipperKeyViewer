@@ -68,6 +68,21 @@ namespace JipperKeyViewer.KeyViewer.Editor
         /// 结束一次微调连发，下一次连发开新记录。</summary>
         internal void EndNudge() => lastNudgeStamp = float.NegativeInfinity;
 
+        /// <summary>Overwrite the newest entry (at the cursor) with the finished document state.
+        /// Drag and resize gestures must record once per gesture, but they can only know that the
+        /// entry is final when the gesture ends — and the entry was pushed on the first moved frame.
+        /// Without this, any later undo of a different edit returned the node to its mid-drag
+        /// geometry. Returns false when there is no entry to replace. / 用完成的文档状态覆盖游标处
+        /// （最新）的条目。拖拽与缩放手势每次手势只能记一条，但只有手势结束才知道这条是最终态，
+        /// 而条目是在第一个移动帧压入的；不覆盖的话，之后撤销别的编辑会把节点退回拖拽中途的几何。
+        /// 没有可替换的条目时返回 false。</summary>
+        internal bool ReplaceTop(string snapshot)
+        {
+            if (snapshot == null || position < 0 || position >= snapshots.Count) return false;
+            snapshots[position] = snapshot;
+            return true;
+        }
+
         /// <summary>Step back one entry; `current` becomes the document state at the cursor so a
         /// later redo returns to it. Returns the state to restore, or null at the timeline's
         /// start. / 回退一格；`current` 记为游标处的文档状态供之后重做返回。返回要恢复的

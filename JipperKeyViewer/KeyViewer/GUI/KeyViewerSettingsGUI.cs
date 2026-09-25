@@ -197,6 +197,12 @@ namespace JipperKeyViewer.KeyViewer
         private string packageMessage = "";
         private bool dmNoteListExpanded;
         private string dmNoteMessage = "";
+        // Directory listings for the two expandable lists. Rebuilt on expand and dropped on
+        // collapse/import — a directory scan on every IMGUI event was a steady frame-time cost.
+        // 两个可展开列表的目录列表结果：展开时重建，折叠/导入后丢弃——每个 IMGUI 事件都扫目录
+        // 会持续消耗帧时间。
+        private List<string> packageCache;
+        private List<string> dmNoteCache;
 
         /// <summary>Export / import the current profile as a shareable .jkv archive. / 把当前配置
         /// 导出 / 导入为可分享的 .jkv 归档。</summary>
@@ -218,7 +224,7 @@ namespace JipperKeyViewer.KeyViewer
                 // directory scan. / 展开时刷新而非每事件刷新：IMGUI 每帧触发 Layout+Repaint 多次，
                 // 而这是一次目录扫描。
                 packageListExpanded = !packageListExpanded;
-                if (packageListExpanded) SyncProfilesWithDisk();
+                if (packageListExpanded) { packageCache = null; SyncProfilesWithDisk(); }
             }
             if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f)))
             {
@@ -237,7 +243,15 @@ namespace JipperKeyViewer.KeyViewer
 
             if (packageListExpanded)
             {
-                List<string> packages = ListProfilePackages();
+                // Cached for the lifetime of the expansion. Listing re-stat'ed every file on EVERY
+                // IMGUI event (Layout + Repaint + input, ~2-3 per frame) — the sort comparator alone
+                // made two GetLastWriteTimeUtc calls per comparison. The list only changes when the
+                // user edits the folder or imports, both of which drop the cache.
+                // 展开期间缓存：此前每个 IMGUI 事件都重新 stat 每个文件（仅排序比较器就每比较一次
+                // 调用两次 GetLastWriteTimeUtc），而列表只会在用户改文件夹或导入时变化——两者都会
+                // 清空缓存。
+                packageCache ??= ListProfilePackages();
+                List<string> packages = packageCache;
                 if (packages.Count == 0)
                 {
                     GUILayout.Label(I18n.Tr("pkg_none"));
@@ -250,6 +264,7 @@ namespace JipperKeyViewer.KeyViewer
                         if (ImportProfilePackage(pkg, out string msg)) packageMessage = msg;
                         else packageMessage = msg ?? I18n.Tr("pkg_err_failed_generic");
                         packageListExpanded = false;
+                        packageCache = null;
                     }
                 }
             }
@@ -264,6 +279,7 @@ namespace JipperKeyViewer.KeyViewer
             if (GUILayout.Button(I18n.Tr("dmnote_import"), GUILayout.MinWidth(140f)))
             {
                 dmNoteListExpanded = !dmNoteListExpanded;
+                dmNoteCache = null; // rescan on every expand / 每次展开都重新扫描
             }
             if (GUILayout.Button(I18n.Tr("dmnote_open_dir"), GUILayout.MinWidth(100f)))
             {
@@ -280,7 +296,11 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.EndHorizontal();
             if (dmNoteListExpanded)
             {
-                List<string> presets = ListDmNotePresetFiles();
+                // Cached like the package list: a directory scan plus one FileInfo per file on
+                // every IMGUI event. Collapsing (the toggle below) and importing both drop it.
+                // 与包列表同样缓存：每个 IMGUI 事件都要扫目录并为每个文件建 FileInfo。
+                dmNoteCache ??= ListDmNotePresetFiles();
+                List<string> presets = dmNoteCache;
                 if (presets.Count == 0)
                 {
                     GUILayout.Label(I18n.Tr("dmnote_none"));
@@ -293,6 +313,7 @@ namespace JipperKeyViewer.KeyViewer
                         if (ImportDmNotePresetFile(preset, out string imported)) dmNoteMessage = imported;
                         else dmNoteMessage = imported ?? I18n.Tr("dmnote_import_failed");
                         dmNoteListExpanded = false;
+                        dmNoteCache = null;
                     }
                 }
             }

@@ -113,15 +113,15 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         private void SyncCachedSpeeds()
         {
-            if (cachedRainSpeed1 == settings.Data.RainSpeedRow1 && cachedRainSpeed2 == settings.Data.RainSpeedRow2 &&
-                cachedRainSpeed3 == settings.Data.RainSpeedRow3 && cachedRainHeight1 == settings.Data.RainHeightRow1 &&
-                cachedRainHeight2 == settings.Data.RainHeightRow2 && cachedRainHeight3 == settings.Data.RainHeightRow3 &&
-                cachedGhostSpeed1 == settings.Data.GhostRainSpeedRow1 && cachedGhostSpeed2 == settings.Data.GhostRainSpeedRow2 &&
-                cachedGhostSpeed3 == settings.Data.GhostRainSpeedRow3 && cachedGhostHeight1 == settings.Data.GhostRainHeightRow1 &&
-                cachedGhostHeight2 == settings.Data.GhostRainHeightRow2 && cachedGhostHeight3 == settings.Data.GhostRainHeightRow3 &&
-                cachedStartY1 == settings.Data.RainStartYRow1 && cachedStartY2 == settings.Data.RainStartYRow2 &&
-                cachedStartY3 == settings.Data.RainStartYRow3 && cachedGhostStartY1 == settings.Data.GhostRainStartYRow1 &&
-                cachedGhostStartY2 == settings.Data.GhostRainStartYRow2 && cachedGhostStartY3 == settings.Data.GhostRainStartYRow3)
+            if (SameCached(cachedRainSpeed1, settings.Data.RainSpeedRow1) && SameCached(cachedRainSpeed2, settings.Data.RainSpeedRow2) &&
+                SameCached(cachedRainSpeed3, settings.Data.RainSpeedRow3) && SameCached(cachedRainHeight1, settings.Data.RainHeightRow1) &&
+                SameCached(cachedRainHeight2, settings.Data.RainHeightRow2) && SameCached(cachedRainHeight3, settings.Data.RainHeightRow3) &&
+                SameCached(cachedGhostSpeed1, settings.Data.GhostRainSpeedRow1) && SameCached(cachedGhostSpeed2, settings.Data.GhostRainSpeedRow2) &&
+                SameCached(cachedGhostSpeed3, settings.Data.GhostRainSpeedRow3) && SameCached(cachedGhostHeight1, settings.Data.GhostRainHeightRow1) &&
+                SameCached(cachedGhostHeight2, settings.Data.GhostRainHeightRow2) && SameCached(cachedGhostHeight3, settings.Data.GhostRainHeightRow3) &&
+                SameCached(cachedStartY1, settings.Data.RainStartYRow1) && SameCached(cachedStartY2, settings.Data.RainStartYRow2) &&
+                SameCached(cachedStartY3, settings.Data.RainStartYRow3) && SameCached(cachedGhostStartY1, settings.Data.GhostRainStartYRow1) &&
+                SameCached(cachedGhostStartY2, settings.Data.GhostRainStartYRow2) && SameCached(cachedGhostStartY3, settings.Data.GhostRainStartYRow3))
                 return;
             // Floor speeds and heights: typed values are stored unclamped, and a zero/negative
             // speed never lifts the drop past the track top (y stays <= height forever) — with
@@ -149,12 +149,18 @@ namespace JipperKeyViewer.KeyViewer.Rain
             ghostRowHeights[0] = Mathf.Max(settings.Data.GhostRainHeightRow1, 1f);
             ghostRowHeights[1] = Mathf.Max(settings.Data.GhostRainHeightRow2, 1f);
             ghostRowHeights[2] = Mathf.Max(settings.Data.GhostRainHeightRow3, 1f);
-            rowStartYs[0] = settings.Data.RainStartYRow1;
-            rowStartYs[1] = settings.Data.RainStartYRow2;
-            rowStartYs[2] = settings.Data.RainStartYRow3;
-            ghostRowStartYs[0] = settings.Data.GhostRainStartYRow1;
-            ghostRowStartYs[1] = settings.Data.GhostRainStartYRow2;
-            ghostRowStartYs[2] = settings.Data.GhostRainStartYRow3;
+            // Start-Y is the only per-row value with NO Mathf.Max floor, so a NaN/Infinity typed (or
+            // imported) here survived every comparison and flowed into rawRain.rect — one NaN drop
+            // wrote NaN vertices into the SHARED merged mesh, corrupting the whole rain canvas and
+            // re-corrupting it every frame. Clamp to a sane band; NaN/Infinity fall back to -223.
+            // 起始 Y 是唯一没有 Mathf.Max 下限的按排值：NaN/Inf 能通过所有比较并进入 rawRain.rect，
+            // 一滴坏雨滴就会把 NaN 顶点写进共享 mesh，整块雨滴画布每帧都被污染。
+            rowStartYs[0] = SanitizeStartY(settings.Data.RainStartYRow1);
+            rowStartYs[1] = SanitizeStartY(settings.Data.RainStartYRow2);
+            rowStartYs[2] = SanitizeStartY(settings.Data.RainStartYRow3);
+            ghostRowStartYs[0] = SanitizeStartY(settings.Data.GhostRainStartYRow1);
+            ghostRowStartYs[1] = SanitizeStartY(settings.Data.GhostRainStartYRow2);
+            ghostRowStartYs[2] = SanitizeStartY(settings.Data.GhostRainStartYRow3);
             cachedRainSpeed1 = settings.Data.RainSpeedRow1;
             cachedRainSpeed2 = settings.Data.RainSpeedRow2;
             cachedRainSpeed3 = settings.Data.RainSpeedRow3;
@@ -392,6 +398,22 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 _ => ghost ? settings.Data.GhostRainColor2 : settings.Data.RainColor2
             };
         }
+
+        /// <summary>Rain start-Y must be a finite number inside a sane band: NaN survives every
+        /// comparison (including the SyncCachedSpeeds `==` cache, which then never hits) and would
+        /// reach the merged mesh as NaN vertices. / 雨滴起始 Y 必须是有限值：NaN 能通过所有比较
+        /// （SyncCachedSpeeds 的 `==` 缓存也永不命中），最终会以 NaN 顶点进入合并 mesh。</summary>
+        private static float SanitizeStartY(float value)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) return -223f;
+            return Mathf.Clamp(value, -4000f, 4000f);
+        }
+
+        /// <summary>Do the cached settings still match? Compare with "same or both NaN" so a
+        /// NaN value cannot make the cache permanently miss and re-run this every frame. / 缓存是否
+        /// 仍然有效？按“相同或同为 NaN”比较，避免 NaN 让缓存永久不命中而每帧重算。</summary>
+        private static bool SameCached(float a, float b)
+            => a == b || (float.IsNaN(a) && float.IsNaN(b));
 
         private RawRain GetRawRain(byte color)
         {

@@ -210,18 +210,26 @@ namespace JipperKeyViewer.KeyViewer
             return true;
         }
 
-        private Color DrawColorPicker(string label, Color currentColor, Color defaultColor)
+        /// <summary>Colour picker. `prefix` namespaces the generated control names: the FreeMake
+        /// editor and the settings window are separate IMGUI passes that can be open at the SAME
+        /// time, and both reset the shared sequence counter — with one shared prefix their Hex/RGB
+        /// text buffers collided (typing in one window rewrote the other's field) and the settings
+        /// pass's stale-buffer sweep deleted the editor's in-progress entries.
+        /// 取色器。`prefix` 用于隔离控件名命名空间：FreeMake 编辑器与设置窗口是两个可同时打开的
+        /// IMGUI pass，且共用同一个序号计数器——若前缀相同，两个窗口的 Hex/RGB 输入缓冲会互相
+        /// 串写，设置窗口的陈旧缓冲清理还会删掉编辑器正在编辑的条目。</summary>
+        private Color DrawColorPicker(string label, Color currentColor, Color defaultColor, string prefix = "cpi_")
         {
             GUILayout.BeginVertical();
             GUILayout.Label(label);
 
             // Unique control names allocated up-front in draw order so focus tracking stays stable.
             // 先按绘制顺序分配唯一的控件名,保证焦点跟踪一致。
-            string ctrlR = "cpi_" + (++colorPickerFieldSeq);
-            string ctrlG = "cpi_" + (++colorPickerFieldSeq);
-            string ctrlB = "cpi_" + (++colorPickerFieldSeq);
-            string ctrlA = "cpi_" + (++colorPickerFieldSeq);
-            string ctrlHex = "cpi_" + (++colorPickerFieldSeq);
+            string ctrlR = prefix + (++colorPickerFieldSeq);
+            string ctrlG = prefix + (++colorPickerFieldSeq);
+            string ctrlB = prefix + (++colorPickerFieldSeq);
+            string ctrlA = prefix + (++colorPickerFieldSeq);
+            string ctrlHex = prefix + (++colorPickerFieldSeq);
 
             void DrawChannel(string ctrl, string name, ref float channel)
             {

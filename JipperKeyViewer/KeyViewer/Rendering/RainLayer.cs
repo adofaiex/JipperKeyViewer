@@ -135,6 +135,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             Rect r = rain.rect;
             if (r.width <= 0f || r.height <= 0f) return;
+            // NaN fails every `<=` comparison, so a single poisoned rect/scale would slip past the
+            // guard above and write NaN vertices into the SHARED mesh — one bad drop would then
+            // corrupt the whole rain canvas. / NaN 能通过所有 `<=` 比较，坏矩形/缩放会把 NaN 顶点
+            // 写进共享 mesh，一个坏雨滴就会污染整块雨滴画布。
+            if (float.IsNaN(r.xMin) || float.IsNaN(r.yMin) || float.IsNaN(r.width) || float.IsNaN(r.height)
+                || float.IsNaN(rain.scaleF) || float.IsInfinity(rain.scaleF)) return;
             float baseA = rain.isGhost && !drawMain ? rain.alpha : rain.mainColor.a * rain.alpha;
             float h = r.height;
             float span = rain.dFar - rain.dNear;
@@ -145,21 +151,45 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 Color sc = rain.shadowColor;
                 sc.a *= baseA;
-                DrawRainQuad(vh, r.xMin + rain.shadowOffsetX * sf, r.xMax + rain.shadowOffsetX * sf,
-                    r.yMin + rain.shadowOffsetY * sf, r.yMax + rain.shadowOffsetY * sf, h, sc, sc,
-                    rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
+                if (rain.dotted && rain.dotLength > 0.5f)
+                    DrawDottedRainRect(vh, rain, new Rect(r.xMin + rain.shadowOffsetX * sf, r.yMin + rain.shadowOffsetY * sf,
+                        r.width, r.height), sc, sc, simple);
+                else
+                    DrawRainQuad(vh, r.xMin + rain.shadowOffsetX * sf, r.xMax + rain.shadowOffsetX * sf,
+                        r.yMin + rain.shadowOffsetY * sf, r.yMax + rain.shadowOffsetY * sf, h, sc, sc,
+                        rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
             }
             if (rain.outlineEnabled)
             {
                 Color oc = rain.outlineColor;
                 oc.a *= baseA;
                 float ow = rain.outlineWidth * sf;
-                if (rain.outlineCornerRadius > 0.5f)
-                    DrawRoundedRainOutline(vh, r, ow, rain.outlineCornerRadius, rain.outlineSides, oc, rain.dNear, rain.dFar,
-                        rain.trackHeight, rain.fadePx, span, simple);
-                else
-                    DrawRainOutlineBySide(vh, r, ow, rain.outlineSides, oc, rain.dNear, rain.dFar,
-                        rain.trackHeight, rain.fadePx, span, simple);
+                // A zero outline width with sides==all expands a SOLID quad over the whole drop.
+                // For normal rain the body is drawn afterwards and hides it, but GHOST rain is
+                // drawn with drawMain:false whenever the ghost sprite is active, so the "outline"
+                // became an opaque slab that completely covered the ghost sprite. Only a positive
+                // width can produce a border at all. / 宽度为 0 且 sides=all 时会画出覆盖整滴的实心
+                // 四边形：普通雨被后画的本体盖住，但鬼雨在 drawMain:false 下会变成一整块实心板把
+                // 精灵完全遮住。宽度必须为正才可能形成描边。
+                if (ow > 0.01f)
+                {
+                    if (rain.dotted && rain.dotLength > 0.5f)
+                    {
+                        // Dotted outline: segment the EXPANDED rect and let the dotted body (drawn
+                        // next) cover its middle, which yields a dotted ring. Going through the
+                        // rounded/side-specific emitters would need a segment loop per band; the
+                        // body covers the interior anyway, so a solid outer ring with the same
+                        // dot pattern is visually identical here.
+                        // 点状描边：对外扩矩形做同样的切段，随后的点状本体会盖住中段，形成点状描边环。
+                        DrawDottedRainRect(vh, rain, new Rect(r.xMin - ow, r.yMin - ow, r.width + ow * 2f, r.height + ow * 2f), oc, oc, simple);
+                    }
+                    else if (rain.outlineCornerRadius > 0.5f)
+                        DrawRoundedRainOutline(vh, r, ow, rain.outlineCornerRadius, rain.outlineSides, oc, rain.dNear, rain.dFar,
+                            rain.trackHeight, rain.fadePx, span, simple);
+                    else
+                        DrawRainOutlineBySide(vh, r, ow, rain.outlineSides, oc, rain.dNear, rain.dFar,
+                            rain.trackHeight, rain.fadePx, span, simple);
+                }
             }
             if (drawMain)
             {
@@ -323,14 +353,36 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         }
 
         private static void DrawDottedRainBody(VertexHelper vh, RawRain rain, Rect r, Color bottom, Color top, bool simple)
+            => DrawDottedRainRect(vh, rain, r, bottom, top, simple);
+
+        /// <summary>Segment a rect along Y into dotLength dots separated by gapLength. The shadow
+        /// and outline use this too when the drop is dotted: drawing a SOLID shadow/outline under a
+        /// segmented body let the drop's body colour show through every gap, which made the dotted
+        /// trail look like one solid bar (the feature silently did nothing whenever a shadow or
+        /// outline was on — and the two toggles sit next to each other in the GUI). /
+        /// 按 Dot/Gap 沿 Y 切段。阴影与描边在点状时也走这里：实心阴影/描边画在分段本体之下时，
+        /// 每个间隙都会漏出本体颜色，点状轨迹看起来仍是一整条实心条——也就是说，只要同时开着
+        /// 阴影或描边（两个开关在 GUI 里相邻），点状功能就完全失效。</summary>
+        private static void DrawDottedRainRect(VertexHelper vh, RawRain rain, Rect r, Color bottom, Color top, bool simple)
         {
-            float pattern = Mathf.Max(0.5f, rain.dotLength + rain.gapLength);
+            float dot = rain.dotLength;
+            float pattern = Mathf.Max(0.5f, dot + rain.gapLength);
             float step = pattern;
             int maxSegments = Mathf.CeilToInt(r.height / step);
-            if (maxSegments > 64) step = r.height / 64f;
+            if (maxSegments > 64)
+            {
+                // Segment cap: scale the DOT too, not just the spacing — keeping the original
+                // dotLength while stretching the step would blow the gaps far past gapLength and
+                // silently produce a much sparser trail than the user configured.
+                // 段数上限：点长也要同比缩放——只放大步长而保留原点长会把间距拉得远超 gapLength，
+                // 实际轨迹比用户设置的稀疏得多且无任何提示。
+                float shrink = (r.height / 64f) / pattern;
+                step = r.height / 64f;
+                dot = Mathf.Max(0.5f, dot * shrink);
+            }
             for (float y0 = r.yMin; y0 < r.yMax; y0 += step)
             {
-                float y1 = Mathf.Min(r.yMax, y0 + rain.dotLength);
+                float y1 = Mathf.Min(r.yMax, y0 + dot);
                 if (y1 <= y0) continue;
                 Color c0 = RainBodyColorAtY(bottom, top, y0, r, rain, simple);
                 Color c1 = RainBodyColorAtY(bottom, top, y1, r, rain, simple);

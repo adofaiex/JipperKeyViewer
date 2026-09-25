@@ -1697,6 +1697,14 @@ namespace JipperKeyViewer.KeyViewer
             if (footSize > 0) InitializeFootKeyViewer(footSize);
             if (Settings.Data.CustomPositionEnabled)
                 ResetFootKeyViewerPosition();
+            // Every foot TMP_Text was just destroyed (Object.Destroy is deferred to the end of the
+            // frame, so the destroyed-component prune in TickTextGradients cannot see them yet).
+            // Drop the cache here instead: keeping them would pin dead components and make
+            // HasTextGradientSettings() stay true forever.
+            // 脚键 TMP 全部刚被销毁（Object.Destroy 延迟到帧末，TickTextGradients 的销毁项清理
+            // 这一帧还看不到），这里直接清缓存：否则会一直持有死组件并让
+            // HasTextGradientSettings() 永远为真。
+            ClearTextGradientStates();
             RefreshAllCountDisplay();
             TickTextGradients();
         }

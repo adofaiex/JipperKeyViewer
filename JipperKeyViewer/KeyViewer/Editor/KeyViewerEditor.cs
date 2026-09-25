@@ -157,9 +157,18 @@ namespace JipperKeyViewer.KeyViewer
             Rect canvasRect = GUILayoutUtility.GetRect(1f, 1f, GUILayout.MinHeight(160f), GUILayout.ExpandHeight(true));
             HandleEditorCanvas(canvasRect, e);
 
+            // Reset the shared colour-picker/slider sequence counters here too. Without it the
+            // editor's generated control names (fme_cpi_N) drifted on every pass, so a focused
+            // field's identity changed frame to frame and typing was lost.
+            // 同样重置共用序号计数器：否则编辑器的生成控件名（fme_cpi_N）每帧都在变，焦点字段
+            // 的身份逐帧漂移，输入的字符会丢失。
+            colorPickerFieldSeq = 0;
+            sliderFieldSeq = 0;
+            BeginTextInputPass();
             fmPropsScroll = GUILayout.BeginScrollView(fmPropsScroll, GUILayout.Height(280f));
             DrawEditorProperties();
             GUILayout.EndScrollView();
+            EndTextInputPass();
 
             HandleEditorResize(e);
             GUI.DragWindow(new Rect(0, 0, 10000f, 24f));
@@ -337,8 +346,13 @@ namespace JipperKeyViewer.KeyViewer
             // Free profile name: "16K-预设", "16K-预设 2", ... / 空闲配置名。
             string baseName = KeyLayoutNames[styleIndex] + "-" + I18n.Tr("fm_presets");
             var existing = new HashSet<string>(Settings.ProfileNames ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            // ALSO check the disk: ProfileNames is only refreshed when the list is expanded, so a
+            // file copied into Profiles/ by hand (or any orphan left behind) is not in the set —
+            // and the preset would silently overwrite it. .jkv import and Save-As already do this.
+            // 同时检查磁盘：ProfileNames 只在展开列表时同步，用户手动拷进 Profiles/ 的文件（或
+            // 任何孤儿文件）都不在集合里，预设会直接覆盖它。.jkv 导入与另存为都已这样做。
             string name = baseName;
-            for (int k = 2; existing.Contains(name); k++) name = baseName + " " + k;
+            for (int k = 2; existing.Contains(name) || File.Exists(GetProfilePath(name)); k++) name = baseName + " " + k;
             // Clone the whole ProfileData so global settings/colors/fonts carry over, then swap in
             // the preset nodes. / 整体克隆 ProfileData 以携带全局设置/配色/字体，再换入预设节点。
             ProfileData pd = JsonConvert.DeserializeObject<ProfileData>(
@@ -918,6 +932,16 @@ namespace JipperKeyViewer.KeyViewer
             public int NodeNextId;
             public int GroupNextId;
             public int TotalCount;
+            /// <summary>True when this entry deliberately carries NO live counters: the runtime
+            /// per-node Count / global TotalCount are stripped on capture and re-applied from the
+            /// live document on restore. Without it, undoing any layout or property edit after
+            /// playing for a while silently rolled the accumulated keypress counts back — and
+            /// EditorMutated saved that zeroed state to disk. Snapshots from earlier builds
+            /// deserialize with this false and keep their original behaviour. / 该条目刻意不带
+            /// 运行时计数：快照里剥离节点 Count 与全局 TotalCount，恢复时按 id 从实时文档回填。
+            /// 否则游玩一段时间后撤销任何布局/属性编辑，都会把已累积的按键计数一起回滚，并被
+            /// EditorMutated 落盘。旧快照反序列化为 false，行为不变。</summary>
+            public bool PreserveCounts;
         }
 
         private bool editorBaselineSeeded;
@@ -993,21 +1017,49 @@ namespace JipperKeyViewer.KeyViewer
             fmResizeOrig.Clear();
             fmResizeMoved = false;
             fmResizeHistoryPushed = false;
+            // The window-resize flag is a SEPARATE gesture from the canvas resize handle; leaving
+            // it set meant a profile switch or undo during a window drag left the next MouseDrag
+            // resizing the editor window out of nowhere.
+            // 窗口缩放标志与画布缩放手柄是两套独立手势；残留时在窗口拖拽途中切配置或撤销，
+            // 下一次 MouseDrag 会莫名去拖动编辑器窗口。
+            fmResizing = false;
+            fmMinimapDrag = false;
+            fmMinimapMoved = false;
             fmSiblingW.Clear();
             fmSiblingH.Clear();
             fmCaptureNode = null;
             fmCaptureGhostNode = null;
         }
 
-        private string SnapshotEditorDocument()
+        private string SnapshotEditorDocument(bool preserveCounts = true)
         {
+            List<FmNode> nodes = Settings.Data.CustomNodes;
+            int total = Settings.Data.TotalCount;
+            if (preserveCounts && nodes != null && nodes.Count > 0)
+            {
+                // Strip the runtime counters from the captured document. Cloning (rather than
+                // zeroing the live nodes and restoring them afterwards) keeps a serialization
+                // throw from leaving the user's counts at zero.
+                var stripped = new List<FmNode>(nodes.Count);
+                for (int i = 0; i < nodes.Count; i++)
+                {
+                    FmNode live = nodes[i];
+                    if (live == null) { stripped.Add(null); continue; }
+                    FmNode copy = live.Clone();
+                    copy.Count = 0;
+                    stripped.Add(copy);
+                }
+                nodes = stripped;
+                total = 0;
+            }
             return JsonConvert.SerializeObject(new FmDocumentSnapshot
             {
-                Nodes = Settings.Data.CustomNodes,
+                Nodes = nodes,
                 Groups = Settings.Data.LayerGroups,
                 NodeNextId = Settings.Data.CustomNodeNextId,
                 GroupNextId = Settings.Data.LayerGroupNextId,
-                TotalCount = Settings.Data.TotalCount,
+                TotalCount = total,
+                PreserveCounts = preserveCounts,
             });
         }
 
@@ -1016,11 +1068,11 @@ namespace JipperKeyViewer.KeyViewer
         /// path, true for discrete structural edits. / 把当前文档状态记为一条时间线记录。
         /// 连续编辑（滑杆/文本突发，已走 GUI 去抖保存）传 allowSave=false；离散的结构编辑传
         /// true。</summary>
-        private bool PushEditorHistory(bool allowSave = true)
+        private bool PushEditorHistory(bool allowSave = true, bool preserveCounts = true)
         {
             try
             {
-                editorHistory.Push(SnapshotEditorDocument());
+                editorHistory.Push(SnapshotEditorDocument(preserveCounts));
             }
             catch (Exception e)
             {
@@ -1065,13 +1117,37 @@ namespace JipperKeyViewer.KeyViewer
                 FmDocumentSnapshot doc = string.IsNullOrEmpty(snapshot)
                     ? new FmDocumentSnapshot()
                     : JsonConvert.DeserializeObject<FmDocumentSnapshot>(snapshot);
+                // Capture the live counters BEFORE the document is replaced (the restored nodes are
+                // fresh instances whose Count defaults to 0).
+                var liveCounts = new Dictionary<int, int>();
+                List<FmNode> liveNodes = Settings.Data.CustomNodes;
+                if (doc != null && doc.PreserveCounts && liveNodes != null)
+                    for (int i = 0; i < liveNodes.Count; i++)
+                        if (liveNodes[i] != null) liveCounts[liveNodes[i].Id] = liveNodes[i].Count;
+                int liveTotal = Settings.Data.TotalCount;
+
                 Settings.Data.CustomNodes = doc?.Nodes ?? new List<FmNode>();
                 Settings.Data.LayerGroups = doc?.Groups ?? new List<FmLayerGroup>();
                 if (doc != null)
                 {
                     if (doc.NodeNextId > 0) Settings.Data.CustomNodeNextId = doc.NodeNextId;
                     if (doc.GroupNextId > 0) Settings.Data.LayerGroupNextId = doc.GroupNextId;
-                    Settings.Data.TotalCount = doc.TotalCount;
+                    if (doc.PreserveCounts)
+                    {
+                        // Re-apply the live counters onto the restored instances by id. A node that
+                        // did not exist before this undo entry simply keeps 0.
+                        List<FmNode> restored = Settings.Data.CustomNodes;
+                        for (int i = 0; i < restored.Count; i++)
+                        {
+                            FmNode n = restored[i];
+                            if (n != null && liveCounts.TryGetValue(n.Id, out int count)) n.Count = count;
+                        }
+                        Settings.Data.TotalCount = liveTotal;
+                    }
+                    else
+                    {
+                        Settings.Data.TotalCount = doc.TotalCount;
+                    }
                 }
                 EnsureCustomNodes();
                 SetEditorSelectionById(doc?.Nodes);
@@ -1346,10 +1422,34 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (fmDragMoved)
             {
+                // The drag pushed its snapshot on the FIRST moved frame. Undo works by writing
+                // "current" into the entry it steps over, so a later undo of some OTHER edit would
+                // return to that first-frame geometry and silently yank the node back to where the
+                // drag happened to be on frame 1. Replace the top entry with the finished state.
+                // 拖拽在第一个移动帧就压入了快照。撤销会把"当前状态"写进它跨过的那一条，因此撤销
+                // 之后的其它编辑时，会回到第一帧的几何——节点被悄悄拽回拖拽中途。改为用最终态
+                // 就地替换栈顶条目。
+                ReplaceLastEditorSnapshot();
                 SaveSettingsFromGui();
                 RequestEditorRebuild();
             }
             fmAlignLines.Clear();
+        }
+
+        /// <summary>Overwrite the newest timeline entry with the current document (used at the end
+        /// of drag/resize gestures, whose entry was pushed at the first moved frame). No-op when the
+        /// timeline is empty. / 用当前文档覆盖时间线最新一条（拖拽/缩放手势在第一个移动帧就已压入
+        /// 该条）。时间线为空时为空操作。</summary>
+        private void ReplaceLastEditorSnapshot()
+        {
+            try
+            {
+                if (!editorHistory.ReplaceTop(SnapshotEditorDocument())) return;
+            }
+            catch (Exception e)
+            {
+                Loader.Warning($"KeyViewer: editor snapshot refresh failed: {e.Message}");
+            }
         }
 
         /// <summary>Live geometry sync during drag/resize gestures: update the EXISTING runtime
@@ -1571,6 +1671,10 @@ namespace JipperKeyViewer.KeyViewer
             fmResizeHistoryPushed = false;
             if (fmResizeMoved)
             {
+                // Same reason as EndNodeDrag: replace the first-moved-frame entry with the final
+                // geometry so a later undo cannot revert the size to mid-gesture. / 与 EndNodeDrag
+                // 同理：用最终尺寸就地替换首个移动帧的条目，后续撤销才不会把尺寸退回手势中途。
+                ReplaceLastEditorSnapshot();
                 SaveSettingsFromGui();
                 RequestEditorRebuild();
             }
@@ -2430,10 +2534,27 @@ namespace JipperKeyViewer.KeyViewer
 
         // ---- keyboard shortcuts / 快捷键 ----
 
+        // Every text-entry control reachable while the editor is open. Delete/Backspace here
+        // DELETES THE SELECTED NODES and persists the change, so a prefix that is missed turns an
+        // ordinary text edit into data loss. The colour pickers (cpi_), the settings-style fields
+        // (fsf_/kte_/kfte_) and the bind captures all share the same IMGUI focus space.
+        // 编辑器打开时可聚焦的所有文本输入控件：此处的 Delete/Backspace 会删除选中节点并立即落盘，
+        // 漏掉任何一个前缀都会把普通输入变成数据丢失。取色器（cpi_）与设置页字段共用同一 IMGUI
+        // 焦点空间。
+        private static readonly string[] EditorTextPrefixes = { "fme_", "cpi_", "fsf_", "kte_", "kfte_", "kv_" };
+
+        private static bool EditorHasFocusedTextField()
+        {
+            string focused = GUI.GetNameOfFocusedControl();
+            if (string.IsNullOrEmpty(focused)) return false;
+            for (int i = 0; i < EditorTextPrefixes.Length; i++)
+                if (focused.StartsWith(EditorTextPrefixes[i], StringComparison.Ordinal)) return true;
+            return false;
+        }
+
         private void HandleEditorShortcuts(Event e)
         {
-            bool typing = GUI.GetNameOfFocusedControl()?.StartsWith("fme_", StringComparison.Ordinal) == true;
-            if (typing) return;
+            if (EditorHasFocusedTextField()) return;
             if (fmCaptureNode != null) return;
             if (fmCaptureGhostNode != null) return;
             bool ctrl = e.control;
@@ -2441,19 +2562,34 @@ namespace JipperKeyViewer.KeyViewer
             {
                 case KeyCode.Delete:
                 case KeyCode.Backspace:
+                    // Drop any in-flight gesture FIRST: Delete removes the nodes, and a live
+                    // drag/resize would then keep writing coordinates into the removed instances
+                    // while the canvas looked frozen.
+                    // 先结束进行中的手势：Delete 会移除节点，仍在手势中的拖拽/缩放会继续往已删除
+                    // 的实例写坐标，画布看起来像是卡死。
+                    ClearEditorInteractionState();
                     EditorDeleteSelection();
                     e.Use();
                     return;
                 case KeyCode.Escape:
+                    ClearEditorInteractionState();
                     editorSelection.Clear();
                     e.Use();
                     return;
                 case KeyCode.Z when ctrl:
+                    // Undo/redo swap the whole node list for freshly deserialized instances. A live
+                    // gesture still holds the PRE-undo instances in fmDragStart/fmResizeOrig, so
+                    // every following frame would write into objects that are no longer in the
+                    // document and the node would appear stuck.
+                    // 撤销/重做会把整份节点表换成反序列化出的新实例；仍在进行的手势持有的是撤销
+                    // 前的旧实例，后续每帧都会往已不在文档里的对象写坐标，表现为节点卡住不动。
+                    ClearEditorInteractionState();
                     if (e.shift) EditorRedo();
                     else EditorUndo();
                     e.Use();
                     return;
                 case KeyCode.Y when ctrl:
+                    ClearEditorInteractionState();
                     EditorRedo();
                     e.Use();
                     return;
@@ -2462,6 +2598,7 @@ namespace JipperKeyViewer.KeyViewer
                     e.Use();
                     return;
                 case KeyCode.V when ctrl:
+                    ClearEditorInteractionState();
                     EditorPaste();
                     e.Use();
                     return;
@@ -2522,18 +2659,27 @@ namespace JipperKeyViewer.KeyViewer
                     DrawEditorGhostBindCapture(first);
             }
 
+            // X/Y are relative edits: the typed value is a DELTA from the active node applied to
+            // every selected node, so the displayed basis and the delta basis must be the SAME
+            // node. They used to differ (field showed selection[0], delta used the active node) —
+            // after a Ctrl-click multi-select the panel displayed one node's X while typing
+            // applied "v - <other node>.X", shifting the whole selection somewhere unexpected.
+            // X/Y 是相对编辑：输入值是与活动节点的差值，施加到每个选中节点，因此显示基准与差值
+            // 基准必须是同一个节点。此前两者不同（字段显示 selection[0]，差值用活动节点）——
+            // Ctrl 多选后面板显示的是一个节点的 X，输入却按另一个节点的 X 求差，整组会跳到
+            // 意料之外的位置。
             DrawEditorFloatField(I18n.Tr("fm_pos_x"), "fme_x_" + first.Id, n => n.X, v =>
             {
                 float delta = v - first.X;
                 foreach (FmNode n in editorSelection) n.X += delta;
                 EditorPropertyChanged();
-            }, "fm_help_pos_x");
+            }, "fm_help_pos_x", first);
             DrawEditorFloatField(I18n.Tr("fm_pos_y"), "fme_y_" + first.Id, n => n.Y, v =>
             {
                 float delta = v - first.Y;
                 foreach (FmNode n in editorSelection) n.Y += delta;
                 EditorPropertyChanged();
-            }, "fm_help_pos_y");
+            }, "fm_help_pos_y", first);
             DrawEditorFloatField(I18n.Tr("fm_width"), "fme_w_" + first.Id, n => n.Width, v =>
             {
                 foreach (FmNode n in editorSelection) n.Width = Mathf.Max(10f, v);
@@ -3649,7 +3795,11 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     RecalculateCustomTotalCount();
                     RefreshAllCountDisplay();
-                    PushEditorHistory(false);
+                    // preserveCounts:false — the counters ARE the thing being edited here, so this
+                    // entry must carry the real (zeroed) values instead of re-applying the live
+                    // ones on restore. / preserveCounts:false：计数正是本次编辑的对象，本条必须
+                    // 携带真实的（已清零）值，恢复时不能再从实时文档回填。
+                    PushEditorHistory(false, false);
                     SaveSettingsFromGui();
                 }
                 DrawEditorHelpMarker("fm_help_reset_count");
@@ -3976,12 +4126,15 @@ namespace JipperKeyViewer.KeyViewer
         /// / 多选感知浮点字段。选区在该值上不一致时显示"—"——活动节点的值不再冒充组值、也不会
         /// 被一次意外提交群体覆盖；"—"永不解析，输入数字即应用到全部。一致时行为与从前相同。
         /// </summary>
-        private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply, string helpKey = null)
+        private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply, string helpKey = null, FmNode basis = null)
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(label, GUILayout.Width(96f));
             DrawEditorHelpMarker(helpKey);
-            float v0 = get(editorSelection[0]);
+            // The display basis must match whatever the apply callback uses as its reference —
+            // see the X/Y fields, which apply a delta from the ACTIVE node. / 显示基准必须与
+            // apply 回调所用的参照节点一致（X/Y 字段按活动节点求差）。
+            float v0 = get(basis ?? editorSelection[0]);
             bool mixed = false;
             for (int i = 1; i < editorSelection.Count; i++)
             {
@@ -4034,7 +4187,12 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawEditorColorField(string label, float[] arr, Color fallback, Action<float[]> apply)
         {
             Color cur = NodeColor(arr, fallback);
-            Color next = DrawColorPicker(label, cur, fallback);
+            // Own control-name namespace: the settings window draws colour pickers too and resets
+            // the shared sequence counter, so a shared "cpi_" prefix would have both windows'
+            // Hex/RGB fields share one text buffer and one focus identity.
+            // 独立的控件名命名空间：设置窗口同样绘制取色器并会重置共用计数器，前缀相同会让两个
+            // 窗口的 Hex/RGB 输入框共用同一份缓冲与焦点身份。
+            Color next = DrawColorPicker(label, cur, fallback, "fme_cpi_");
             if (next != cur)
             {
                 apply(new[] { next.r, next.g, next.b, next.a });
