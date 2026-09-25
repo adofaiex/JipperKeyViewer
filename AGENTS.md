@@ -70,6 +70,12 @@
 - FreeMake 节点新增按住时隐藏标签开关，与计数的按住显示开关对称，默认关闭。
 - FreeMake 标签和计数新增独立不透明度（0–1），同时作用于实色和静态字形渐变；不增加绘制批次。
 
+- 新增第一阶段 DmNote JSON 预设导入（`Core/KeyViewerDmNoteImport.cs`）：读取 `keyPositions` / 旧版
+  `positions` / `statPositions`，支持按键绑定、几何、颜色/透明度、渐变、边框圆角、雨滴参数与
+  字体样式映射；始终创建新 FreeMake Profile，不覆盖当前配置。`graphPositions`、`knobPositions`
+  与嵌入图片暂跳过并提示。设置页新增 DmNotePresets 文件夹列表和打开文件夹按钮；Harness 增加
+  解析/拒绝非法 JSON 回归（85 项测试）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

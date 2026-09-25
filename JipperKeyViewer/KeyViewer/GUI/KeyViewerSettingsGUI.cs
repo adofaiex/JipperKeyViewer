@@ -195,6 +195,8 @@ namespace JipperKeyViewer.KeyViewer
         // ===== profile packages (.jkv) / 配置包（.jkv） =====
         private bool packageListExpanded;
         private string packageMessage = "";
+        private bool dmNoteListExpanded;
+        private string dmNoteMessage = "";
 
         /// <summary>Export / import the current profile as a shareable .jkv archive. / 把当前配置
         /// 导出 / 导入为可分享的 .jkv 归档。</summary>
@@ -255,6 +257,47 @@ namespace JipperKeyViewer.KeyViewer
             if (!string.IsNullOrEmpty(packageMessage))
                 GUILayout.Label(packageMessage);
             GUILayout.Label(I18n.Tr("pkg_hint"));
+
+            GUILayout.Space(6f);
+            GUILayout.Label("<b>" + I18n.Tr("dmnote_section") + "</b>");
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button(I18n.Tr("dmnote_import"), GUILayout.MinWidth(140f)))
+            {
+                dmNoteListExpanded = !dmNoteListExpanded;
+            }
+            if (GUILayout.Button(I18n.Tr("dmnote_open_dir"), GUILayout.MinWidth(100f)))
+            {
+                try
+                {
+                    Directory.CreateDirectory(DmNotePresetDirectory);
+                    System.Diagnostics.Process.Start("explorer.exe", DmNotePresetDirectory);
+                }
+                catch (Exception e)
+                {
+                    Loader.Error($"KeyViewer: cannot open DM Note presets folder: {e.Message}");
+                }
+            }
+            GUILayout.EndHorizontal();
+            if (dmNoteListExpanded)
+            {
+                List<string> presets = ListDmNotePresetFiles();
+                if (presets.Count == 0)
+                {
+                    GUILayout.Label(I18n.Tr("dmnote_none"));
+                }
+                else
+                {
+                    foreach (string preset in presets)
+                    {
+                        if (!GUILayout.Button(Path.GetFileName(preset), GUILayout.MinWidth(220f))) continue;
+                        if (ImportDmNotePresetFile(preset, out string imported)) dmNoteMessage = imported;
+                        else dmNoteMessage = imported ?? I18n.Tr("dmnote_import_failed");
+                        dmNoteListExpanded = false;
+                    }
+                }
+            }
+            if (!string.IsNullOrEmpty(dmNoteMessage)) GUILayout.Label(dmNoteMessage);
+            GUILayout.Label(I18n.Tr("dmnote_hint"));
             GUILayout.EndVertical();
         }
 
