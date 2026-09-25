@@ -58,6 +58,18 @@ namespace JipperKeyViewer.KeyViewer.Util
         /// 换来的是省下几次指针比较，不值得。</summary>
         public static float Ease(string name, float t)
         {
+            // Clamp01 does NOT scrub NaN: both `value < 0F` and `value > 1F` are false for it, so
+            // NaN passes straight through and every branch below — including `default: return t` —
+            // returns NaN. The result lands in animTarget.localScale, where NaN silently blanks the
+            // key's entire text subtree and poisons every later RectTransform calculation on it.
+            // This is the only float on the config-read path without a NaN guard, and the rest of
+            // this codebase is consistent about having one.
+            // Clamp01 **不会**净化 NaN：`value < 0F` 与 `value > 1F` 对它都为假，故 NaN 原样穿过，
+            // 且下面每个分支——包括 `default: return t`——都返回 NaN。结果会进入
+            // animTarget.localScale，而 NaN 在那里会静默抹掉该按键整棵文本子树，并污染它之后
+            // 所有 RectTransform 计算。这是配置读取路径上唯一没有 NaN 守卫的浮点，而本代码库
+            // 其余部分一贯都有。
+            if (float.IsNaN(t)) t = 0f;
             t = Mathf.Clamp01(t);
             switch (Normalize(name))
             {

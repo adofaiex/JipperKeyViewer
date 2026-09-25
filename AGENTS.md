@@ -901,6 +901,65 @@
   `LoadSettings` 的每条分支（含建目录失败的 catch）都会给 `Settings` 赋值，故 `Awake` 之后的
   `Settings.Data` 不会 NRE。
 
+### 版本轴混用 + 选择器显示的曲线与实际不符（2026-09-26，第 62 轮）
+接渲染层/缓动/设置数据层的子代理审计（7 条，全部处理）。
+
+高危：
+- **【地雷：照注释做就会永久关掉修复】`NodeTextDefaultsVersion` 与 `DataVersion` 不在同一
+  条版本轴上**：闸门是 `DataVersion < NodeTextDefaultsVersion`，而 `DataVersion` 由 **meta**
+  架构版本盖章，只会取 0/2/3/4/5/6——**值 1 从未被任何路径写过**。而该常量自己的注释承诺
+  「新增带默认值的 FmNode 字段时递增它，让修复对更早的 Profile 再次生效」——照做的那一刻，
+  修复会对**所有** Profile 永久失效，包括它本该修的那些坏配置（描边/阴影整个消失、
+  `CountInTotal` 变 false 使节点每次加载都被排除在全局 Total 之外、`Opacity = 0` 使节点完全
+  不可见）。今天尚未成为线上故障纯属**历史巧合**：被修的 12 个字段都早于 `DataVersion` 字段本身
+  引入，故那些 Profile 根本没有该键、读成 0、闸门正确触发。
+  现给修复一条**自己的**版本戳 `ProfileData.NodeDefaultsVersion`（该字段出现前写出的 Profile
+  为 0，由 `SaveCurrentProfile` 向前盖章），两处闸门（`SyncArraysFromLists` 与 `EnsureCustomNodes`）
+  一并改用它。这才是闸门需要回答的问题：「这份文件是否写在修复清单上次扩充之前？」
+
+中危：
+- **【设置页宣传了一条运行时根本不播的缓动】** 按压动画把**存储的**名字传给
+  `KvEasing.Ease`，而空串在那里 `IndexOf("") == 0` → `"linear"` → default 分支原样返回 t；
+  但选择器用 `KvEasing.Default`（`"ease-out-cubic"`）作回退并在旁边画出那条曲线。用户看到
+  ease-out-cubic、按下一个键、得到完全笔直的插值，再重新选一次同一条曲线**看起来毫无变化**。
+  FreeMake 编辑器里的双胞胎选择器用的是 `Normalize`（`""` → `"linear"`）——**两个选择器对同一个
+  字段意见不一致**。现统一为 `Normalize`（顺带修好「非空但未知」的名字被原样回显、任何一行都
+  没有 ✓ 的情况）。
+- **`DrawPerKeyTextSizeEditor` 的读取点缺了它自己写入点四行之下就有的判空**：`PerKeyFontSize`
+  为 null 时 NRE 从 GUILayout 回调抛出 → **整个**设置窗口失效直到重启。已把数组提为局部并判空。
+
+低危：
+- **第 3 排后排循环把边界检查写成了 `for` 的**条件**（4 处）**：作为条件它不是跳过当前元素，而是
+  **终止整个循环**，故第一个越界的 `backSequence` 值就让第 3 排剩余所有按键从面板消失——在绑定页
+  这意味着「打开改键捕获」的按钮根本不存在，对用户与「该键被忽略」无法区分。同一方法里紧邻的第 2
+  排循环是对的（检查在体内）。当前不可达（`BackSequence24` 最大 23 < `key24.Length` 24），是潜伏
+  问题。4 处全部改为体内检查。
+- **`KeyShapeLayer.Init` 先发布 `count` 再分配十二个数组**：任一处分配抛出（负 `slotCount` 是
+  `ArgumentOutOfRangeException`，过大是 OOM）都会让 `count` 已是**新**值而数组仍是**旧的**、更短的
+  那批，`OnPopulateMesh` 随后按 `src.count` 遍历旧数组 → 在 uGUI mesh 重建**内部**抛
+  `IndexOutOfRangeException`，背景层与描边层同时中招（都读 `owner ?? this`），且此后每次重建都如此
+  （没有任何东西会重跑 `Init`）——整个按键框层永久死掉而玩家日志里什么都没有。当前调用方触发不了，
+  但这是本类里唯一一处「先发布不变量、后建立它」。现 `count` 最后赋值并钳制 `slotCount >= 0`。
+- **`KvEasing.Ease` 不净化 NaN**：`Mathf.Clamp01(NaN)` 返回 NaN（两个比较都为假），故每个分支
+  包括 `default: return t` 都返回 NaN；结果进入 `animTarget.localScale`，NaN 在那里会静默抹掉该按键
+  整棵文本子树并污染之后所有 RectTransform 计算。逐个追过调用方，当前都产生不了 NaN，属纵深防御。
+  （计数弹跳不走 `KvEasing`，它用已净化的 `CubicBezierEase`。）
+- **每键雨色默认值与「重置每键颜色」不一致**：构造函数与 `EnsureSettingsArrays` 把 42 个槽位**全部**
+  填成第 1 排颜色，而 `InitPerKeyColors` 按排填（`RainColor`/`RainColor2`/`RainColor3`）。新建配置
+  + 打开每键颜色时第 2、3 排渲染成第 1 排颜色；`ApplyPerKeyColorsToAll` 又把它读到的写回，于是错误
+  颜色被**落盘**、重启后仍在，直到用户点「重置」那一刻颜色跳到另一套。按排才是对的（全局路径
+  `ApplyGlobalColorsToAll` 本来就按排解析），现三条路径共用 `ProfileData.DefaultPerKeyRainColor(i)`。
+- Harness 增至 **146** 项（版本轴独立性、当前 meta 但节点戳陈旧仍被修复、已盖章则不重复修复、
+  每键雨色按排、空缓动名归一为 linear、`Ease` 的 NaN 安全性）。
+
+子代理另确认**干净**：`KeyShapeLayer` 全部 9 个槽位 setter 都有边界检查、30+ 调用点无越界写；槽位
+数在固定/自定义/108K 三条布局上都已证明一致（唯一的跨层不匹配——自定义统计面板 `shapeSlot >=
+Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守卫安全吸收，且统计面板以
+`raining = -1` 创建、本就没有雨滴）；`vh.Clear()` 先行故无残留顶点、`MarkDirty` 总是扇出到描边层、
+`Generation` 单调；`KvEasing` 的 26 个 `Names` 条目**全部**有对应 `case`，`Normalize` 经同一张表
+规范化，故不存在「被持久化却无法求值」的名字；`ProfileData` 每个数组字段都被 `EnsureSettingsArrays`
+定长、42-vs-105 的不匹配在全部 6 个读取点都有守卫；三个文件里没有任何 `readonly` 集合被重新赋值。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

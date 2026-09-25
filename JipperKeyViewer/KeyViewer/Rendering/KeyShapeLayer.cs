@@ -74,7 +74,26 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// <summary>Allocate slot arrays (owner only); all slots start hidden / 分配槽位数组（仅持有层）；所有槽位初始隐藏</summary>
         public void Init(int slotCount)
         {
-            count = slotCount;
+            // `count` is published LAST, after every array it describes actually exists. It used to
+            // be assigned first, so a throw from any of the twelve allocations below (a negative
+            // slotCount is an ArgumentOutOfRangeException, and a huge one is an OOM) left `count`
+            // at the NEW value while every array was still the PREVIOUS, shorter one. OnPopulateMesh
+            // then iterated src.count over the old arrays and threw IndexOutOfRangeException inside
+            // a uGUI mesh rebuild — on the background AND the outline layer (both read
+            // `owner ?? this`) — on every subsequent rebuild, because nothing re-runs Init. The
+            // whole key-box layer was permanently dead with nothing reaching the player's log.
+            // No current caller can trigger it (Init is only ever called with a few thousand slots
+            // ≈ 66 KB), but this was the one place in the class that published an invariant before
+            // establishing it, and the guard is free.
+            // `count` 最后发布，在它所描述的每个数组都真正存在之后。它此前是**最先**赋值，故下方
+            // 十二处分配中任何一处抛出（负的 slotCount 是 ArgumentOutOfRangeException，过大则是
+            // OOM）都会让 `count` 已是**新**值而所有数组仍是**旧的**、更短的那一批。
+            // OnPopulateMesh 随后按 src.count 遍历旧数组，在 uGUI 的 mesh 重建**内部**抛
+            // IndexOutOfRangeException——背景层与描边层都中招（两者都读 `owner ?? this`）——
+            // 且此后每次重建都如此，因为没有任何东西会重跑 Init。整个按键框层永久死掉，而玩家
+            // 的日志里什么都没有。当前的调用方都触发不了（Init 只会被以几千个槽位调用，约
+            // 66KB），但这是本类里唯一一处「先发布不变量、后建立它」的地方，而守卫是免费的。
+            if (slotCount < 0) slotCount = 0;
             rects = new Rect[slotCount];
             bgColors = new Color[slotCount];
             outlineColors = new Color[slotCount];
@@ -94,6 +113,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 outlineColors[i] = Color.white;
                 scales[i] = 1f;
             }
+            count = slotCount;
             Generation++;
             MarkDirty();
         }

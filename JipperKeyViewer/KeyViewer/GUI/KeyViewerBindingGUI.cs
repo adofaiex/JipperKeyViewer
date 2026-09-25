@@ -75,9 +75,22 @@ namespace JipperKeyViewer.KeyViewer
             {
                 GUILayout.Label(row3Label + ":");
                 GUILayout.BeginHorizontal();
-                for (int i = 8; i < backSequence.Length && backSequence[i] < keyCodes.Length; i++)
+                for (int i = 8; i < backSequence.Length; i++)
+                {
+                    // In the BODY, like the row-2 loop right above. As a for-loop CONDITION this
+                    // test does not skip the element — it TERMINATES the loop, so the first
+                    // out-of-range backSequence value made every remaining row-3 key vanish from
+                    // the panel. In this tab that means the button which opens the key-capture
+                    // prompt no longer exists, which for the user is indistinguishable from the
+                    // key being ignored.
+                    // 放在**循环体内**，与紧邻上方的第 2 排一致。作为 for 的**条件**时该检查不是
+                    // 跳过当前元素，而是**终止整个循环**，故第一个越界的 backSequence 值就让第 3 排
+                    // 剩余所有按键从面板上消失。在本标签页这意味着「打开改键捕获」的按钮根本不存在，
+                    // 对用户而言与「该键被忽略」无法区分。
+                    if (backSequence[i] >= keyCodes.Length) continue;
                     if (GUILayout.Button(labelFunc(backSequence[i], keyCodes[backSequence[i]])))
                         onKeyClick(backSequence[i], keyCodes[backSequence[i]]);
+                }
                 GUILayout.EndHorizontal();
             }
         }
@@ -153,8 +166,13 @@ namespace JipperKeyViewer.KeyViewer
             {
                 GUILayout.Label(I18n.Tr("row3_keys") + ":");
                 GUILayout.BeginHorizontal();
-                for (int i = 8; i < backSequence.Length && backSequence[i] < ghostKeyCodes.Length; i++)
+                for (int i = 8; i < backSequence.Length; i++)
+                {
+                    // Body, not loop condition — see the identical fix in DrawBackRowButtons.
+                    // 放在循环体而非循环条件——见 DrawBackRowButtons 中完全相同的修复。
+                    if (backSequence[i] >= ghostKeyCodes.Length) continue;
                     DrawGhostKeyButton(backSequence[i], ghostKeyCodes);
+                }
                 GUILayout.EndHorizontal();
             }
 

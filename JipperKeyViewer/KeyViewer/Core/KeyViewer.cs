@@ -1388,12 +1388,16 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Data.PerKeyOutlineClicked = EnsureColorArray(Settings.Data.PerKeyOutlineClicked, n, Settings.Data.OutlineClicked);
             Settings.Data.PerKeyText = EnsureColorArray(Settings.Data.PerKeyText, n, Settings.Data.Text);
             Settings.Data.PerKeyTextClicked = EnsureColorArray(Settings.Data.PerKeyTextClicked, n, Settings.Data.TextClicked);
-            Settings.Data.PerKeyRainColor = EnsureColorArray(Settings.Data.PerKeyRainColor, n, Settings.Data.RainColor);
             // Same gap class as Count: these two are indexed unguarded by the rain system
             // (PerKeyGhostRainColor) and the per-key font path, and were only sized by the
             // constructor that FromJsonOverwrite bypasses. / 与 Count 同类缺口:雨滴系统未加守卫地
             // 索引 PerKeyGhostRainColor,每键字号路径亦然;此前仅靠被 FromJsonOverwrite 绕过的
             // 构造函数定长。
+            // PerKeyRainColor resolves its fill per rain ROW (shared with the ctor and the
+            // "reset per-key colours" button) rather than flat row-1, so the three agree.
+            // PerKeyRainColor 的填充按**雨排**解析（与构造函数及「重置每键颜色」共用），而不是
+            // 一律第 1 排，故三者一致。
+            Settings.Data.PerKeyRainColor = ProfileData.EnsureRainColorArray(Settings.Data.PerKeyRainColor, n);
             Settings.Data.PerKeyGhostRainColor = EnsureColorArray(Settings.Data.PerKeyGhostRainColor, n, GhostRainColorDefault);
             if (Settings.Data.PerKeyFontSize == null || Settings.Data.PerKeyFontSize.Length != n)
             {
@@ -1637,6 +1641,23 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Data.SyncListsToArrays();
             if (Settings.Data.DataVersion < Settings.Version)
                 Settings.Data.DataVersion = Settings.Version;
+            // The legacy FmNode-defaults repair rides its OWN stamp, deliberately separate from
+            // DataVersion. DataVersion is stamped from the META schema version (2..6) and 1 is never
+            // written by any path, so gating the repair on `DataVersion < NodeTextDefaultsVersion`
+            // meant the documented "bump the constant when you add a defaulted field" escalation
+            // would have permanently disabled the repair for every profile the moment anyone
+            // followed it — the two fields live on incompatible version axes. NodeDefaultsVersion
+            // is 0 in every profile written before this field existed and is stamped forward here,
+            // which is exactly the question the gate needs to answer: "was this file written
+            // before the repair list was last extended?"
+            // 旧 FmNode 默认值修复走**自己**的版本戳，刻意与 DataVersion 分开。DataVersion 由
+            // **meta** 架构版本（2..6）盖章，而 1 从未被任何路径写过，故用
+            // `DataVersion < NodeTextDefaultsVersion` 当闸门意味着：任何人一旦照注释递增那个
+            // 常量，修复就会对**所有** Profile 永久失效——两者根本不在同一条版本轴上。
+            // NodeDefaultsVersion 在该字段出现之前写出的每个 Profile 里都是 0，并在此向前盖章，
+            // 这正是闸门需要回答的问题：「这份文件是否写在修复清单上次扩充之前？」
+            if (Settings.Data.NodeDefaultsVersion < ProfileData.NodeTextDefaultsVersion)
+                Settings.Data.NodeDefaultsVersion = ProfileData.NodeTextDefaultsVersion;
             string profilePath = GetProfilePath(Settings.CurrentProfile);
             string json = JsonConvert.SerializeObject(Settings.Data, ProfileData.ProfileSerializer);
             WriteAllTextSafe(profilePath, json);

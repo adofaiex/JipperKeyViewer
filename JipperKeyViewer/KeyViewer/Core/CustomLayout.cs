@@ -401,7 +401,11 @@ namespace JipperKeyViewer.KeyViewer
                 // 与加载路径用同一个 DataVersion 闸门——本方法每次覆盖层重建都跑，无闸门的话当前
                 // 版本 Profile 里用户**故意**设的 0 不透明度/0 缩放/无光晕会在**每次**重建时被
                 // 重置（并落盘）。
-                if (Settings.Data.DataVersion < ProfileData.NodeTextDefaultsVersion)
+                // Same gate as the load path, and on the same independent stamp — see
+                // ProfileData.NodeDefaultsVersion for why this is NOT DataVersion.
+                // 与加载路径用同一个闸门、同一份独立版本戳——为何不是 DataVersion 见
+                // ProfileData.NodeDefaultsVersion 的说明。
+                if (Settings.Data.NodeDefaultsVersion < ProfileData.NodeTextDefaultsVersion)
                     ProfileData.ApplyLegacyFmNodeDefaults(node);
                 // Hand-edited profiles may carry an unknown node type — treat as a key node. /
                 // 手改配置可能带未知节点类型——按按键节点处理。

@@ -434,18 +434,41 @@ namespace JipperKeyViewer.KeyViewer.Settings
             // 写下的形状完全一致，于是每次加载都会静默重置他们约 30 个字段并落盘。DataVersion
             // 去掉了猜测：它说明磁盘上的文件是否写于该字段存在之前，而 SaveCurrentProfile 会把它
             // 向前盖章，故该修复每个 Profile 最多跑一次，且绝不在当前版本的 Profile 上跑。
-            if (DataVersion < NodeTextDefaultsVersion) ApplyLegacyFmNodeDefaults(_customNodes);
+            if (NodeDefaultsVersion < NodeTextDefaultsVersion) ApplyLegacyFmNodeDefaults(_customNodes);
         }
+
+        /// <summary>Stamp for the FmNode legacy-defaults repair, on its own axis. 0 in every
+        /// profile written before this field existed; <see cref="NodeTextDefaultsVersion"/> is
+        /// stamped onto it by SaveCurrentProfile.
+        ///
+        /// This deliberately does NOT reuse <see cref="DataVersion"/>. DataVersion tracks the META
+        /// schema version and only ever takes the values 0, 2, 3, 4, 5, 6 — the value 1 is never
+        /// written. Gating on `DataVersion < NodeTextDefaultsVersion` therefore worked only by
+        /// coincidence of history (the repaired fields all predate the field), and the documented
+        /// escalation — bump NodeTextDefaultsVersion when you add a defaulted FmNode field — would
+        /// have silently disabled the repair for every profile, including the broken ones it
+        /// exists to fix.
+        /// FmNode 旧默认值修复的**独立**版本戳。该字段出现之前写出的每个 Profile 都是 0；
+        /// <see cref="NodeTextDefaultsVersion"/> 由 SaveCurrentProfile 盖上去。
+        ///
+        /// 刻意**不**复用 <see cref="DataVersion"/>：后者跟踪的是 **meta** 架构版本，且只会取
+        /// 0/2/3/4/5/6——值 1 从未被写过。故用 `DataVersion < NodeTextDefaultsVersion` 当闸门
+        /// 此前只是**历史的巧合**在生效（被修字段都早于该字段出现），而注释承诺的升级路径
+        /// （新增带默认值的 FmNode 字段时递增 NodeTextDefaultsVersion）一旦被照做，就会对
+        /// **所有** Profile 静默关掉修复——包括它本该修的那些坏配置。
+        /// </summary>
+        public int NodeDefaultsVersion;
 
         /// <summary>Bump when a new defaulted FmNode field is added, so the one-shot legacy repair
         /// below re-runs for profiles written before the field existed. Gate:
-        /// `DataVersion < NodeTextDefaultsVersion` in SyncArraysFromLists. The Harness asserts that
-        /// EVERY FmNode field carrying a non-zero field initializer is listed in the repair, so a
-        /// new field added without a repair entry fails a test instead of silently reading as 0.
+        /// `NodeDefaultsVersion < NodeTextDefaultsVersion` in SyncArraysFromLists. The Harness
+        /// asserts that EVERY FmNode field carrying a non-zero field initializer is listed in the
+        /// repair, so a new field added without a repair entry fails a test instead of silently
+        /// reading as 0.
         /// 新增带默认值的 FmNode 字段时递增，让下面的旧字段修复对更早写出的 Profile 仍然有效。
-        /// 闸门：`SyncArraysFromLists` 里的 `DataVersion < NodeTextDefaultsVersion`。Harness 会断言
-        /// **每一个**带非零字段初始化器的 FmNode 字段都在修复清单里，故新增字段而漏加修复条目会
-        /// 让测试失败，而不是静默读成 0。</summary>
+        /// 闸门：`SyncArraysFromLists` 里的 `NodeDefaultsVersion < NodeTextDefaultsVersion`。
+        /// Harness 会断言**每一个**带非零字段初始化器的 FmNode 字段都在修复清单里，故新增字段
+        /// 而漏加修复条目会让测试失败，而不是静默读成 0。</summary>
         public const int NodeTextDefaultsVersion = 1;
 
         /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
@@ -740,10 +763,55 @@ namespace JipperKeyViewer.KeyViewer.Settings
             PerKeyOutlineClicked = SafeEnsure(PerKeyOutlineClicked, n, KeyViewer.OutlineClicked);
             PerKeyText = SafeEnsure(PerKeyText, n, KeyViewer.Text);
             PerKeyTextClicked = SafeEnsure(PerKeyTextClicked, n, KeyViewer.TextClicked);
-            PerKeyRainColor = SafeEnsure(PerKeyRainColor, n, KeyViewer.RainColor);
+            PerKeyRainColor = SafeEnsureRain(PerKeyRainColor, n);
             PerKeyGhostRainColor = SafeEnsure(PerKeyGhostRainColor, n, KeyViewer.GhostRainColorDefault);
             PerKeyFontSize = SafeEnsureFloat(PerKeyFontSize, n, 0f);
         }
+
+        /// <summary>The default per-key rain colour for slot `i`, shared by the constructor,
+        /// EnsureSettingsArrays and InitPerKeyColors so the three cannot drift apart again.
+        ///
+        /// Rain is laid out in three colour-coded rows and the GLOBAL path already resolves per row
+        /// (ApplyGlobalColorsToAll → rainSystem.GetRainColor(Keys[i].color)). The constructor and
+        /// EnsureSettingsArrays used to fill every one of the 42 slots with the single row-1 colour
+        /// instead, so a fresh profile with per-key colours enabled rendered rows 2 and 3 in row
+        /// 1's colour, and — because ApplyPerKeyColorsToAll persists what it read — those wrong
+        /// colours were written to disk and survived restarts until the user pressed "reset
+        /// per-key colours", at which point the colours snapped to a different set than the ones
+        /// they had. Purely cosmetic, but it is exactly the "the initializer disagrees with what
+        /// the reset path forces" class, and the user-visible symptom (a setting that silently
+        /// does not match the global equivalent) is the recurring complaint here.
+        /// 槽位 `i` 的默认每键雨色，由构造函数、`EnsureSettingsArrays` 与 `InitPerKeyColors` 共用，
+        /// 使三者无法再次漂移。
+        ///
+        /// 雨滴按三个颜色编码的排布局，而**全局**路径本就按排解析（ApplyGlobalColorsToAll →
+        /// rainSystem.GetRainColor(Keys[i].color)）。构造函数与 `EnsureSettingsArrays` 此前却把 42 个
+        /// 槽位**全部**填成第 1 排的颜色，于是新建配置 + 打开每键颜色时第 2、3 排会渲染成第 1 排的
+        /// 颜色；而 `ApplyPerKeyColorsToAll` 会把它读到的写回，于是这些错误颜色被落盘、重启后仍在，
+        /// 直到用户点「重置每键颜色」——那一刻颜色会跳到与此前不同的一套。纯属观感问题，但这正是
+        /// 「初始化器与重置路径强制的结果不一致」那一类，而其用户可见症状（某项设置与全局对应项
+        /// 静默对不上）恰是这里反复出现的抱怨。
+        /// </summary>
+        internal static Color DefaultPerKeyRainColor(int i)
+        {
+            if (i < 8) return KeyViewer.RainColor;
+            if (i < 16) return KeyViewer.RainColor2;
+            if (i < KeyViewer.FootKeyBase) return KeyViewer.RainColor3;
+            return KeyViewer.RainColor;
+        }
+
+        private static Color[] SafeEnsureRain(Color[] arr, int len)
+        {
+            if (arr != null && arr.Length == len) return arr;
+            Color[] r = new Color[len];
+            for (int i = 0; i < len; i++) r[i] = DefaultPerKeyRainColor(i);
+            if (arr != null) Array.Copy(arr, r, Math.Min(arr.Length, len));
+            return r;
+        }
+
+        /// <summary>Same contract as the ctor path, for callers outside this file (EnsureSettingsArrays).
+        /// 与构造函数那条路径同契约，供本文件之外（EnsureSettingsArrays）调用。</summary>
+        internal static Color[] EnsureRainColorArray(Color[] arr, int len) => SafeEnsureRain(arr, len);
 
         private static Color[] SafeEnsure(Color[] arr, int len, Color fill)
         {
@@ -807,11 +875,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
                 }
                 else
                 {
-                    if (i < 8) PerKeyRainColor[i] = KeyViewer.RainColor;
-                    else if (i < 16) PerKeyRainColor[i] = KeyViewer.RainColor2;
-                    else if (i < footBase) PerKeyRainColor[i] = KeyViewer.RainColor3;
-                    else if (i < KeyViewer.MaxKeySlots) PerKeyRainColor[i] = KeyViewer.RainColor;
-                    else PerKeyRainColor[i] = KeyViewer.RainColor;
+                    PerKeyRainColor[i] = DefaultPerKeyRainColor(i);
                 }
                 PerKeyGhostRainColor[i] = oldGhostRain != null && i < oldGhostRain.Length
                     ? oldGhostRain[i] : KeyViewer.GhostRainColorDefault;

@@ -413,8 +413,15 @@ namespace JipperKeyViewer.KeyViewer
             {
                 GUILayout.Label(I18n.Tr("row3_keys") + ":");
                 GUILayout.BeginHorizontal();
-                for (int b = 8; b < backSequence.Length && backSequence[b] < keyCodes.Length; b++)
-                    DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                for (int b = 8; b < backSequence.Length; b++)
+                {
+                    // Body, not loop condition — the row-2 loop above does the same. As a
+                    // condition this test terminates the loop, dropping every remaining row-3 key.
+                    // 放在循环体而非循环条件——上方的第 2 排循环同样如此。作为条件时该检查会终止
+                    // 循环，使第 3 排剩余所有按键一起消失。
+                    if (backSequence[b] < keyCodes.Length)
+                        DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                }
                 GUILayout.EndHorizontal();
             }
 

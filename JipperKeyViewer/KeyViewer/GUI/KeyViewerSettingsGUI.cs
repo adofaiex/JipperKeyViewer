@@ -902,8 +902,15 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     GUILayout.Label(I18n.Tr("row3_keys") + ":");
                     GUILayout.BeginHorizontal();
-                    for (int b = 8; b < backSequence.Length && backSequence[b] < keyCodes.Length; b++)
-                        DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                    for (int b = 8; b < backSequence.Length; b++)
+                    {
+                        // Body, not loop condition — the row-2 loop above does the same. As a
+                        // condition this test terminates the loop, dropping every remaining row-3 key.
+                        // 放在循环体而非循环条件——上方的第 2 排循环同样如此。作为条件时该检查会终止
+                        // 循环，使第 3 排剩余所有按键一起消失。
+                        if (backSequence[b] < keyCodes.Length)
+                            DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                    }
                     GUILayout.EndHorizontal();
                 }
 
@@ -997,13 +1004,22 @@ namespace JipperKeyViewer.KeyViewer
             // 字号：0 = 跟随全局，1-72 = 每键覆盖。PerKeyFontSize 的长度检查由调用方负责，不在此
             // 重复：此前的本地变量在一条会让整个窗口崩掉的路径上无守卫地索引它。它还拼了一个
             // 从未被显示的 sizeLabel 字符串——选中某个键期间每事件一次 ToString 加拼接。
-            float curSize = s < Settings.Data.PerKeyFontSize.Length ? Settings.Data.PerKeyFontSize[s] : 0f;
+            // The length check is the caller's job, but the NULL check is not: the reader two lines
+            // below the writer was hardened and this one was not, so a null PerKeyFontSize threw
+            // an NRE out of a GUILayout callback — which unbalances the Begin/End group stack and
+            // disables the ENTIRE settings window until restart, not just this row. Same
+            // belt-and-suspenders the surrounding guards establish.
+            // 长度检查由调用方负责，但**判空**不是：下方两行的写入点已加守卫而这个读取点没有，
+            // 故 PerKeyFontSize 为 null 时会从 GUILayout 回调抛出 NRE——Begin/End 组栈失衡，
+            // **整个**设置窗口（而不只是这一行）失效直到重启。与周围守卫同款的谨慎起见。
+            float[] perKeyFontSize = Settings.Data.PerKeyFontSize;
+            float curSize = perKeyFontSize != null && s < perKeyFontSize.Length ? perKeyFontSize[s] : 0f;
             float newSize = FloatSliderField(label + " " + I18n.Tr("key_font_size"), curSize, 0f, 72f, "F0");
             if (newSize != curSize)
             {
-                if (Settings.Data.PerKeyFontSize != null && s < Settings.Data.PerKeyFontSize.Length)
+                if (perKeyFontSize != null && s < perKeyFontSize.Length)
                 {
-                    Settings.Data.PerKeyFontSize[s] = Mathf.Round(newSize);
+                    perKeyFontSize[s] = Mathf.Round(newSize);
                     UpdateAllFonts();
                     SaveSettingsFromGui();
                 }
@@ -1462,7 +1478,23 @@ namespace JipperKeyViewer.KeyViewer
         {
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(100f));
-            string shown = string.IsNullOrEmpty(current) ? Util.KvEasing.Default : current;
+            // Normalize, NOT KvEasing.Default. The press animation passes the *stored* name to
+            // KvEasing.Ease, where an empty string has IndexOf("") == 0 → "linear" → the default
+            // branch returns t unchanged. Labelling the button "ease-out-cubic" and drawing that
+            // curve next to it therefore advertised an eased animation the runtime never plays:
+            // the user sees ease-out-cubic, presses a key, gets a dead-straight one, and re-picking
+            // the same curve appears to change nothing. Normalize is what maps "" → "linear" —
+            // and it is exactly what the FreeMake editor's twin picker already uses for the same
+            // field, so the two pickers now agree. It also canonicalises an unknown-but-non-empty
+            // name, which previously was echoed verbatim and left no ✓ on any row.
+            // 用 Normalize，而**不是** KvEasing.Default。按压动画把**存储的**名字传给
+            // KvEasing.Ease，而空串在那里 IndexOf("") == 0 → "linear" → default 分支原样返回 t。
+            // 故把按钮标成「ease-out-cubic」并在旁边画出那条曲线，等于宣传一个运行时根本不播的
+            // 缓动：用户看到 ease-out-cubic、按下一个键、得到完全笔直的插值，再重新选一次同一条
+            // 曲线看起来毫无变化。Normalize 正是把 "" 映射为 "linear" 的那个——也正是 FreeMake
+            // 编辑器里同字段的双胞胎选择器早就在用的，故两者现在一致。它同时把「非空但未知」的
+            // 名字规范化，此前那种名字被原样回显、任何一行都没有 ✓。
+            string shown = Util.KvEasing.Normalize(current);
             if (GUILayout.Button(shown, GUILayout.Width(140f)))
             {
                 easingListExpanded = easingListExpanded == id ? null : id;
