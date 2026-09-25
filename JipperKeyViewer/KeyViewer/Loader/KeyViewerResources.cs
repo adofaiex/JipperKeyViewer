@@ -166,6 +166,22 @@ namespace JipperKeyViewer.KeyViewer
                 Loader.Warning($"KeyViewer: {skipped} game font(s) were not added — the list is capped at {MaxGameFonts} entries to bound the glyph atlas VRAM");
         }
 
+        /// <summary>Destroy a sprite loaded by LoadSpriteFromFile together with the Texture2D behind
+        /// it, then clear the field. The sprite owns nothing: its texture is a plain asset, so
+        /// destroying the sprite alone would leave the texture resident. Null and already-destroyed
+        /// inputs are no-ops. / 销毁 LoadSpriteFromFile 加载的精灵**及其背后的** Texture2D，然后清空
+        /// 字段。精灵本身不持有纹理——纹理是独立的普通资源，故只销毁精灵会把纹理留在显存里。
+        /// null 与已销毁的输入均为空操作。
+        /// </summary>
+        private static void DestroyReloadedSprite(ref Sprite sprite)
+        {
+            if (sprite == null) return;
+            Texture2D texture = sprite.texture;
+            Destroy(sprite);
+            if (texture != null) Destroy(texture);
+            sprite = null;
+        }
+
         /// <summary>
         /// Extract bundled defaults, then load sprites from PNG files, fonts from OTF/TTF files, and custom fonts / 释放内嵌默认资源，然后从 PNG 加载精灵、从 OTF/TTF 加载字体以及自定义字体
         /// </summary>
@@ -175,12 +191,23 @@ namespace JipperKeyViewer.KeyViewer
 
             // Destroy the previous dynamically-created assets before dropping the references —
             // TMP_FontAssets carry atlas textures/materials; without this, every loader-level
-            // toggle (UMM off→on) leaked the whole set.
-            // 清空前先销毁旧的动态创建资产——TMP_FontAsset 持有图集纹理/材质;否则每次加载器级
-            // 开关(UMM 关→开)都会泄漏一整套。
+            // toggle (UMM off→on) leaked the whole set. The three sprites below are exactly such
+            // assets and were simply omitted from this list, so each toggle ALSO leaked three
+            // sprites and their backing textures: LoadSpriteFromFile allocates a Texture2D plus a
+            // Sprite, and neither is parented to a GameObject, so Unity never reclaims them when
+            // the component's object is destroyed. The three lines below were re-assigned
+            // unconditionally a few lines further down, quietly orphaning the previous set.
+            // 清空前先销毁旧的动态创建资产——TMP_FontAsset 持有图集纹理/材质；否则每次加载器级
+            // 开关(UMM 关→开)都会泄漏一整套。下面三个精灵**正是**这类资产，却只是被漏掉了：
+            // LoadSpriteFromFile 会分配一个 Texture2D 加一个 Sprite，二者都**不**挂在任何
+            // GameObject 下，故组件对象被销毁时 Unity 绝不会回收它们。这三行在几行之后被无条件
+            // 重新赋值，于是上一套被静默孤立成孤儿。
             foreach (var e in fontList)
                 if (e.font != null) Destroy(e.font);
             fontList.Clear();
+            DestroyReloadedSprite(ref keyBackgroundSprite);
+            DestroyReloadedSprite(ref keyOutlineSprite);
+            DestroyReloadedSprite(ref ghostRainSprite);
             // The style materials are copies of the just-destroyed font materials — drop them
             // before the next font load builds new ones. / 样式材质是刚被销毁的字体材质的副本——
             // 在下次字体加载构建新材质前先丢弃。

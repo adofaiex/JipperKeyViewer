@@ -1313,6 +1313,32 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
   `TryLoadResources → EnableKeyViewer`——用户**完全看不到按键显示**，唯一痕迹是一行 Unity 日志。
   一个坏的可选字体不该拖垮按键，这正是那些孪生调用点被保护的原因。现加守卫 + 明确报错 + 跳过。
 
+### 精灵贴图泄漏（子代理漏掉的一条，2026-09-26，第 79 轮）
+在核实「字体每次开关都重烘」时顺带查出，**子代理 7 条报告没有覆盖**的一条泄漏。
+
+- **`keyBackgroundSprite` / `keyOutlineSprite` / `ghostRainSprite` 从不被销毁**：
+  `TryLoadResources` 里那段清理的注释写「Destroy the previous dynamically-created assets
+  before dropping the references」，却**只处理了字体**——这三个精灵正是同一类「动态创建的资产」，
+  只是被漏掉了。`LoadSpriteFromFile` 分配一个 `Texture2D` 加一个 `Sprite`，二者都**不挂在任何
+  GameObject 下**，故组件对象被销毁时 Unity 绝不会回收；而几行之后那三行是**无条件**重新赋值，
+  于是每次加载器开关都把上一套静默孤立成孤儿。每次 UMM 关→开泄漏 3 精灵 + 3 贴图。
+  现：新增 `DestroyReloadedSprite(ref Sprite)`，与字体在同一段清理里销毁（**同时销毁精灵背后的
+  贴图**——只销毁精灵会把贴图留在显存里）。
+  这条是**注释承诺的不变量、代码没有维护**的又一例：注释已经写对了，只是代码漏了三行。
+
+### 仍待处理（有意未修）
+- **【多秒冻结，非玩法期】每次加载器开关都重烘 58 张字形图集**：`fontList` 是**静态**而重载闸门
+  `keyBackgroundSprite != null` 是**实例**字段。`Main.DisableKeyViewer` 销毁整个 GameObject，故下次
+  `EnableKeyViewer` 拿到的是 `keyBackgroundSprite` 为 null 的全新组件 → 闸门放行 → 销毁并重烘
+  全部图集，外加 `Resources.FindObjectsOfTypeAll<Font>()` 与 `EnsureBundledAssets` 对（大）CJK otf
+  的解压。组件**只在开关时重建**（不在每次场景加载时），故这是「关/开 Mod」这种常规操作的代价，
+  不是游玩期代价。
+  **为何不修**：正解是让这些资产也变成静态、把销毁移到 `Main.Shutdown()`，但那会同时改动三个字段
+  的静态性、`OnDestroy` 与 `Shutdown` 的分工。**一旦出错就是按键背景整体空白**——正是用户明确
+  反馈过的那一类回归（第 34 轮的「按键文本消失」）。风险与收益不成比例，故记录而不动手。
+- `KvVideoTextureManager.Release(int nodeId)` 全仓**零调用点**（死代码），其文档注释却声称编辑器
+  在用它——又一处注释与代码不符。删除风险低于留着误导，故暂留待下次触碰该文件时一并处理。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
