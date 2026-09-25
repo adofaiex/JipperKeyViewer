@@ -329,7 +329,7 @@ namespace JipperKeyViewer.KeyViewer
                     use = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, node,
                         isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel));
                 }
-                if (use != null) t.fontMaterial = use;
+                if (use != null) ApplyFontMaterial(t, use);
                 t.fontStyle = node != null
                     ? (isCount && node.UseCustomCountFontStyle ? (FontStyles)node.CountFontStyleFlags : (FontStyles)node.FontStyleFlags)
                     : style;
@@ -453,15 +453,93 @@ namespace JipperKeyViewer.KeyViewer
                 mat.SetFloat("_UnderlayOffsetY", style.ShadowOffsetY);
                 mat.SetFloat("_UnderlaySoftness", style.ShadowSoftness);
             }
-            // NOTE: the cache key includes colour/offset floats, so every distinct style mints a new
-            // material. It is deliberately NOT capped: evicting an entry that some live text still
-            // references would destroy that text's material and make it render blank, which is far
-            // worse than the slow growth. Entries are released in ReleaseTextStyleMaterials on
-            // teardown. / 缓存键含颜色/偏移，每个不同样式都会新建材质。这里刻意不加上限：
-            // 淘汰仍被存活文本引用的条目会让那些文本变成空白，比缓慢增长严重得多；材质在
-            // 拆解时由 ReleaseTextStyleMaterials 统一释放。
+            // The cache key includes colour/offset floats, so every distinct style mints a new
+            // material. The cache key quantizes to 1/1000 while the GUI sliders are continuous and
+            // UpdateAllFonts runs on EVERY slider tick — one drag of the shadow offset from -20 to
+            // +20 could mint tens of thousands of materials, none of them freed until teardown
+            // (hundreds of MB plus the native-object churn).
+            //
+            // Evicting naively would destroy a material some live text still renders with, turning
+            // that text BLANK — far worse than the growth. So materials are reference counted by
+            // ApplyFontMaterial, and only entries nobody is using are ever destroyed.
+            // 缓存键含颜色/偏移，每个不同样式都会新建材质。键按 1/1000 量化，而 GUI 滑杆是连续的、
+            // UpdateAllFonts 在**每个**滑杆 tick 都跑——把阴影偏移从 -20 拖到 +20 一次就能铸出
+            // 数万个材质，在拆解前一个都不会释放（数百 MB 外加原生对象抖动）。
+            //
+            // 粗暴淘汰会销毁某个存活文本仍在渲染的材质，让那个文本变成**空白**——比增长严重得多。
+            // 因此材质由 ApplyFontMaterial 引用计数，只有无人使用的条目才会被销毁。
             textStyleMaterials[key] = mat;
+            EvictUnusedTextStyleMaterials();
             return mat;
+        }
+
+        /// <summary>How many distinct text-style materials may be cached. Far above what any real
+        /// configuration needs (a handful of styles at a time), low enough to bound the worst case
+        /// when a slider is dragged. / 文字样式材质缓存上限。远高于任何真实配置所需（同时只有少数
+        /// 几种样式），又低到足以约束拖动滑杆时的最坏情况。</summary>
+        private const int MaxTextStyleMaterials = 48;
+
+        /// <summary>Destroy cached materials that no live TMP_Text is using, until the cache is
+        /// back under the cap. Uses a scratch list so the eviction scan never allocates. /
+        /// 销毁没有任何存活 TMP_Text 正在使用的缓存材质，直到缓存回到上限以下。用暂存列表
+        /// 避免淘汰扫描产生分配。</summary>
+        private void EvictUnusedTextStyleMaterials()
+        {
+            if (textStyleMaterials.Count <= MaxTextStyleMaterials) return;
+            // Drop entries whose text was destroyed: Object.Destroy is deferred, so a destroyed
+            // component still compares non-null for the rest of the frame and would keep its
+            // material pinned as "in use" until the next sweep.
+            // 丢弃文本已被销毁的条目：Object.Destroy 是延迟的，已销毁组件在帧内比较仍为非 null，
+            // 会把其材质一直钉成"使用中"直到下一次清扫。
+            if (textStyleMaterialUse.Count > 0)
+            {
+                textStyleEvictScratch.Clear();
+                foreach (KeyValuePair<TMP_Text, int> pair in textStyleMaterialUse)
+                    if (pair.Key == null) textStyleEvictScratch.Add(pair.Key);
+                for (int i = 0; i < textStyleEvictScratch.Count; i++)
+                    ReleaseTextMaterialUse(textStyleEvictScratch[i]);
+            }
+            textStyleEvictScratch.Clear();
+            foreach (KeyValuePair<long, Material> pair in textStyleMaterials)
+            {
+                if (textStyleMaterials.Count <= MaxTextStyleMaterials) break;
+                if (pair.Value == null) { textStyleMaterials.Remove(pair.Key); continue; }
+                if (textStyleMaterialRefs.ContainsKey(pair.Value.GetInstanceID())) continue;
+                textStyleMaterials.Remove(pair.Key);
+                UnityEngine.Object.Destroy(pair.Value);
+            }
+        }
+
+        /// <summary>Point a TMP text at a text-style material, keeping the reference count in step.
+        /// Every `text.fontMaterial = ...` for a CACHED material must go through here — a direct
+        /// assignment would leave the count stale and the material un-evictable (or, worse, evictable
+        /// while still in use). / 把 TMP 文本指向某个文字样式材质，并同步维护引用计数。所有对
+        /// **缓存材质**的 `text.fontMaterial = ...` 都必须经由此处——直接赋值会让计数失真，
+        /// 材质要么无法被回收，要么在仍被使用时被回收。</summary>
+        internal void ApplyFontMaterial(TMP_Text text, Material material)
+        {
+            if (text == null || material == null) return;
+            int newId = material.GetInstanceID();
+            if (textStyleMaterialUse.TryGetValue(text, out int oldId))
+            {
+                if (oldId == newId) return;
+                ReleaseTextMaterialUse(text);
+            }
+            textStyleMaterialUse[text] = newId;
+            textStyleMaterialRefs[newId] = GetRefCount(newId) + 1;
+            text.fontMaterial = material;
+        }
+
+        private int GetRefCount(int instanceId)
+            => textStyleMaterialRefs.TryGetValue(instanceId, out int c) ? c : 0;
+
+        private void ReleaseTextMaterialUse(TMP_Text text)
+        {
+            if (!textStyleMaterialUse.TryGetValue(text, out int id)) return;
+            textStyleMaterialUse.Remove(text);
+            int c = GetRefCount(id) - 1;
+            if (c > 0) textStyleMaterialRefs[id] = c;
+            else textStyleMaterialRefs.Remove(id);
         }
 
         /// <summary>Destroy every cached text-style material (teardown), so a long session of style
@@ -473,6 +551,14 @@ namespace JipperKeyViewer.KeyViewer
                 if (m != null) Destroy(m);
             textStyleMaterials.Clear();
             neutralFontMaterials.Clear();
+            // The reference tracking indexes destroyed materials, so it must go with them —
+            // otherwise a later GetInstanceID could collide with a recycled id and a fresh
+            // material would look permanently "in use" (and never be evicted).
+            // 引用跟踪索引的是已销毁材质，必须一并清除——否则之后的 GetInstanceID 可能与回收复用
+            // 的 id 冲突，新材质会被永久判为"使用中"而永不回收。
+            textStyleMaterialUse.Clear();
+            textStyleMaterialRefs.Clear();
+            textStyleEvictScratch.Clear();
         }
 
         static MemberInfo cachedMaterialMember;

@@ -1014,7 +1014,7 @@ namespace JipperKeyViewer.KeyViewer
                 // returns, via ApplyCustomTextStyles). / 全局描边/阴影（自定义节点可能在 CreateKey
                 // 返回后由 ApplyCustomTextStyles 覆盖）。
                 var mat = GetTextStyleMaterial(keyFont, Rendering.KvTextStyle.Resolve(settings.Data, null, kind));
-                if (mat != null) text.fontMaterial = mat;
+                if (mat != null) ApplyFontMaterial(text, mat);
             }
             text.fontStyle = (FontStyles)settings.Data.FontStyleFlags;
             text.enableAutoSizing = true;

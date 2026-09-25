@@ -260,6 +260,37 @@
 - **`LoadProfile` 补 v5→v6 惰性修复**：与 `MigrateFootSlots` 对称——meta 早已升级后才到达的
   v5 形态 Profile 原本永远看不到那次翻转，随后还会被盖上 `DataVersion=6` 永久锁死旧约定。
 
+### 材质缓存回收与 Profile 操作加固（2026-09-26，第 39 轮）
+- **`textStyleMaterials` 无界增长（单次滑杆手势可铸数万个 Material）**：缓存键按 1/1000 量化，
+  而 GUI 滑杆连续、`UpdateAllFonts` 在**每个** tick 都跑——把阴影偏移从 −20 拖到 +20 一次就能
+  铸出数万个材质，在拆解前一个都不会释放。直接淘汰又会让仍在用它的文本**变空白**，所以现按
+  `Material.GetInstanceID` 做**引用计数**（`ApplyFontMaterial`），只有引用为 0 的条目才被销毁；
+  三个实际赋值点与 `KvTextStyle.Apply`（经桥接）全部改走该 setter。拆解时连同引用表一起清空，
+  避免销毁后的 instance id 被复用导致新材质被永久误判为"使用中"。
+- **`KvTextStyle.Bits` 的 NaN 归一化方向反了**：所有 NaN 量化后本就相同，真正的问题是 0 是
+  **合法**样式值——把 NaN 映射到 0 会让"NaN 粗细"与"粗细 0"共用材质；且 1e30f × 1000 溢出后
+  `RoundToInt` 在 x86 上未定义。现按 ±10 钳制并单独处理 Inf。
+- **`KvTextStyle.ColorOf` 不做 NaN/Inf 净化**：分量直接来自配置 JSON，一路传到
+  `SetColor("_OutlineColor")` 与 Color32 缓存键。本代码库其它颜色路径都做了净化，唯独此处
+  依赖一个自己不做断言的上游不变量。现就地回退。
+- **`DeleteProfile` 先删文件后写 meta**：meta 写失败（或同一窗口崩溃）会让 settings.json 指向
+  一个已不存在的文件。现改为**先写 meta 再 unlink**——删除失败只留下孤儿文件，下次
+  `SyncProfilesWithDisk` 会加回列表，这是可恢复的方向；meta 失败则还原内存列表。
+- **`RenameProfile` 回滚失败会让 meta 指向死文件**：反向 `File.Move` 失败时文件只存在于新名下，
+  而 meta 仍写旧名——下次启动按"找不到"处理并写一份全新默认值，用户数据看起来就消失了。
+  现改为回滚失败时**保留新名字**并写 meta。
+- **`.corrupt` 备份互相覆盖**：所有损坏恢复点都用 `File.Copy(..., true)`，一次瞬时故障就毁掉
+  唯一仍然完好的那份备份。现统一走 `RotateCorruptBackup`，保留上一份为 `.corrupt.1`。
+- **`WriteAllTextSafe` 只保证 rename 原子、不保证内容**：`File.WriteAllText` 只写到 OS 缓存，
+  返回后立刻断电仍可能留下截断文件。现经 FileStream 写并 `Flush(true)` 到设备；`File.Replace`
+  在部分 Mono/Wine/Proton 与网络盘/exFAT 上未实现且**每次都失败**（永久性保存失败，用户永远
+  看着错误横幅），现捕获 `PlatformNotSupportedException` 降级为 delete+move。
+- **`SwitchProfile` 首次 `SaveCurrentProfile` 无保护**：异常逃逸进 IMGUI 调用方打断该帧，且因为
+  绕过 `SaveSettings` 而到不了错误横幅。现捕获并设置 `lastSaveError`。
+- **`LoadSettings` 的建目录在 try 之外**：目录无法创建时异常逃出 Awake，`Settings` 保持 null，
+  之后每次 `Settings.Data` 都 NRE。现捕获、用默认值继续并显示失败。
+- **`SyncProfilesWithDisk` 把损坏 meta 里的 null/空白条目原样写回**：现过滤。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

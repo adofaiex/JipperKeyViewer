@@ -1311,12 +1311,17 @@ namespace JipperKeyViewer.KeyViewer
             if (key.text != null)
             {
                 Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.KeyLabel));
-                if (m != null) key.text.fontMaterial = m;
+                // Through the reference-counted setter: a direct assignment would leave the cached
+                // material's use count stale, so it could either never be evicted or be evicted
+                // while this text still renders with it (blank text). / 走引用计数 setter：直接赋值
+                // 会让缓存材质的使用计数失真，材质要么永远无法回收，要么在该文本仍在使用时被回收
+                // （文字变空白）。
+                if (m != null) ApplyFontMaterial(key.text, m);
             }
             if (key.value != null)
             {
                 Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.Count));
-                if (m != null) key.value.fontMaterial = m;
+                if (m != null) ApplyFontMaterial(key.value, m);
             }
         }
 

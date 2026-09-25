@@ -64,10 +64,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
 
         private static long Bits(float f)
         {
-            // NaN would make the key collide with every other NaN style; normalize it to zero —
-            // a NaN thickness is degenerate anyway and TMP would render nothing.
-            if (float.IsNaN(f)) f = 0f;
-            return (long)Mathf.RoundToInt(f * 1000f);
+            // Clamp rather than only NaN-guarding. The old comment claimed normalizing NaN to 0
+            // was about collision avoidance, but every NaN quantizes to the same value anyway — the
+            // real hazard is the opposite: 0 is a LEGAL style value, so mapping NaN onto it made
+            // "NaN thickness" and "thickness 0" share a material. Clamping to a wide but finite band
+            // also stops 1e30f overflowing RoundToInt (f * 1000f is already Infinity, and the int
+            // conversion of that is undefined on x86), which profile JSON can carry.
+            // 钳制而非只挡 NaN。旧注释说归一化 NaN 是为了避免碰撞，但所有 NaN 量化后本就相同——
+            // 真正的隐患正相反：0 是**合法**样式值，把 NaN 映射到 0 会让"NaN 粗细"与"粗细 0"
+            // 共用同一个材质。钳到宽而有限的区间也避免了 1e30f 溢出 RoundToInt（f * 1000f 本身
+            // 已是 Infinity，其 int 转换在 x86 上未定义）——而配置 JSON 可以携带这种值。
+            if (float.IsNaN(f)) return 0L;
+            if (float.IsInfinity(f)) return f > 0f ? 10000L : -10000L;
+            float clamped = Mathf.Clamp(f, -10f, 10f);
+            return (long)Mathf.RoundToInt(clamped * 1000f);
         }
 
         /// <summary>Node color array → Color with a global fallback (a null or malformed array
@@ -76,9 +86,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// 所有节点级配色覆盖的读取方式一致。</summary>
         private static Color ColorOf(float[] arr, Color fallback)
         {
-            return arr != null && arr.Length == 4
-                ? new Color(arr[0], arr[1], arr[2], arr[3])
-                : fallback;
+            if (arr == null || arr.Length != 4) return fallback;
+            // NaN/Inf components came straight from profile JSON and used to travel all the way
+            // into mat.SetColor("_OutlineColor", …) and the Color32 cache key. Every other colour
+            // path in this codebase sanitizes them (EnsureCustomNodes drops such arrays outright);
+            // this one relied on that upstream invariant without asserting it.
+            // NaN/Inf 分量直接来自配置 JSON，此前一路传到 mat.SetColor("_OutlineColor", …) 与
+            // Color32 缓存键。本代码库其它所有颜色路径都做了净化（EnsureCustomNodes 直接丢弃
+            // 这类数组），唯独此处依赖一个自己不做断言的上游不变量。
+            for (int i = 0; i < 4; i++)
+                if (float.IsNaN(arr[i]) || float.IsInfinity(arr[i])) return fallback;
+            return new Color(arr[0], arr[1], arr[2], arr[3]);
         }
 
         private static long Color32(Color c)
@@ -152,14 +170,29 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return s;
         }
 
-        /// <summary>Write the style onto a TMP text's font material. The caller supplies the
-        /// material (see KeyViewer.GetTextStyleMaterial) so identical styles share one instance.
-        /// / 把样式写入 TMP 文本的字体材质。材质由调用方提供（见
-        /// KeyViewer.GetTextStyleMaterial），相同样式共用一个实例。</summary>
+        /// <summary>Dead code: nothing in the codebase calls this. The three live call sites
+        /// (KeyViewerResources.UpdateAllFonts, CustomLayout.ApplyCustomTextStyles,
+        /// KeyViewerLayout.ConfigureText) assign fontMaterial themselves because they must go
+        /// through KeyViewer.ApplyFontMaterial to keep the material cache's reference count right.
+        /// A plain assignment here would bypass that count and let a material be destroyed while a
+        /// text still renders with it. / 死代码：全仓库无调用点。三个实际调用点自己赋值，因为
+        /// 必须走 KeyViewer.ApplyFontMaterial 才能维护材质缓存的引用计数；此处直接赋值会绕过
+        /// 计数，材质可能在文本仍在使用时被销毁。</summary>
         public void Apply(TMP_Text text, Material material)
         {
-            if (text == null) return;
-            text.fontMaterial = material;
+            if (text == null || material == null) return;
+            // Routed through the bridge so this pure value type never has to reference the
+            // KeyViewer component; the setter keeps the material cache's reference count right.
+            // 经桥接转发，使这个纯值类型无需引用 KeyViewer 组件；该 setter 会维护材质缓存的
+            // 引用计数。
+            KeyViewerApplier.Apply?.Invoke(text, material);
+        }
+
+        /// <summary>Bridge installed once by KeyViewer during initialization. / 由 KeyViewer 在
+        /// 初始化时安装一次的桥接。</summary>
+        internal static class KeyViewerApplier
+        {
+            internal static System.Action<TMP_Text, Material> Apply;
         }
     }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using Newtonsoft.Json;
 using TMPro;
 using UnityEngine;
@@ -340,6 +341,17 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Per-font material for the neutral style (no outline, no shadow) — the font's
         /// own material. / 中性样式（无描边无阴影）的每字体材质——即字体自带材质。</summary>
         private Dictionary<TMP_FontAsset, Material> neutralFontMaterials = new Dictionary<TMP_FontAsset, Material>();
+        /// <summary>How many live TMP_Text objects currently render with each cached text-style
+        /// material (keyed by Material.GetInstanceID). Only materials nobody is using may be
+        /// destroyed — evicting one that a text still renders with makes that text go blank. /
+        /// 每个缓存文字样式材质当前被多少个存活 TMP_Text 使用（以 Material.GetInstanceID 为键）。
+        /// 只有无人使用的材质才可销毁——回收仍在使用的材质会让对应文本变成空白。</summary>
+        private readonly Dictionary<int, int> textStyleMaterialRefs = new Dictionary<int, int>();
+        /// <summary>Which cached material each TMP_Text is currently pointed at, so switching a text
+        /// to a new style releases the old one. / 每个 TMP_Text 当前指向哪个缓存材质，便于切换样式
+        /// 时释放旧引用。</summary>
+        private readonly Dictionary<TMP_Text, int> textStyleMaterialUse = new Dictionary<TMP_Text, int>();
+        private readonly List<TMP_Text> textStyleEvictScratch = new List<TMP_Text>();
         /// <summary>List of all available fonts (built-in + custom) / 所有可用字体列表（内置 + 自定义）</summary>
         static readonly List<FontEntry> fontList = new List<FontEntry>();
         /// <summary>Whether the font selection list is expanded in settings / 设置中字体选择列表是否展开</summary>
@@ -360,6 +372,11 @@ namespace JipperKeyViewer.KeyViewer
         void Awake()
         {
             instance = this;
+            // Install the bridge KvTextStyle.Apply routes through, so a font-material assignment
+            // from there keeps the material cache's reference count just like the direct
+            // ApplyFontMaterial call sites do. / 安装 KvTextStyle.Apply 转发所用的桥接，使那里的
+            // 字体材质赋值与直接调用 ApplyFontMaterial 一样维护材质缓存的引用计数。
+            Rendering.KvTextStyle.KeyViewerApplier.Apply = (t, m) => ApplyFontMaterial(t, m);
             LoadSettings();
             I18n.Lang = Settings.Language;
             rainSystem = new RainSystem(Settings);
@@ -524,7 +541,23 @@ namespace JipperKeyViewer.KeyViewer
         private void LoadSettings()
         {
             string directory = Path.GetDirectoryName(ConfigPath);
-            if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+            // Outside the try below: if the config directory cannot be created the exception escaped
+            // Awake, leaving Settings null — and every later Settings.Data access then NREd, so the
+            // mod failed to initialize with no useful message. Keep the mod alive on defaults and
+            // show the failure instead. / 位于下方 try 之外：配置目录无法创建时异常会逃出 Awake，
+            // Settings 保持 null——此后每次 Settings.Data 访问都 NRE，Mod 带着无意义的信息初始化
+            // 失败。改为用默认值继续并显示失败。
+            try
+            {
+                if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: cannot create the config directory '{directory}': {e.Message}");
+                lastSaveError = e.Message;
+                Settings = new KeyViewerSettings();
+                return;
+            }
 
             if (!File.Exists(ConfigPath))
             {
@@ -638,15 +671,34 @@ namespace JipperKeyViewer.KeyViewer
         {
             try
             {
-                if (File.Exists(ConfigPath)) File.Copy(ConfigPath, ConfigPath + ".corrupt", true);
+                RotateCorruptBackup(ConfigPath);
                 string cur = Settings?.CurrentProfile;
                 if (!string.IsNullOrEmpty(cur))
                 {
-                    string pp = GetProfilePath(cur);
-                    if (File.Exists(pp)) File.Copy(pp, pp + ".corrupt", true);
+                    RotateCorruptBackup(GetProfilePath(cur));
                 }
             }
             catch { /* best-effort backup; the load failure is already reported / 尽力备份；加载失败已另行报告 */ }
+        }
+
+        /// <summary>Snapshot a damaged config file as &lt;path&gt;.corrupt, keeping the PREVIOUS
+        /// backup as &lt;path&gt;.corrupt.1. Every corrupt-recovery site used File.Copy(..., true),
+        /// which overwrote the last known-good copy — so a single transient failure (a half-written
+        /// file, a sync client mid-write) destroyed the one backup that was still good. / 把损坏的
+        /// 配置文件快照为 &lt;path&gt;.corrupt，同时保留**上一份**备份为 &lt;path&gt;.corrupt.1。
+        /// 此前所有损坏恢复点都用 File.Copy(..., true) 覆盖上一份——一次瞬时故障（半截文件、同步
+        /// 软件写到一半）就会毁掉唯一仍然完好的那份备份。</summary>
+        private static void RotateCorruptBackup(string path)
+        {
+            if (!File.Exists(path)) return;
+            string backup = path + ".corrupt";
+            string previous = path + ".corrupt.1";
+            if (File.Exists(backup))
+            {
+                try { File.Delete(previous); } catch { /* best effort / 尽力而为 */ }
+                try { File.Move(backup, previous); } catch { /* fall through to a plain copy / 退回普通复制 */ }
+            }
+            File.Copy(path, backup, true);
         }
 
         private void MigrateV1toV2()
@@ -1427,8 +1479,38 @@ namespace JipperKeyViewer.KeyViewer
             string tmp = path + ".tmp";
             try
             {
-                File.WriteAllText(tmp, contents);
-                if (File.Exists(path)) File.Replace(tmp, path, null);
+                // Write through a FileStream and flush to the DEVICE, not just the OS cache.
+                // File.WriteAllText stops at the cache, so a power loss right after this returned
+                // could still leave a truncated file — the "atomic" claim only ever covered the
+                // rename, not the content.
+                // 通过 FileStream 写入并 flush 到**设备**而非仅 OS 缓存。File.WriteAllText 只写到
+                // 缓存，返回后立刻断电仍可能留下截断文件——此前的"原子"只覆盖了 rename，不覆盖内容。
+                using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+                {
+                    writer.Write(contents);
+                    writer.Flush();
+                    stream.Flush(true);
+                }
+                if (File.Exists(path))
+                {
+                    try
+                    {
+                        File.Replace(tmp, path, null);
+                    }
+                    catch (PlatformNotSupportedException)
+                    {
+                        // File.Replace is not implemented on some Mono/Wine/Proton and network/exFAT
+                        // setups, and it fails there EVERY time — a permanent save failure that
+                        // left the user staring at the error banner forever. Fall back to
+                        // delete+move, which is still far better than never saving.
+                        // File.Replace 在部分 Mono/Wine/Proton 与网络盘/exFAT 上未实现，且每次都
+                        // 失败——那是让用户永远看着错误横幅的**永久性**保存失败。降级为
+                        // delete+move，仍远好过永远存不下去。
+                        File.Delete(path);
+                        File.Move(tmp, path);
+                    }
+                }
                 else File.Move(tmp, path);
             }
             catch
@@ -1484,7 +1566,7 @@ namespace JipperKeyViewer.KeyViewer
                 if (json.IndexOf("\"Count\"", StringComparison.OrdinalIgnoreCase) < 0)
                 {
                     Loader.Error($"Profile '{name}' failed validation (Count field missing)");
-                    try { File.Copy(profilePath, profilePath + ".corrupt", true); } catch { }
+                    try { RotateCorruptBackup(profilePath); } catch { }
                     return false;
                 }
                 // Replace the instance first: FromJsonOverwrite only writes fields present in the JSON
@@ -1514,7 +1596,7 @@ namespace JipperKeyViewer.KeyViewer
                 if (pd.Count == null || pd.Count.Length > MaxKeySlots)
                 {
                     Loader.Error($"Profile '{name}' failed validation (Count length {(pd.Count?.Length.ToString() ?? "null")}), backing up and falling back to defaults");
-                    try { File.Copy(profilePath, profilePath + ".corrupt", true); } catch { }
+                    try { RotateCorruptBackup(profilePath); } catch { }
                     return false;
                 }
                 if (pd.Count.Length != MaxKeySlots)
@@ -1560,7 +1642,7 @@ namespace JipperKeyViewer.KeyViewer
                 // Same backup as the settings.json path: without it, the caller's recovery save
                 // would overwrite the file and the original content would be gone for good.
                 // 与 settings.json 同款备份:否则调用方的恢复性保存会覆盖原文件,内容永久丢失。
-                try { File.Copy(profilePath, profilePath + ".corrupt", true); } catch { }
+                try { RotateCorruptBackup(profilePath); } catch { }
                 return false;
             }
         }
@@ -1569,7 +1651,23 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (newName == Settings.CurrentProfile) return true;
             string oldName = Settings.CurrentProfile;
-            SaveCurrentProfile();
+            try
+            {
+                SaveCurrentProfile();
+            }
+            catch (Exception e)
+            {
+                // The outgoing profile's pending changes could not be written. Previously the
+                // exception escaped into the IMGUI caller (breaking that frame with no message) and,
+                // because it bypassed SaveSettings, never reached the error banner — the user only
+                // ever saw a Unity log line. Switch anyway (they asked to) but SAY so: those changes
+                // are gone unless a later save succeeds.
+                // 旧配置的待写改动没能落盘。此前异常会逃逸进 IMGUI 调用方（打断该帧且无任何提示），
+                // 又因为绕过了 SaveSettings 而到不了错误横幅——用户只能在 Unity 日志里看到。
+                // 仍然切换（是用户主动点的），但要说清楚：除非后续某次保存成功，这些改动已丢失。
+                lastSaveError = e.Message;
+                Loader.Error($"KeyViewer: could not save profile '{oldName}' before switching: {e.Message}");
+            }
             if (!LoadProfile(newName))
             {
                 Loader.Warning($"Failed to switch to profile '{newName}', staying on '{oldName}'");
@@ -1668,7 +1766,28 @@ namespace JipperKeyViewer.KeyViewer
                 others.Remove(name);
                 if (!SwitchProfile(others[0])) return;
             }
-            // Now delete the file and remove from list / 然后删文件和列表
+            var list = new List<string>(Settings.ProfileNames);
+            list.Remove(name);
+            string[] previousNames = Settings.ProfileNames;
+            Settings.ProfileNames = list.ToArray();
+            // Update the META FIRST, then unlink. The old order deleted the file and only then
+            // wrote the list, so a failed SaveMetaOnly left settings.json naming a file that no
+            // longer existed — and a crash in the same window did the same. With the meta written
+            // first, a failed unlink just leaves an orphan file that the next SyncProfilesWithDisk
+            // adds back to the list, which is the recoverable direction.
+            // 先写 meta 再删文件。旧顺序是先删文件再写列表：SaveMetaOnly 失败会让 settings.json
+            // 指着一个已不存在的文件——同一窗口内崩溃也是同样结果。先写 meta 时，删除失败只留下
+            // 一个孤儿文件，下次 SyncProfilesWithDisk 会把它加回列表——这才是可恢复的方向。
+            try
+            {
+                SaveMetaOnly();
+            }
+            catch (Exception e)
+            {
+                Settings.ProfileNames = previousNames;
+                Loader.Error($"Failed to update the profile list after deleting '{name}': {e.Message}");
+                return;
+            }
             try
             {
                 string profilePath = GetProfilePath(name);
@@ -1681,12 +1800,12 @@ namespace JipperKeyViewer.KeyViewer
                 // meta and disk diverge until the next directory scan. / 文件删除失败时保留
                 // ProfileNames，避免元数据与磁盘在下一次扫描前不一致。
                 Loader.Error($"Failed to delete profile file '{name}': {e.Message}");
+                var restored = new List<string>(Settings.ProfileNames);
+                restored.Add(name);
+                Settings.ProfileNames = restored.ToArray();
+                try { SaveMetaOnly(); } catch { }
                 return;
             }
-            var list = new List<string>(Settings.ProfileNames);
-            list.Remove(name);
-            Settings.ProfileNames = list.ToArray();
-            SaveMetaOnly();
         }
 
         /// <summary>
@@ -1772,10 +1891,23 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     catch (Exception rollbackError)
                     {
-                        Loader.Error($"Failed to roll back profile rename: {rollbackError.Message}");
+                        // The file now only exists under the NEW name, but the meta we are about to
+                        // write still says oldName. That is the worst possible state: the next boot
+                        // finds no file for the current profile and (before the earlier fix) would
+                        // happily write a fresh default there — the user's data would appear to have
+                        // vanished. Keep the new name instead: the data is reachable and
+                        // SyncProfilesWithDisk will list it.
+                        // 文件此时只存在于**新**名下，而即将写入的 meta 仍写着 oldName——这是最坏的
+                        // 状态：下次启动找不到当前配置的文件，（在更早的修复之前）会高高兴兴地在那里
+                        // 写一份全新默认值，用户的数据看起来就"消失"了。改为保留新名字：数据
+                        // 仍在，且 SyncProfilesWithDisk 会把它列出来。
+                        Loader.Error($"Failed to roll back profile rename: {rollbackError.Message} — keeping the new name '{newName}'");
+                        Settings.ProfileNames = list.ToArray();
+                        if (string.Equals(previousCurrent, oldName, StringComparison.OrdinalIgnoreCase))
+                            Settings.CurrentProfile = newName;
                     }
                 }
-                try { SaveMetaOnly(); } catch { }
+                try { SaveMetaOnly(); } catch (Exception metaError) { lastSaveError = metaError.Message; }
                 Loader.Error($"Failed to save renamed profile metadata: {e.Message}");
             }
         }
@@ -1798,6 +1930,11 @@ namespace JipperKeyViewer.KeyViewer
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var p in Settings.ProfileNames ?? Array.Empty<string>())
             {
+                // A damaged meta can carry null/blank entries; they were added to the list verbatim
+                // and then written back out, so the corruption survived every sync.
+                // 损坏的 meta 可能带 null/空白条目；此前它们被原样加入列表并写回，损坏因此在每次
+                // 同步后依然存在。
+                if (string.IsNullOrWhiteSpace(p)) continue;
                 string sp = SanitizeFileName(p);
                 if (File.Exists(GetProfilePath(p)) && seen.Add(sp))
                     valid.Add(p);
