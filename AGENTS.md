@@ -352,6 +352,31 @@
   概念），却在 `EditorMutated` 里销毁重建所有按键 GameObject。现改走 `EditorOnlyChanged`
   （只压历史 + 落盘，不重建）。
 
+### `.jkv` 落点与隐私收尾（2026-09-26，第 41 轮）
+- **绝对路径引用连路径字符串一起泄露**：`C:\Users\<用户>\...` 会被原样写进包内
+  `settings.json`，把导出方的用户名与目录结构泄露给每个接收方。现置空（接收方显示"图片未找到"
+  占位）；既然文件本来就不会被打包，保留字符串对导出方自己也只剩"在自己机器上重新导入"这一种
+  边缘用途。
+- **Windows 保留设备名**：`NUL.txt` 不是文件——`File.Exists` 返回 TRUE，于是重名检查通过、
+  `FileMode.CreateNew` 又对空设备"成功"，该条目**静默消失**。现拒绝 `CON/PRN/AUX/NUL/COM1-9/
+  LPT1-9`（带或不带扩展名、不区分大小写）。
+- **结尾的点/空格会被 Windows 静默去掉**：`key.png ` 与 `key.png` 在磁盘上冲突，而重名检查认为
+  它们不同。现拒绝。
+- **嵌套条目路径**：导出器只产生扁平文件名，嵌套路径不带来任何好处却成倍放大落点面，现拒绝。
+- **junction / 符号链接穿透**：`GetSafePackageTargetPath` 的前缀检查是**词法**的，看不见磁盘上
+  已存在的 `CustomImages\` 子目录其实是 junction——预先放置一个链接就会让每次写入落到 Mod 目录
+  之外。现对已存在的目标检查 `FileAttributes.ReparsePoint`。
+- **`WriteFileEntry` 对消失的资源静默 `return`**：导出照样**成功**，而引用已被改写成裸文件名，
+  接收方拿到指向不存在资源的布局，导出方毫不知情；条目数/体积闸门也与实际写入不一致。现抛
+  `FileNotFoundException`，由外层 catch 走"导出失败"并清掉 `.tmp`。
+- **回滚会删掉用户自己的 `.corrupt` 安全副本**：唯一名分配只检查 `File.Exists(<name>.json)`，
+  所以导入可以落在一个其 `.corrupt` 是用户早先安全副本的名字上。现 `TrackProfile` 先记录该
+  `.corrupt` 此前是否存在，只删本次导入自己造成的。
+- **被强杀的导入永久泄漏空间**：`TryDeleteDirectory` 只删 GUID 子目录，父目录
+  `<mod>/.jkv-staging/` 永不清除，而进程崩溃留下的 GUID 目录（最多 2 GB）无人回收。现新增
+  `SweepStaleStaging`（24 小时以上的 GUID 目录 + 空父目录），在 `TryLoadResources` 时执行。
+- Harness 增至 110 项（含保留设备名、结尾点/空格、嵌套路径拒绝与扁平名仍通过的回归）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

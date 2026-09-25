@@ -123,6 +123,11 @@ namespace JipperKeyViewer.KeyViewer
             {
                 if (File.Exists(path)) throw new IOException("Profile target already exists");
                 profilePath = Path.GetFullPath(path);
+                // Snapshot whether a .corrupt backup for this name already exists. A failed import
+                // must not delete the user's own safety copy.
+                // 记录该名字下是否已存在 .corrupt 备份。失败的导入绝不能删掉用户自己的安全副本。
+                try { corruptBackupIsOurs = !File.Exists(profilePath + ".corrupt"); }
+                catch (Exception) { corruptBackupIsOurs = true; }
             }
 
             /// <summary>Targets that already existed locally and were therefore NOT overwritten.
@@ -174,17 +179,31 @@ namespace JipperKeyViewer.KeyViewer
                 // every failed import littered the profile folder with a bogus backup.
                 // 切换失败时 LoadProfile 会先把目标备份成 <name>.json.corrupt 再返回 false；
                 // 回滚只删 .json 就会留下孤儿文件，每次失败导入都会在配置目录留下垃圾备份。
-                try
+                //
+                // BUT only when THIS import created that backup. The unique-name allocator checks
+                // File.Exists(<name>.json) alone, so an import can land on a name whose .corrupt is
+                // the user's own earlier safety copy — deleting it unconditionally threw away the
+                // only remaining copy of a file that was already in trouble.
+                // 但前提是**本次导入**创建了该备份。唯一名分配只检查 File.Exists(<name>.json)，
+                // 因此导入可能落在一个其 .corrupt 正是用户自己早先安全副本的名字上——无条件删除
+                // 会毁掉那个已经处于麻烦中的文件的仅存副本。
+                if (!string.IsNullOrEmpty(profilePath) && corruptBackupIsOurs)
                 {
-                    if (!string.IsNullOrEmpty(profilePath))
+                    try
                     {
                         string corrupt = profilePath + ".corrupt";
                         if (File.Exists(corrupt)) File.Delete(corrupt);
                     }
+                    catch { }
                 }
-                catch { }
                 TryDeleteDirectory(stagingRoot);
             }
+
+            /// <summary>True when no &lt;name&gt;.json.corrupt existed before this import used the
+            /// name, so any such file afterwards must have been created by our own LoadProfile.
+            /// / 本次导入占用该名字之前不存在 &lt;name&gt;.json.corrupt，因此之后出现的任何此类文件
+            /// 都必然是我们自己的 LoadProfile 创建的。</summary>
+            private bool corruptBackupIsOurs;
 
             public void Dispose()
             {
@@ -212,6 +231,48 @@ namespace JipperKeyViewer.KeyViewer
                 if (string.IsNullOrEmpty(path) || !Directory.Exists(path)) return;
                 try { Directory.Delete(path, true); } catch { }
             }
+        }
+
+        /// <summary>Delete the shared &lt;mod&gt;\.jkv-staging\ parent once it is empty, and sweep
+        /// GUID sub-folders left behind by a hard kill. Each failed import used to leave its GUID
+        /// directory (up to the 2 GB expanded limit) on disk, and nothing ever collected it —
+        /// the staging parent itself was never removed either, so an interrupted import leaked
+        /// space permanently. / 在共享的 &lt;mod&gt;\.jkv-staging\ 变空时删除它，并清扫被强杀留下的
+        /// GUID 子目录。每次失败导入都把自己的 GUID 目录（最多 2 GB 展开上限）留在磁盘上且无人
+        /// 回收——staging 父目录本身也从不删除，因此一次中断的导入会永久泄漏空间。
+        internal static void SweepStaleStaging()
+        {
+            try
+            {
+                string root = Path.Combine(Loader.ResolveModPath(), ".jkv-staging");
+                if (!Directory.Exists(root)) return;
+                foreach (string dir in Directory.GetDirectories(root))
+                {
+                    try
+                    {
+                        TimeSpan age = DateTime.UtcNow - new DirectoryInfo(dir).LastWriteTimeUtc;
+                        // 24h: a live import never lasts that long, and an interrupted one is
+                        // worthless to the user either way. / 24 小时：一次活的导入不会持续那么久，
+                        // 而中断的导入对用户本就毫无价值。
+                        if (age > TimeSpan.FromHours(24)) TryDeleteStagingDir(dir);
+                    }
+                    catch (Exception e) { Loader.Warning($"KeyViewer: could not sweep the staging folder '{dir}': {e.Message}"); }
+                }
+                if (Directory.GetFileSystemEntries(root).Length == 0)
+                {
+                    try { Directory.Delete(root); }
+                    catch (Exception e) { Loader.Warning($"KeyViewer: could not remove the staging folder: {e.Message}"); }
+                }
+            }
+            catch (Exception e)
+            {
+                Loader.Warning($"KeyViewer: staging sweep failed: {e.Message}");
+            }
+        }
+
+        private static void TryDeleteStagingDir(string path)
+        {
+            try { Directory.Delete(path, true); } catch { }
         }
 
         /// <summary>Export the named profile (plus its assets) into ModPath\Packages\. / 把指定配置
@@ -386,25 +447,26 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Rewrite one asset reference to its bare file name and register the source file.
-        /// Unresolvable paths pass through unchanged (a hand-typed absolute path the user intends to
-        /// keep is not silently rewritten to a file name that will not resolve). / 把一处资源引用改写
-        /// 为纯文件名并登记源文件。无法解析的路径原样保留（用户手写的绝对路径是有意保留的，不应被
-        /// 静默改写成解析不到的文件名）。</summary>
+        /// Anything that cannot be bundled is BLANKED: a shareable .jkv must not carry a reference
+        /// that leaks the exporter's local directory layout, nor silently point at a resource the
+        /// recipient cannot possibly have. / 把一处资源引用改写为纯文件名并登记源文件。任何无法
+        /// 打包的内容一律**置空**：可分享的 .jkv 既不该携带泄露导出方本机目录结构的引用，也不该
+        /// 悄悄指向接收方根本不可能拥有的资源。</summary>
         private static string CollectAsset(string path, Dictionary<string, string> assets)
         {
             if (string.IsNullOrWhiteSpace(path)) return path ?? "";
             // An ABSOLUTE path means the user pointed the node at a file somewhere on their
-            // machine. Keeping the path STRING was intentional (so the export still round-trips),
-            // but bundling the file's CONTENT is not: exporting would quietly copy e.g.
-            // C:\Users\<user>\Desktop\private.png into a shareable .jkv. Leave the reference as-is
-            // and bundle nothing.
-            // 绝对路径意味着用户把节点指向了机器上某个文件。保留路径**字符串**是有意的（导出仍可
-            // 往返），但打包文件**内容**不是：导出会把 C:\Users\<用户>\Desktop\private.png 悄悄
-            // 复制进可分享的 .jkv。保留引用原样，不打包任何内容。
+            // machine. Keeping the path string was intentional (so the export still round-trips),
+            // but two things are not: bundling the file's CONTENT would copy e.g.
+            // C:\Users\<user>\Desktop\private.png into a shareable .jkv, and keeping the string
+            // leaks the exporter's username and directory layout to every recipient. Blank it.
+            // 绝对路径意味着用户把节点指向了机器上某个文件。保留路径字符串是有意的（导出仍可往返），
+            // 但有两件事不是：打包文件**内容**会把 C:\Users\<用户>\Desktop\private.png 复制进可
+            // 分享的 .jkv；保留字符串则把导出方的用户名与目录结构泄露给每个接收方。置空。
             if (Path.IsPathRooted(path))
             {
-                Loader.Warning($"KeyViewer: export skipped '{path}' — absolute paths outside the mod folder are not bundled");
-                return path;
+                Loader.Warning($"KeyViewer: export dropped the reference to '{path}' — absolute paths are neither bundled nor shared");
+                return "";
             }
             string resolved = ResolveCustomImagePath(path);
             // An unresolvable relative path is written back VERBATIM into the package's
@@ -414,7 +476,7 @@ namespace JipperKeyViewer.KeyViewer
             // 接收方会显示有文档说明的"图片未找到"占位。
             if (resolved == null)
             {
-                Loader.Warning($"KeyViewer: export could not resolve '{path}' — the reference is kept but no file is bundled");
+                Loader.Warning($"KeyViewer: export could not resolve '{path}' — the reference is dropped and no file is bundled");
                 return "";
             }
             string fileName = Path.GetFileName(resolved);
@@ -483,7 +545,14 @@ namespace JipperKeyViewer.KeyViewer
 
         private static void WriteFileEntry(ZipArchive archive, string name, string sourcePath)
         {
-            if (!File.Exists(sourcePath)) return;
+            // Previously a silent `return` when the file was gone. The export then SUCCEEDED with a
+            // profile whose asset reference had already been rewritten to the bare file name — the
+            // recipient gets a layout pointing at a resource that does not exist, and the exporter
+            // is never told. It also made the entry/size limits disagree with what was written.
+            // 此前文件消失时静默 `return`：导出照样**成功**，而资源引用已被改写成裸文件名——接收方
+            // 拿到一份指向不存在资源的布局，导出方却毫不知情。还会让条目数/体积闸门与实际写入不一致。
+            if (!File.Exists(sourcePath))
+                throw new FileNotFoundException($"Cannot bundle '{name}': '{sourcePath}' no longer exists", sourcePath);
             ZipArchiveEntry entry = archive.CreateEntry(name, System.IO.Compression.CompressionLevel.Optimal);
             using (Stream target = entry.Open())
             using (FileStream source = File.OpenRead(sourcePath))
@@ -745,13 +814,53 @@ namespace JipperKeyViewer.KeyViewer
                 throw new InvalidDataException($"Invalid package entry path: {fullName}");
 
             string[] parts = relative.Split('/');
+            // The exporter only ever produces FLAT file names. A nested path multiplies the
+            // landing surface for no benefit and widens the reparse-point question below, so
+            // refuse anything with a separator.
+            // 导出器只会产生**扁平**文件名。嵌套路径不带来任何好处，却成倍放大落点面与下面的
+            // 重解析点问题，因此拒绝任何含分隔符的路径。
+            if (parts.Length != 1)
+                throw new InvalidDataException($"Package entry must be a plain file name: {fullName}");
             for (int i = 0; i < parts.Length; i++)
             {
                 string part = parts[i];
                 if (string.IsNullOrEmpty(part) || part == "." || part == ".." || part.IndexOf(':') >= 0 || part.IndexOf('\0') >= 0)
                     throw new InvalidDataException($"Invalid package entry path: {fullName}");
+                if (IsWindowsReservedName(part))
+                    // "NUL.txt" is not a file: File.Exists says TRUE for it on Windows, so the
+                    // duplicate check passes and FileMode.CreateNew then "succeeds" against the
+                    // null device — the entry silently vanishes from the import.
+                    // 「NUL.txt」不是文件：Windows 上 File.Exists 对它返回 TRUE，于是重名检查通过，
+                    // 而 FileMode.CreateNew 又对空设备「成功」——该条目从导入中静默消失。
+                    throw new InvalidDataException($"Package entry uses a reserved device name: {part}");
+                if (part.EndsWith(".", StringComparison.Ordinal) || part.EndsWith(" ", StringComparison.Ordinal))
+                    // Windows silently strips trailing dots/spaces, so "key.png " and "key.png"
+                    // collide on disk while the duplicate check sees them as distinct.
+                    // Windows 会静默去掉结尾的点/空格，于是「key.png 」与「key.png」在磁盘上冲突，
+                    // 而重名检查却认为它们不同。
+                    throw new InvalidDataException($"Package entry has a trailing dot or space: {part}");
             }
-            return string.Join(Path.DirectorySeparatorChar.ToString(), parts);
+            return parts[0];
+        }
+
+        /// <summary>Windows reserved device names, with or without an extension and ignoring case.
+        /// / Windows 保留设备名，带或不带扩展名、不区分大小写。</summary>
+        private static bool IsWindowsReservedName(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName)) return false;
+            int dot = fileName.IndexOf('.');
+            string stem = dot < 0 ? fileName : fileName.Substring(0, dot);
+            switch (stem.ToUpperInvariant())
+            {
+                case "CON": case "PRN": case "AUX": case "NUL":
+                case "COM1": case "COM2": case "COM3": case "COM4": case "COM5":
+                case "COM6": case "COM7": case "COM8": case "COM9":
+                case "LPT1": case "LPT2": case "LPT3": case "LPT4": case "LPT5":
+                case "LPT6": case "LPT7": case "LPT8": case "LPT9":
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private static string GetSafePackageTargetPath(string root, string relative)
@@ -762,6 +871,24 @@ namespace JipperKeyViewer.KeyViewer
                 + Path.DirectorySeparatorChar;
             if (!target.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Package entry escapes its target directory: {relative}");
+
+            // The prefix check above is LEXICAL — it cannot see that a folder already on disk is a
+            // junction/symlink pointing somewhere else, so a pre-planted link under CustomImages\
+            // would make every write land outside the mod folder. ZipArchive cannot create such a
+            // link itself, but one that is already there defeats the check. / 上述前缀检查只是
+            // **词法**的：它看不见磁盘上已存在的目录其实是 junction/符号链接，于是预先放置在
+            // CustomImages\ 下的链接会让每次写入都落到 Mod 目录之外。ZipArchive 自身无法创建
+            // 这种链接，但已经存在的就足以让检查失效。
+            try
+            {
+                if ((File.GetAttributes(target) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"Package target is a link: {relative}");
+            }
+            catch (IOException)
+            {
+                // Does not exist — nothing to check. / 不存在——无需检查。
+            }
+            catch (UnauthorizedAccessException) { /* unreadable: let the real write report it / 不可读：交给真正的写入去报错 */ }
             return target;
         }
 

@@ -171,6 +171,13 @@ namespace JipperKeyViewer.KeyViewer
             // 资源落到磁盘;已存在的文件(含用户替换的)绝不动。
             EnsureBundledAssets(assetsDir);
 
+            // Reclaim whatever an interrupted package import left behind: a hard-killed import
+            // keeps its GUID staging folder (and the up-to-2 GB inside it) forever, because the
+            // cleanup only runs on the normal Dispose/Rollback path.
+            // 回收被中断的包导入留下的东西：被强杀的导入会永久保留它的 GUID 暂存目录（以及里面
+            // 最多 2 GB 的内容），因为清理只在正常的 Dispose/Rollback 路径上跑。
+            try { global::JipperKeyViewer.KeyViewer.KeyViewer.SweepStaleStaging(); } catch (Exception) { /* best effort / 尽力而为 */ }
+
             ScanGameFonts();
 
             keyBackgroundSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "KeyBackground.png"));
