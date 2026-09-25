@@ -1833,9 +1833,26 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (newName == Settings.CurrentProfile) return true;
             string oldName = Settings.CurrentProfile;
+            // Only flush the outgoing profile if it actually HAS a file. SaveCurrentProfile
+            // creates the file, so switching away from a profile whose .json is missing (deleted or
+            // corrupted while the game was closed, a cloud-sync conflict, a OneDrive placeholder,
+            // a partial backup restore) used to materialise a brand-new <oldName>.json out of
+            // whatever happened to be in memory — and at boot that memory is the FACTORY DEFAULTS,
+            // because LoadProfileFromMeta's "not found" branch deliberately runs in memory only.
+            // The result was a phantom profile the user never created, showing an empty layout, in
+            // their list. SyncProfilesWithDisk's fallback switch is what reaches this state.
+            // 只有当旧配置**确实有文件**时才冲刷它。SaveCurrentProfile 会创建文件，故从一个
+            // .json 已缺失的配置切走（游戏关闭期间被删除或损坏、云同步冲突、OneDrive 占位符、
+            // 部分备份还原）此前会拿内存里碰巧的内容**物化**出一个全新的 <oldName>.json——而启动时
+            // 那份内存是**出厂默认值**，因为 LoadProfileFromMeta 的「找不到」分支刻意只在内存中
+            // 启用默认值。结果是用户列表里多出一个从未创建过的幻影配置、显示空白布局。
+            // SyncProfilesWithDisk 的回退切换正是到达该状态的路径。
+            bool outgoingHasFile = false;
+            try { outgoingHasFile = File.Exists(GetProfilePath(oldName)); }
+            catch { /* treat as missing — the save below is best-effort anyway */ }
             try
             {
-                SaveCurrentProfile();
+                if (outgoingHasFile) SaveCurrentProfile();
             }
             catch (Exception e)
             {
@@ -2201,7 +2218,30 @@ namespace JipperKeyViewer.KeyViewer
             {
                 valid.Add("Default");
                 Settings.CurrentProfile = "Default";
-                SaveCurrentProfile();
+                // Commit the LIST before writing, not after. SaveCurrentProfile can throw here (full
+                // disk / read-only profiles dir) and the throw used to escape BEFORE the list was
+                // committed, leaving CurrentProfile = "Default" while ProfileNames still held the old
+                // names — all of which now have no file. The GUI call sites catch that and show the
+                // banner, but the memory stays half-migrated, and the next SaveSettings (every scene
+                // load) writes the OLD profile's data to Default.json.
+                // 先提交**列表**再写盘，而不是之后。SaveCurrentProfile 在此处可能抛（磁盘满/目录
+                // 只读），而该抛出此前在列表提交**之前**逃出，留下 CurrentProfile = "Default" 而
+                // ProfileNames 仍是旧名字——而那些名字现在都没有对应文件。GUI 调用点会捕获并显示
+                // 横幅，但内存停在半迁移状态，且下一次 SaveSettings（每次场景加载）会把**旧**配置
+                // 的数据写进 Default.json。
+                Settings.ProfileNames = valid.ToArray();
+                try
+                {
+                    SaveCurrentProfile();
+                }
+                catch (Exception e)
+                {
+                    // The list is already consistent with what we are about to write, so a failure
+                    // here leaves Default.json missing but the meta still describing the truth.
+                    // Report it; the next sync recreates it.
+                    lastSaveError = e.Message;
+                    Loader.Error($"KeyViewer: could not create the Default profile: {e.Message}");
+                }
                 changed = true;
             }
             Settings.ProfileNames = valid.ToArray();
