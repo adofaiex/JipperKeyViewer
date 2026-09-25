@@ -571,7 +571,7 @@ namespace JipperKeyViewer.KeyViewer
             Key key = Keys[i];
             if (key == null) return;
             if (d == null) d = Settings.Data;
-            if (d.EnablePerKeyColors && i < MaxKeySlots)
+            if (d.EnablePerKeyColors && i < MaxKeySlots && PerKeyColorArraysValid(d, i))
             {
                 SetShapeColors(key,
                     pressed ? d.PerKeyBackgroundClicked[i] : d.PerKeyBackground[i],
@@ -589,6 +589,20 @@ namespace JipperKeyViewer.KeyViewer
             ApplyFixedGlow(key, i, pressed);
             ApplyFixedBackgroundGradient(key, pressed);
             ApplyFixedOutlineGradient(key, pressed);
+        }
+
+        /// <summary>Per-key color arrays are indexed unguarded on the input path; a hand-edited or
+        /// partially-written profile must fall back to the global colors instead of throwing.
+        /// 每键颜色数组在输入路径上被直接索引；手改或截断的配置应回退全局配色而不是抛异常。</summary>
+        private static bool PerKeyColorArraysValid(ProfileData d, int index)
+        {
+            return d != null && index >= 0
+                && d.PerKeyBackground != null && d.PerKeyBackgroundClicked != null
+                && d.PerKeyOutline != null && d.PerKeyOutlineClicked != null
+                && d.PerKeyText != null && d.PerKeyTextClicked != null
+                && d.PerKeyBackground.Length > index && d.PerKeyBackgroundClicked.Length > index
+                && d.PerKeyOutline.Length > index && d.PerKeyOutlineClicked.Length > index
+                && d.PerKeyText.Length > index && d.PerKeyTextClicked.Length > index;
         }
 
         /// <summary>Press-animation duration for a key, in seconds. Custom-layout nodes may carry
@@ -615,7 +629,8 @@ namespace JipperKeyViewer.KeyViewer
         private IEnumerator AnimateKeyScale(Key key, float target, float duration)
         {
             bool affectRain = Settings.Data.EnablePressAnimationOnRain;
-            Transform animTarget = key.visuals;
+            Transform animTarget = key != null ? key.visuals : null;
+            if (key == null || animTarget == null) yield break;
             float startS = animTarget.localScale.x;
             int generation = keyShapeLayer != null ? keyShapeLayer.Generation : -1;
             // Read the easing ONCE: re-reading it per frame would make a mid-animation settings edit

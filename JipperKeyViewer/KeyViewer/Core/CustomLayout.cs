@@ -179,17 +179,44 @@ namespace JipperKeyViewer.KeyViewer
                     continue;
                 }
                 float t = Mathf.Clamp01((Time.unscaledTime - key.BounceStart) * 1000f / Mathf.Max(1f, node.CounterAnimDurationMs));
-                float eased = CubicBezierEase(node.CounterAnimBezier, t);                float scale = 1f + (node.CounterAnimScale - 1f) * (1f - eased);
+                float eased = CubicBezierEase(node.CounterAnimBezier, t);
+                float scale = 1f + (node.CounterAnimScale - 1f) * (1f - eased);
+                // The bounce must ride ON TOP of the node's own text transform. Writing the captured
+                // press-time position back at the end (the old code) left the label permanently at
+                // the pressed offset whenever the key was released mid-bounce, and scaling to 1.0
+                // threw away LabelScale/CountScale. / 弹跳必须叠加在节点自身文字变换之上：旧实现在
+                // 收尾时写回按下时的位置，按住中途松开会让标签永久停在按下偏移；缩放归 1 也会丢掉
+                // LabelScale/CountScale。
+                bool isCount = key.value != null && target == key.value;
+                bool pressed = key.isPressed;
+                float baseScale = isCount
+                    ? (pressed && node.UsePressedCountScale ? node.PressedCountScale : node.CountScale)
+                    : (pressed && node.UsePressedLabelScale ? node.PressedLabelScale : node.LabelScale);
+                Vector2 pressedOffset = Vector2.zero;
+                if (pressed)
+                {
+                    if (isCount && node.UsePressedCountOffset)
+                        pressedOffset = new Vector2(node.PressedCountOffsetX, node.PressedCountOffsetY);
+                    else if (!isCount && node.UsePressedLabelOffset)
+                        pressedOffset = new Vector2(node.PressedLabelOffsetX, node.PressedLabelOffsetY);
+                }
+                Vector2 restOffset = isCount
+                    ? new Vector2(node.CountOffsetX, node.CountOffsetY)
+                    : new Vector2(node.LabelOffsetX, node.LabelOffsetY);
+                Vector2 basePos = (isCount ? key.customValueBasePos : key.customTextBasePos) + restOffset + pressedOffset;
                 RectTransform rt = target.rectTransform;
-                rt.localScale = new Vector3(scale, scale, 1f);
+                float finalScale = baseScale * scale;
+                rt.localScale = new Vector3(finalScale, finalScale, 1f);
                 Vector2 centerOffset = (new Vector2(0.5f, 0.5f) - rt.pivot) * rt.rect.size * (scale - 1f);
-                rt.anchoredPosition = key.BounceBasePos - centerOffset;
+                rt.anchoredPosition = basePos + centerOffset;
                 if (t >= 1f)
                 {
-                    rt.localScale = Vector3.one;
-                    rt.anchoredPosition = key.BounceBasePos;
                     key.Bouncing = false;
                     if (i < counterBounces.Count) counterBounces.RemoveAt(i);
+                    // Hand the rect back to the single owner of the press transform so the resting
+                    // scale/rotation/offset can never drift out of sync with the node settings.
+                    // 把 rect 交还给按下变换的唯一管理者，避免静息缩放/旋转/偏移与节点设置漂移。
+                    ApplyCustomPressedTextTransform(key, node, key.isPressed);
                 }
             }
         }
@@ -255,7 +282,19 @@ namespace JipperKeyViewer.KeyViewer
             return row == 0 ? (byte)0 : row == 2 ? (byte)3 : (byte)1;
         }
 
-        /// <summary>Validate/clamp the custom node list: drop nulls and hidden inconsistencies,
+        /// <summary>Drop a malformed node colour array (wrong length or NaN/Inf component) so the
+        /// callers fall back to their global default instead of writing bad vertex colours.
+        /// 丢弃格式错误的节点颜色数组（长度不对或含 NaN/Inf），让调用方回退全局默认色。</summary>
+        private static float[] SanitizeNodeColor(float[] color)
+        {
+            if (color == null) return null;
+            if (color.Length != 4) return null;
+            for (int i = 0; i < 4; i++)
+                if (float.IsNaN(color[i]) || float.IsInfinity(color[i])) return null;
+            return color;
+        }
+
+        /// <summary>Ensure the custom node list: drop nulls and hidden inconsistencies,
         /// assign missing ids, enforce caps and sane bounds. / 校验并钳制节点列表：去空、补 id、
         /// 强制上限与合理边界。</summary>
         private static void EnsureCustomNodes()
@@ -333,6 +372,48 @@ namespace JipperKeyViewer.KeyViewer
                 // [0..3] raw. / 手改配置可能带空/短贝塞尔——CubicBezierEase 直接索引 [0..3]。
                 if (node.CounterAnimBezier == null || node.CounterAnimBezier.Length != 4)
                     node.CounterAnimBezier = new float[] { 0.25f, 0.46f, 0.45f, 0.94f };
+                else
+                    for (int b = 0; b < 4; b++)
+                        if (float.IsNaN(node.CounterAnimBezier[b]) || float.IsInfinity(node.CounterAnimBezier[b]))
+                            node.CounterAnimBezier[b] = b == 0 ? 0.25f : b == 1 ? 0.46f : b == 2 ? 0.45f : 0.94f;
+                // The colour arrays added with the glow/gradient features were the only FmNode
+                // fields WITHOUT sanitization: NodeColor accepts any 4-length array, so a NaN or a
+                // hand-edited out-of-range component reached the mesh vertex colours and made the key
+                // box (or the glyphs) render black/garbage. Normalize them exactly like the scalars.
+                // 光效/渐变新增的颜色数组是唯一未被净化的 FmNode 字段：NodeColor 只看长度 4，
+                // NaN 或超范围分量会直接写进 mesh 顶点色，使按键框/文字渲染成黑色或乱色。
+                node.Bg = SanitizeNodeColor(node.Bg);
+                node.BgPressed = SanitizeNodeColor(node.BgPressed);
+                node.Outline = SanitizeNodeColor(node.Outline);
+                node.OutlinePressed = SanitizeNodeColor(node.OutlinePressed);
+                node.TextColor = SanitizeNodeColor(node.TextColor);
+                node.TextColorPressed = SanitizeNodeColor(node.TextColorPressed);
+                node.CountTextColor = SanitizeNodeColor(node.CountTextColor);
+                node.CountTextColorPressed = SanitizeNodeColor(node.CountTextColorPressed);
+                node.GlowColor = SanitizeNodeColor(node.GlowColor);
+                node.GlowColorPressed = SanitizeNodeColor(node.GlowColorPressed);
+                node.BackgroundGradientTop = SanitizeNodeColor(node.BackgroundGradientTop);
+                node.BackgroundGradientBottom = SanitizeNodeColor(node.BackgroundGradientBottom);
+                node.BackgroundGradientTopPressed = SanitizeNodeColor(node.BackgroundGradientTopPressed);
+                node.BackgroundGradientBottomPressed = SanitizeNodeColor(node.BackgroundGradientBottomPressed);
+                node.OutlineGradientTop = SanitizeNodeColor(node.OutlineGradientTop);
+                node.OutlineGradientBottom = SanitizeNodeColor(node.OutlineGradientBottom);
+                node.OutlineGradientTopPressed = SanitizeNodeColor(node.OutlineGradientTopPressed);
+                node.OutlineGradientBottomPressed = SanitizeNodeColor(node.OutlineGradientBottomPressed);
+                node.TextGradientLeft = SanitizeNodeColor(node.TextGradientLeft);
+                node.TextGradientRight = SanitizeNodeColor(node.TextGradientRight);
+                node.TextGradientLeftPressed = SanitizeNodeColor(node.TextGradientLeftPressed);
+                node.TextGradientRightPressed = SanitizeNodeColor(node.TextGradientRightPressed);
+                node.CountTextGradientLeft = SanitizeNodeColor(node.CountTextGradientLeft);
+                node.CountTextGradientRight = SanitizeNodeColor(node.CountTextGradientRight);
+                node.CountTextGradientLeftPressed = SanitizeNodeColor(node.CountTextGradientLeftPressed);
+                node.CountTextGradientRightPressed = SanitizeNodeColor(node.CountTextGradientRightPressed);
+                node.RainColorTop = SanitizeNodeColor(node.RainColorTop);
+                node.RainColorBottom = SanitizeNodeColor(node.RainColorBottom);
+                node.RainShadowColor = SanitizeNodeColor(node.RainShadowColor);
+                node.RainOutlineColor = SanitizeNodeColor(node.RainOutlineColor);
+                node.GhostRainShadowColor = SanitizeNodeColor(node.GhostRainShadowColor);
+                node.GhostRainOutlineColor = SanitizeNodeColor(node.GhostRainOutlineColor);
                 node.PressAnimScale = float.IsNaN(node.PressAnimScale) ? 0.9f : Mathf.Clamp(node.PressAnimScale, 0.3f, 2f);
                 node.RainShadowOffsetX = float.IsNaN(node.RainShadowOffsetX) ? 3f : Mathf.Clamp(node.RainShadowOffsetX, -50f, 50f);
                 node.RainShadowOffsetY = float.IsNaN(node.RainShadowOffsetY) ? -3f : Mathf.Clamp(node.RainShadowOffsetY, -50f, 50f);
@@ -571,9 +652,17 @@ namespace JipperKeyViewer.KeyViewer
 
             float pad = Mathf.Max(2f, size);
             RectTransform glowRect = (RectTransform)image.transform;
-            glowRect.anchoredPosition = new Vector2(node.X - pad, -(node.Y - pad));
-            glowRect.sizeDelta = new Vector2(node.Width + pad * 2f, node.Height + pad * 2f);
-            glowRect.SetSiblingIndex(Mathf.Clamp(node.Depth, 0, 60));
+            Vector2 wantedPos = new Vector2(node.X - pad, -(node.Y - pad));
+            Vector2 wantedSize = new Vector2(node.Width + pad * 2f, node.Height + pad * 2f);
+            // This runs on EVERY press/release. Writing anchoredPosition/sizeDelta/sibling index
+            // unconditionally dirties the canvas batch for a rect that almost never moved; only the
+            // actual press-dependent values (colour) are expected to change.
+            // 该方法每次按压/松开都会调用：无条件写位置/尺寸/兄弟序号会白白弄脏 canvas 批次，
+            // 而这些值几乎不变；真正随按压变化的只有颜色。
+            if (glowRect.anchoredPosition != wantedPos) glowRect.anchoredPosition = wantedPos;
+            if (glowRect.sizeDelta != wantedSize) glowRect.sizeDelta = wantedSize;
+            int wantedSibling = Mathf.Clamp(node.Depth, 0, 60);
+            if (glowRect.GetSiblingIndex() != wantedSibling) glowRect.SetSiblingIndex(wantedSibling);
 
             Color body = node.NodeType == 3
                 ? (node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.Outline) : Settings.Data.Outline)
@@ -734,6 +823,12 @@ namespace JipperKeyViewer.KeyViewer
                 GameObject glowObject = new GameObject("GlowFixed_" + index);
                 glowObject.transform.SetParent(keyGlowLayer, false);
                 RectTransform rect = glowObject.AddComponent<RectTransform>();
+                // Anchors/pivot mirror the key root and never change for the life of the key, so
+                // they are copied once here instead of on every press.
+                // 锚点/轴心与按键根一致且终生不变，只在建时复制一次，不再每次按压都写。
+                rect.anchorMin = source.anchorMin;
+                rect.anchorMax = source.anchorMax;
+                rect.pivot = source.pivot;
                 image = glowObject.AddComponent<Image>();
                 image.sprite = GetCustomGlowSprite();
                 image.type = Image.Type.Sliced;
@@ -743,12 +838,15 @@ namespace JipperKeyViewer.KeyViewer
 
             float pad = Mathf.Max(2f, size);
             RectTransform glowRect = (RectTransform)image.transform;
-            glowRect.anchorMin = source.anchorMin;
-            glowRect.anchorMax = source.anchorMax;
-            glowRect.pivot = source.pivot;
-            glowRect.anchoredPosition = new Vector2(source.anchoredPosition.x - pad, source.anchoredPosition.y);
-            glowRect.sizeDelta = new Vector2(source.sizeDelta.x + pad * 2f, source.sizeDelta.y + pad * 2f);
-            glowRect.SetSiblingIndex(Mathf.Clamp(index >= 0 ? index : index == -1 ? 62 : 63, 0, 63));
+            Vector2 wantedPos = new Vector2(source.anchoredPosition.x - pad, source.anchoredPosition.y);
+            Vector2 wantedSize = new Vector2(source.sizeDelta.x + pad * 2f, source.sizeDelta.y + pad * 2f);
+            // Called on every press/release like the FreeMake path: skip unchanged rect writes so an
+            // unchanged key does not dirty the canvas batch for nothing.
+            // 同样每次按压都会调用：未变化的矩形不重写，避免无谓地弄脏 canvas 批次。
+            if (glowRect.anchoredPosition != wantedPos) glowRect.anchoredPosition = wantedPos;
+            if (glowRect.sizeDelta != wantedSize) glowRect.sizeDelta = wantedSize;
+            int wantedSibling = Mathf.Clamp(index >= 0 ? index : index == -1 ? 62 : 63, 0, 63);
+            if (glowRect.GetSiblingIndex() != wantedSibling) glowRect.SetSiblingIndex(wantedSibling);
 
             Color body = FixedGlowBodyColor(index, pressed, d);
             bool followBody = usePressedGlow ? d.FixedKeyGlowFollowBodyPressed : d.FixedKeyGlowFollowBody;
@@ -824,6 +922,13 @@ namespace JipperKeyViewer.KeyViewer
                 if (keyShapeLayer != null && key.shapeSlot >= 0)
                     keyShapeLayer.SetVisible(key.shapeSlot, false);
                 CreateCustomImageObject(node, key);
+                // Still apply the text/glow side of the color pass: image nodes were previously
+                // skipped entirely, so their node glow and text colors only appeared after the
+                // FIRST key press (unbound decorations applied them right away, which made the two
+                // FreeMake paths inconsistent). ApplyCustomKeyColors already skips the box colors
+                // for NodeType 3. / 图片节点仍要走文字与光效部分：此前整条分支被跳过，节点光效
+                // 与文字色要等第一次按压才生效（未绑定装饰却立即生效，两条路径不一致）。
+                ApplyCustomKeyColors(key, node, false);
             }
             else if (!isStat)
             {
@@ -897,32 +1002,45 @@ namespace JipperKeyViewer.KeyViewer
         private static void ApplyCustomTextOffsets(Key key, FmNode node)
         {
             if (key == null || node == null) return;
+            // Base-and-add, not "+=" on the live rect: LayoutCustomTexts has just authored the
+            // neutral position, so capture it once and add the node offset on top. Accumulating on
+            // the live value would drift by the offset again on any re-entrant call.
+            // 先取中性基准再加节点偏移，而不是在当前 rect 上累加：任何再次进入的路径都会重复叠加。
             if (key.text != null)
             {
-                key.text.rectTransform.anchoredPosition += new Vector2(node.LabelOffsetX, node.LabelOffsetY);
-                key.text.rectTransform.localRotation = Quaternion.Euler(0f, 0f, node.LabelRotation);
-                key.text.rectTransform.localScale = Vector3.one * node.LabelScale;
-                key.customTextBasePos = key.text.rectTransform.anchoredPosition;
+                RectTransform rt = key.text.rectTransform;
+                Vector2 basePos = rt.anchoredPosition;
+                rt.anchoredPosition = basePos + new Vector2(node.LabelOffsetX, node.LabelOffsetY);
+                rt.localRotation = Quaternion.Euler(0f, 0f, node.LabelRotation);
+                rt.localScale = Vector3.one * node.LabelScale;
+                key.customTextBasePos = basePos;
             }
             if (key.value != null)
             {
-                key.value.rectTransform.anchoredPosition += new Vector2(node.CountOffsetX, node.CountOffsetY);
-                key.value.rectTransform.localRotation = Quaternion.Euler(0f, 0f, node.CountRotation);
-                key.value.rectTransform.localScale = Vector3.one * node.CountScale;
-                key.customValueBasePos = key.value.rectTransform.anchoredPosition;
+                RectTransform rt = key.value.rectTransform;
+                Vector2 basePos = rt.anchoredPosition;
+                rt.anchoredPosition = basePos + new Vector2(node.CountOffsetX, node.CountOffsetY);
+                rt.localRotation = Quaternion.Euler(0f, 0f, node.CountRotation);
+                rt.localScale = Vector3.one * node.CountScale;
+                key.customValueBasePos = basePos;
             }
         }
 
         private static void ApplyCustomPressedTextTransform(Key key, FmNode node, bool pressed)
         {
             if (key == null || node == null) return;
+            // customTextBasePos / customValueBasePos hold the NEUTRAL layout position; the node's own
+            // resting offset is added on top here so both the resting and pressed states stay derived
+            // from one base (and the pressed offset never accumulates).
+            // 基准位置是中性布局值：节点自身偏移在这里叠加，按下偏移只做加法，不会累积。
             if (key.text != null)
             {
                 float scale = pressed && node.UsePressedLabelScale ? node.PressedLabelScale : node.LabelScale;
                 float rotation = pressed && node.UsePressedLabelRotation ? node.PressedLabelRotation : node.LabelRotation;
+                Vector2 rest = key.customTextBasePos + new Vector2(node.LabelOffsetX, node.LabelOffsetY);
                 Vector2 offset = pressed && node.UsePressedLabelOffset
                     ? new Vector2(node.PressedLabelOffsetX, node.PressedLabelOffsetY) : Vector2.zero;
-                key.text.rectTransform.anchoredPosition = key.customTextBasePos + offset;
+                key.text.rectTransform.anchoredPosition = rest + offset;
                 key.text.rectTransform.localScale = Vector3.one * scale;
                 key.text.rectTransform.localRotation = Quaternion.Euler(0f, 0f, rotation);
             }
@@ -930,9 +1048,10 @@ namespace JipperKeyViewer.KeyViewer
             {
                 float scale = pressed && node.UsePressedCountScale ? node.PressedCountScale : node.CountScale;
                 float rotation = pressed && node.UsePressedCountRotation ? node.PressedCountRotation : node.CountRotation;
+                Vector2 rest = key.customValueBasePos + new Vector2(node.CountOffsetX, node.CountOffsetY);
                 Vector2 offset = pressed && node.UsePressedCountOffset
                     ? new Vector2(node.PressedCountOffsetX, node.PressedCountOffsetY) : Vector2.zero;
-                key.value.rectTransform.anchoredPosition = key.customValueBasePos + offset;
+                key.value.rectTransform.anchoredPosition = rest + offset;
                 key.value.rectTransform.localScale = Vector3.one * scale;
                 key.value.rectTransform.localRotation = Quaternion.Euler(0f, 0f, rotation);
             }
@@ -1503,7 +1622,12 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     key.Bouncing = true;
                     TextMeshProUGUI target = node.HideCount || key.value == null ? key.text : key.value;
-                    key.BounceBasePos = target.rectTransform.anchoredPosition;
+                    // Store the NEUTRAL base, not the live rect: the press transform has already
+                    // been applied at this point, so capturing the rect would bake the pressed
+                    // offset into the bounce's resting position. / 存中性基准而非当前 rect：此刻
+                    // 按下变换已生效，捕获 rect 会把按下偏移固化进弹跳的静止位置。
+                    key.BounceBasePos = target == key.value && key.value != null
+                        ? key.customValueBasePos : key.customTextBasePos;
                     counterBounces.Add(key);
                 }
                 key.BounceStart = Time.unscaledTime;

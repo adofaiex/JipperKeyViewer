@@ -146,7 +146,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         public void SetBackgroundGradient(int slot, bool enabled, Color top, Color bottom)
         {
             if (slot < 0 || slot >= count) return;
-            enabled &= !IsInvalidColor(top) && !IsInvalidColor(bottom);
+            enabled &= IsUsableGradientColor(top) && IsUsableGradientColor(bottom);
             if (bgGradientEnabled[slot] == enabled
                 && (!enabled || (bgGradientTops[slot] == top && bgGradientBottoms[slot] == bottom)))
                 return;
@@ -159,7 +159,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         public void SetOutlineGradient(int slot, bool enabled, Color top, Color bottom)
         {
             if (slot < 0 || slot >= count) return;
-            enabled &= !IsInvalidColor(top) && !IsInvalidColor(bottom);
+            enabled &= IsUsableGradientColor(top) && IsUsableGradientColor(bottom);
             if (outlineGradientEnabled[slot] == enabled
                 && (!enabled || (outlineGradientTops[slot] == top && outlineGradientBottoms[slot] == bottom)))
                 return;
@@ -172,6 +172,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static bool IsInvalidColor(Color color) =>
             float.IsNaN(color.r) || float.IsNaN(color.g) || float.IsNaN(color.b) || float.IsNaN(color.a)
             || float.IsInfinity(color.r) || float.IsInfinity(color.g) || float.IsInfinity(color.b) || float.IsInfinity(color.a);
+
+        /// <summary>A gradient whose stops are NaN/Inf OR fully transparent paints the whole key
+        /// (or its border) invisible with no log at all. A hand-picked alpha-0 stop, an imported
+        /// third-party .jkv or a corrupted color entry all hit this. Reject such a gradient and fall
+        /// back to the plain solid color instead of silently deleting the key. / 渐变端点为 NaN/Inf
+        /// 或完全透明时，整块按键（或整圈描边）会无日志地消失；此时拒绝该渐变并回退实色。</summary>
+        private static bool IsUsableGradientColor(Color color)
+            => !IsInvalidColor(color) && color.a > 0.001f;
 
         public void SetScale(int slot, float scale)
         {
@@ -371,6 +379,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// <summary>Fill xs/ys with the counter-clockwise outline of a rounded rect (4 arcs,
         /// bottom-left corner first) and return the point count. / 用圆角矩形的逆时针轮廓
         ///（4 段圆弧，从左下角开始）填充 xs/ys 并返回点数。</summary>
+        // Corner scratch for FillRoundedPoints. The mesh is rebuilt on every press/release, so the
+        // three float[4] literals this method used to allocate became steady GC garbage on the input
+        // hot path (105 rounded keys = 315 short-lived arrays per rebuild).
+        // 圆角角点暂存数组：mesh 每次按压/松开都会重建，原先的三个 float[4] 字面量是输入热路径上
+        // 持续产生的 GC 垃圾（105 个圆角键 = 每次重建 315 个短命数组）。
+        private static readonly float[] scratchCornerX = new float[4];
+        private static readonly float[] scratchCornerY = new float[4];
+        private static readonly float[] scratchCornerAngle = new float[] { 180f, 270f, 0f, 90f };
+
         private static int FillRoundedPoints(Rect r, float radius, float[] xs, float[] ys)
         {
             if (r.width <= 0f || r.height <= 0f) return 0;
@@ -378,9 +395,9 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             int k = 0;
             // Corner centers in CCW order with each arc's start angle (degrees). / 逆时针顺序的
             // 角心及每段圆弧的起始角度（度）。
-            float[] cx = { r.xMin + rad, r.xMax - rad, r.xMax - rad, r.xMin + rad };
-            float[] cy = { r.yMin + rad, r.yMin + rad, r.yMax - rad, r.yMax - rad };
-            float[] a0 = { 180f, 270f, 0f, 90f };
+            float[] cx = scratchCornerX, cy = scratchCornerY, a0 = scratchCornerAngle;
+            cx[0] = r.xMin + rad; cx[1] = r.xMax - rad; cx[2] = r.xMax - rad; cx[3] = r.xMin + rad;
+            cy[0] = r.yMin + rad; cy[1] = r.yMin + rad; cy[2] = r.yMax - rad; cy[3] = r.yMax - rad;
             for (int c = 0; c < 4; c++)
             {
                 for (int i = 0; i <= RoundedSegments; i++)

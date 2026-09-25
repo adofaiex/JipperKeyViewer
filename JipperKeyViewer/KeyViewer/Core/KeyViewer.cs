@@ -292,6 +292,10 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Sanitize a profile name for use as a filename / 将配置名称净化用于文件名</summary>
         static string SanitizeFileName(string name)
         {
+            // A null name used to NRE inside Replace(); callers include GetProfilePath, which can be
+            // reached with a null profile name from a corrupt meta. Treat it as "no name".
+            // null 名称曾在 Replace() 内抛 NRE；GetProfilePath 等调用方可能从损坏的 meta 传入 null。
+            if (string.IsNullOrWhiteSpace(name)) return "Unnamed";
             foreach (char c in Path.GetInvalidFileNameChars())
                 name = name.Replace(c, '_');
             return string.IsNullOrWhiteSpace(name) ? "Unnamed" : name;
@@ -1257,9 +1261,20 @@ namespace JipperKeyViewer.KeyViewer
         private static void WriteAllTextSafe(string path, string contents)
         {
             string tmp = path + ".tmp";
-            File.WriteAllText(tmp, contents);
-            if (File.Exists(path)) File.Replace(tmp, path, null);
-            else File.Move(tmp, path);
+            try
+            {
+                File.WriteAllText(tmp, contents);
+                if (File.Exists(path)) File.Replace(tmp, path, null);
+                else File.Move(tmp, path);
+            }
+            catch
+            {
+                // A failed write used to leave <path>.tmp next to the live config forever, and the
+                // next boot would then trip over the stale temp file. / 写失败会在配置旁留下永久的
+                // .tmp 残留，下次启动会被这个陈旧临时文件绊住。
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                throw;
+            }
         }
 
         /// <summary>
@@ -1384,29 +1399,64 @@ namespace JipperKeyViewer.KeyViewer
                 return false;
             }
             Settings.CurrentProfile = newName;
-            EnsureSettingsArrays();
-            ClearKpsTimers();
-            // The editor's undo timeline describes the profile we just left — keeping it would
-            // let Ctrl+Z write that layout's nodes into this one, and would leave the editor's
-            // selection pointing at nodes that are gone. / 编辑器的撤销时间线描述的是刚离开的
-            // 配置——留着它会让 Ctrl+Z 把那份布局的节点写进当前配置，且编辑器选中项会指向已不存在的节点。
-            ResetEditorHistoryForProfileSwitch();
-            cachedKeyStyle = (KeyviewerStyle)(-1);
-            cachedFootStyle = (FootKeyviewerStyle)(-1);
-            cachedMainKeys = null;
-            cachedFootKeys = null;
-            cachedGhostKeys = null;
-            // Rebuild overlay for new settings. ResetKeyViewer recreates foot keys internally (it
-            // destroys every child including them), so the outer ResetFootKeyViewer here would only
-            // destroy and recreate them a second time.
-            // 为新设置重建覆盖层。ResetKeyViewer 内部已重建脚键（它销毁含脚键在内的全部子物体），
-            // 此处再调 ResetFootKeyViewer 只会把脚键销毁重建第二遍。
-            ResetKeyViewer();
-            UpdateAllFonts();
-            UpdateAllKeyColors();
-            if (Settings.Data.StreamerMode && !IsFullKeyboard)
+            try
             {
-                SetStatsVisible(false);
+                EnsureSettingsArrays();
+                ClearKpsTimers();
+                // The editor's undo timeline describes the profile we just left — keeping it would
+                // let Ctrl+Z write that layout's nodes into this one, and would leave the editor's
+                // selection pointing at nodes that are gone. / 编辑器的撤销时间线描述的是刚离开的
+                // 配置——留着它会让 Ctrl+Z 把那份布局的节点写进当前配置，且编辑器选中项会指向已不存在的节点。
+                ResetEditorHistoryForProfileSwitch();
+                cachedKeyStyle = (KeyviewerStyle)(-1);
+                cachedFootStyle = (FootKeyviewerStyle)(-1);
+                cachedMainKeys = null;
+                cachedFootKeys = null;
+                cachedGhostKeys = null;
+                // Rebuild overlay for new settings. ResetKeyViewer recreates foot keys internally (it
+                // destroys every child including them), so the outer ResetFootKeyViewer here would only
+                // destroy and recreate them a second time.
+                // 为新设置重建覆盖层。ResetKeyViewer 内部已重建脚键（它销毁含脚键在内的全部子物体），
+                // 此处再调 ResetFootKeyViewer 只会把脚键销毁重建第二遍。
+                ResetKeyViewer();
+                UpdateAllFonts();
+                UpdateAllKeyColors();
+                if (Settings.Data.StreamerMode && !IsFullKeyboard)
+                {
+                    SetStatsVisible(false);
+                }
+            }
+            catch (Exception e)
+            {
+                // The runtime rebuild threw AFTER CurrentProfile had already been switched. Left
+                // alone, the in-memory name pointed at the new profile while the overlay was only
+                // half rebuilt, and the next save would persist that half-state. Reload the profile
+                // we came from and put the overlay back the way it was. / 重建抛异常时 CurrentProfile
+                // 已经切到新配置：内存指向新配置而覆盖层只重建了一半，下次保存会把这个半成品落盘。
+                // 重新加载原配置并恢复覆盖层。
+                Loader.Error($"KeyViewer: switching to profile '{newName}' failed ({e.Message}); rolling back to '{oldName}'");
+                try
+                {
+                    Settings.CurrentProfile = oldName;
+                    if (LoadProfile(oldName))
+                    {
+                        EnsureSettingsArrays();
+                        cachedKeyStyle = (KeyviewerStyle)(-1);
+                        cachedFootStyle = (FootKeyviewerStyle)(-1);
+                        cachedMainKeys = null;
+                        cachedFootKeys = null;
+                        cachedGhostKeys = null;
+                        ResetEditorHistoryForProfileSwitch();
+                        ResetKeyViewer();
+                        UpdateAllFonts();
+                        UpdateAllKeyColors();
+                    }
+                }
+                catch (Exception rollbackError)
+                {
+                    Loader.Error($"KeyViewer: profile rollback to '{oldName}' also failed: {rollbackError.Message}");
+                }
+                return false;
             }
             SaveSettings();
             return true;

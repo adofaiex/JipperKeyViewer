@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
 using TMPro;
@@ -424,15 +425,21 @@ namespace JipperKeyViewer.KeyViewer.Settings
             ApplyLegacyFmNodeDefaults(_customNodes);
         }
 
+        /// <summary>Bump when a new defaulted FmNode field is added, so the one-shot legacy repair
+        /// below can re-run for profiles written before the field existed. / 新增带默认值的 FmNode
+        /// 字段时递增，让下面的旧字段修复对更早写出的 Profile 仍然有效。</summary>
+        public const int NodeTextDefaultsVersion = 1;
+
         /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
         /// legacy node object, leaving newly added non-zero defaults (notably TextOpacity and
-        /// LabelScale) at 0. A zero label scale — or the exact 0.5/0.5 + double-zero-alpha shape
-        /// left after the broken build already clamped and re-saved the profile — is a reliable
-        /// marker for a pre-transform node; restore every non-zero default introduced since the
-        /// old schema while leaving other deliberately configured nodes untouched.
-        /// Newtonsoft 的字段模式会绕过字段初始化，旧节点缺失的新字段会变成 0；LabelScale=0，
-        /// 或被错误构建钳制并再次保存后的 0.5/0.5 + 双 0 不透明度组合，均视为旧节点标记并恢复
-        /// 新增字段默认值；其他已配置节点不受影响。</summary>
+        /// LabelScale) at 0. A zero label scale is an invalid runtime value and therefore an
+        /// unambiguous marker. The "already re-saved by the broken build" shape is NOT unique on its
+        /// own — a user may legitimately pick 0 opacity + 0.5 scale — so it additionally requires
+        /// evidence that only the broken path produces: a zero glow size and an empty press easing
+        /// string, neither of which EnsureCustomNodes ever repairs or the editor ever writes empty.
+        /// 旧节点缺失的新字段会变成 0；LabelScale=0 是不合法值可作标记。被错误构建重存的组合并非
+        /// 独占（用户也可能真的设 0 不透明度 + 0.5 缩放），因此额外要求只有错误路径才会产生的
+        /// 证据：GlowSize=0 且按压缓动字符串为空。</summary>
         internal static void ApplyLegacyFmNodeDefaults(List<FmNode> nodes)
         {
             if (nodes == null) return;
@@ -443,12 +450,10 @@ namespace JipperKeyViewer.KeyViewer.Settings
         internal static void ApplyLegacyFmNodeDefaults(FmNode node)
         {
             if (node == null) return;
-            // A profile already re-saved by the broken build went through EnsureCustomNodes first:
-            // LabelScale 0 was clamped to 0.5, so the old "<=0" marker is gone while both text
-            // opacities remain 0. Treat that exact pair of clamped minima as the same legacy case.
             bool invalidScale = node.LabelScale <= 0f || node.CountScale <= 0f;
             bool savedPoison = node.TextOpacity <= 0f && node.CountTextOpacity <= 0f
-                && node.LabelScale <= 0.5f && node.CountScale <= 0.5f;
+                && node.LabelScale <= 0.5f && node.CountScale <= 0.5f
+                && node.GlowSize <= 0f && string.IsNullOrEmpty(node.PressAnimEasing);
             if (!invalidScale && !savedPoison) return;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
@@ -477,6 +482,19 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.CounterAnimScale = 1.1f;
             node.CounterAnimDurationMs = 300f;
             node.CounterAnimBezier = new float[] { 0.25f, 0.46f, 0.45f, 0.94f };
+            // Override seeds for the rain tabs: the editor copies these current values when the
+            // user first enables a per-node override, so they must start at their defaults too.
+            node.RainShadowEnabled = true;
+            node.RainShadowOffsetX = 3f;
+            node.RainShadowOffsetY = -3f;
+            node.RainOutlineWidth = 2f;
+            node.GhostRainShadowEnabled = true;
+            node.GhostRainShadowOffsetX = 3f;
+            node.GhostRainShadowOffsetY = -3f;
+            node.GhostRainOutlineWidth = 2f;
+            node.TrailFadeEnabled = true;
+            node.TrailFadePx = 50f;
+            node.ReleaseFadeDuration = 0.5f;
         }
 
         // Interim-build string carriers (that build persisted the lists as escaped JSON strings
@@ -606,7 +624,14 @@ namespace JipperKeyViewer.KeyViewer.Settings
                     {
                         string name = (string)reader.Value;
                         reader.Read();
-                        float f = Convert.ToSingle(reader.Value, System.Globalization.CultureInfo.InvariantCulture);
+                        // A single malformed component used to throw FormatException out of the
+                        // converter, which aborted the WHOLE profile load: the file was then backed
+                        // up as .corrupt and the user silently lost every setting. Skip the bad
+                        // component and keep the rest of the struct. / 单个分量格式错误曾让整个配置
+                        // 加载失败并被备份为 .corrupt，用户设置全部丢失；现在只跳过坏分量。
+                        float f;
+                        try { f = Convert.ToSingle(reader.Value, CultureInfo.InvariantCulture); }
+                        catch { f = 0f; }
                         switch (name)
                         {
                             case "r": r = f; break;

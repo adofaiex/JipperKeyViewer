@@ -79,8 +79,40 @@
 - 新增第一阶段 DmNote JSON 预设导入（`Core/KeyViewerDmNoteImport.cs`）：读取 `keyPositions` / 旧版
   `positions` / `statPositions`，支持按键绑定、几何、颜色/透明度、渐变、边框圆角、雨滴参数与
   字体样式映射；始终创建新 FreeMake Profile，不覆盖当前配置。`graphPositions`、`knobPositions`
-  与嵌入图片暂跳过并提示。设置页新增 DmNotePresets 文件夹列表和打开文件夹按钮；Harness 增加
-  解析/拒绝非法 JSON、旧配置与已损坏配置默认字段回归（88 项测试）。
+  与嵌入图片暂跳过并提示。设置页新增 DmNotePresets 文件夹列表和打开文件夹按钮。
+
+### 双子代理全面审查后的修复（2026-09-26，第 34 轮）
+- **DmNote 别名遍历**：ReadNumber 曾按步长 2 走，把 `x`/`y`/`w`/`h`/`row`/`zIndex` 等奇数位别名
+  全部静默丢弃——而 x/y 正是 DmNote 原生写法，导致整份预设解析出 0 个节点；旧用例只用
+  dx/dy/width/height（恰好全在偶数位）所以测试全绿也没发现。现改为遍历全部别名并过滤 NaN/Inf。
+- **缺 selectedKeyType 直接失败**：`(A && B) || C` 的优先级让 `TabExists(stats, null)` 执行，
+  JObject[null] 抛 ArgumentNullException，整份文件被判为不可读。现已加括号与空值防护。
+- **tab 与键名错位**：选中的 tab 不存在时，元素回退到别的 tab，键名却仍取不存在的 tab，
+  导致每个按键绑定到错误名称。现在 tab 必须真实存在，元素与键名严格同源。
+- **导入健壮性**：几何字段存在但无法解析时不再回退成 60x60 的假节点（跳过并提示）；rgb/rgba
+  分量钳制到 0-1；不透明度 NaN 防护；警告去重；元素数上限 4096（遍历中即拒绝，避免打爆 Mono 堆）；
+  Profile 名同时避开内存列表与磁盘孤儿文件；导入回滚补写 meta（否则 settings.json 会指向已删除
+  的 Profile，下次启动静默回到空配置）；新配置不再继承被克隆配置的 Count/TotalCount。
+- **文字渐变按一次键就消失**：渐变缓存只比较文本与两端颜色，不比较 `text.color`；按压路径无条件写
+  实色并让 TMP 在帧末重建 mesh，缓存命中后不再补回渐变，标签渐变从此永久丢失。现在在缓存早退
+  之前强制白色基色；`ForceMeshUpdate(true)` 忽略激活状态（隐藏文字此前会跳过重建并被记成已应用，
+  重新显示时整段纯白）；重建失败/空文本不再写入"已应用"状态；渐变颜色加 NaN/Inf 防护。
+- **计数弹跳与按下变换互相覆盖**：弹跳收尾写死 scale=1 与按下时的位置，松开后标签永久停在按下
+  偏移，且忽略 LabelScale/CountScale。现在弹跳叠加在节点变换之上，收尾交还给
+  ApplyCustomPressedTextTransform；文字基准位置改为"中性基准 + 节点偏移"，不再用 `+=` 累加。
+- **图片节点首次按键前无光效/文字色**：NodeType 3 创建时整段跳过了 ApplyCustomKeyColors，
+  光效与文字色要等第一次按压才生效（未绑定装饰却立即生效）。现统一在创建时应用。
+- **旧配置修复不再误伤用户**：savedPoison 判据收紧为额外要求 GlowSize=0 且按压缓动字符串为空
+  （只有错误路径才会产生），用户主动设置的"0 不透明度 + 0.5 缩放"配置不再被重置。
+- **切换 Profile 事务化**：SwitchProfile 在改写 CurrentProfile 之后的重建阶段抛异常时，会把
+  内存指向新配置而覆盖层半重建；现在捕获异常并回滚到原配置并重建。
+- **其它健壮性**：SanitizeFileName(null) 不再 NRE；WriteAllTextSafe 失败会清理 .tmp；
+  UnityStructConverter 单个分量解析失败不再让整份配置被判损坏；EnsureCustomNodes 净化光效/渐变/
+  文字颜色数组（长度≠4 或含 NaN 一律丢弃并回退全局色）；自定义布局不再套用固定布局的每键字号；
+  .jkv 回滚会清理 LoadProfile 留下的 .corrupt 孤儿；渐变颜色全透明时回退实色而不是让按键消失；
+  圆角几何改用静态暂存数组（原先每次 mesh 重建分配 315 个短命数组）；光效 rect 未变化时不重写。
+- Harness 增至 92 项（含 x/y/w/h/row/zIndex 别名、缺 selectedKeyType、tab 错位、合法零不透明度
+  不被重置等回归）。
 
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。

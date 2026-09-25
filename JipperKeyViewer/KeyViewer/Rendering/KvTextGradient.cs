@@ -39,6 +39,22 @@ namespace JipperKeyViewer.KeyViewer
         private void TickTextGradients()
         {
             if (Keys == null || !HasTextGradientSettings()) return;
+            // Drop entries whose TMP_Text was destroyed (foot-key reset, node deletion). Keeping
+            // them both pins a managed reference to a dead component and keeps HasTextGradientSettings
+            // true forever, so Tick would walk every key every frame with nothing to draw. / 清理已
+            // 销毁文本的缓存项：否则既会一直持有托管引用，又会让 HasTextGradientSettings 永远为真，
+            // 导致每帧空转遍历全部按键。
+            if (textGradientStates.Count > 0)
+            {
+                List<TMP_Text> dead = null;
+                foreach (KeyValuePair<TMP_Text, TextGradientState> kv in textGradientStates)
+                    if (kv.Key == null)
+                    {
+                        (dead ?? (dead = new List<TMP_Text>())).Add(kv.Key);
+                    }
+                if (dead != null)
+                    foreach (TMP_Text t in dead) textGradientStates.Remove(t);
+            }
             for (int i = 0; i < Keys.Length; i++)
                 ApplyTextGradientToKey(Keys[i]);
             // KPS/Total are separate roots in fixed layouts and may not be present in Keys.
@@ -72,18 +88,38 @@ namespace JipperKeyViewer.KeyViewer
             }
 
             string value = text.text ?? string.Empty;
+            // Hand-edited / third-party profiles can carry NaN colors; Color32 conversion turns
+            // those into 0 (solid black). Fall back to white instead of writing garbage vertices.
+            // 手改或第三方配置可能带 NaN 颜色，转成 Color32 会变成纯黑；回退白色而不是写入坏顶点色。
+            if (IsInvalidGradientColor(left)) left = Color.white;
+            if (IsInvalidGradientColor(right)) right = Color.white;
+            // The press path writes the SOLID text color unconditionally (ApplyCustomKeyColors /
+            // UpdateKeyColors), and TMP rebuilds the mesh from m_fontColor at the end of the frame.
+            // Force the gradient's white base back BEFORE the cache early-return: otherwise the first
+            // press silently overwrites every vertex color and the label loses its gradient for the
+            // rest of the session (the label text never changes again, so nothing ever re-applies it).
+            // 按压路径会无条件写实色并在帧末重建 mesh；必须在缓存早退之前把渐变基色改回白色，
+            // 否则第一次按压就会把标签渐变永久抹掉。
+            if (text.color != Color.white) text.color = Color.white;
             if (textGradientStates.TryGetValue(text, out TextGradientState state)
                 && state.Text == value && state.Left == left && state.Right == right)
                 return;
 
             // Vertex colors are multiplied by TMP_Text.color. Keep the base color white while a
             // gradient is active; when disabled, ResolveSolidTextColor restores the user's color.
-            text.color = Color.white;
-            text.ForceMeshUpdate();
+            // ignoreActiveState: a hidden label/count (HideLabel / CountShowWhilePressed) would make
+            // ForceMeshUpdate skip the rebuild, after which the text would come back plain white.
+            // / 必须忽略激活状态：隐藏的文字若跳过重建，重新显示时会是纯白。
+            // (This TMP version returns void, so success is inferred from the mesh info below.)
+            text.ForceMeshUpdate(true);
             TMP_TextInfo info = text.textInfo;
             if (info == null || info.characterCount <= 0)
             {
-                textGradientStates[text] = new TextGradientState { Text = value, Left = left, Right = right };
+                // Nothing to tint (empty or not yet parsed). Remember the state only when the text
+                // really is empty; otherwise drop it so a later tick retries the real build.
+                if (string.IsNullOrEmpty(value)) textGradientStates[text] =
+                    new TextGradientState { Text = value, Left = left, Right = right };
+                else textGradientStates.Remove(text);
                 return;
             }
 
@@ -109,6 +145,10 @@ namespace JipperKeyViewer.KeyViewer
             text.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
             textGradientStates[text] = new TextGradientState { Text = value, Left = left, Right = right };
         }
+
+        private static bool IsInvalidGradientColor(Color c) =>
+            float.IsNaN(c.r) || float.IsNaN(c.g) || float.IsNaN(c.b) || float.IsNaN(c.a)
+            || float.IsInfinity(c.r) || float.IsInfinity(c.g) || float.IsInfinity(c.b) || float.IsInfinity(c.a);
 
         private void ResolveTextGradient(Key key, bool count, bool pressed, out bool enabled, out Color left, out Color right)
         {
@@ -171,7 +211,8 @@ namespace JipperKeyViewer.KeyViewer
             }
 
             int index = key.shapeSlot;
-            if (d.EnablePerKeyColors && index >= 0 && index < d.PerKeyText.Length)
+            if (d.EnablePerKeyColors && d.PerKeyText != null && d.PerKeyTextClicked != null
+                && index >= 0 && index < d.PerKeyText.Length && index < d.PerKeyTextClicked.Length)
                 return key.isPressed ? d.PerKeyTextClicked[index] : d.PerKeyText[index];
             if (IsFullKeyboard)
             {

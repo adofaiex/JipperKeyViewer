@@ -315,7 +315,11 @@ namespace JipperKeyViewer.KeyViewer
                     : style;
                 t.fontSizeMax = Settings.Data.KeyFontSize;
             }
-            bool hasPerKey = Settings.Data.EnablePerKeyTextSize;
+            // Per-key text size only exists for the FIXED layouts. In FreeMake the loop index is a
+            // custom node slot, so a leftover PerKeyFontSize entry (e.g. slot 0 = 24) would silently
+            // resize an unrelated node whenever that node has no explicit FontSize. / 每键字号只属于
+            // 固定布局；FreeMake 的下标是节点槽位，残留的每键字号会误用到无自定义字号的节点上。
+            bool hasPerKey = Settings.Data.EnablePerKeyTextSize && !IsCustomLayout;
             void ApplyNodeFontSize(TMP_Text t, Settings.FmNode node, bool isCount)
             {
                 if (t == null || node == null) return;
@@ -326,7 +330,8 @@ namespace JipperKeyViewer.KeyViewer
             }
             void ApplyPerKeyOverride(TMP_Text t, int pi)
             {
-                if (t == null || !hasPerKey || pi < 0 || pi >= Settings.Data.PerKeyFontSize.Length) return;
+                if (t == null || !hasPerKey || pi < 0 || Settings.Data.PerKeyFontSize == null
+                    || pi >= Settings.Data.PerKeyFontSize.Length) return;
                 float fs = Settings.Data.PerKeyFontSize[pi];
                 if (fs > 0f) t.fontSizeMax = fs;
             }
@@ -428,6 +433,13 @@ namespace JipperKeyViewer.KeyViewer
                 mat.SetFloat("_UnderlayOffsetY", style.ShadowOffsetY);
                 mat.SetFloat("_UnderlaySoftness", style.ShadowSoftness);
             }
+            // NOTE: the cache key includes colour/offset floats, so every distinct style mints a new
+            // material. It is deliberately NOT capped: evicting an entry that some live text still
+            // references would destroy that text's material and make it render blank, which is far
+            // worse than the slow growth. Entries are released in ReleaseTextStyleMaterials on
+            // teardown. / 缓存键含颜色/偏移，每个不同样式都会新建材质。这里刻意不加上限：
+            // 淘汰仍被存活文本引用的条目会让那些文本变成空白，比缓慢增长严重得多；材质在
+            // 拆解时由 ReleaseTextStyleMaterials 统一释放。
             textStyleMaterials[key] = mat;
             return mat;
         }

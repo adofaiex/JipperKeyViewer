@@ -23,15 +23,58 @@ namespace JipperKeyViewer.KeyViewer
     {
         private const long MaxDmNotePresetBytes = 64L * 1024L * 1024L;
         private const string DmNotePresetDirectoryName = "DmNotePresets";
+        /// <summary>Hard cap on imported elements. A 64 MB JSON can describe hundreds of thousands
+        /// of nodes; each FmNode carries several float[4] arrays, so the parse would spike the Mono
+        /// heap long before EnsureCustomNodes trims the list back to 112. / 导入元素数硬上限：64MB
+        /// JSON 可能描述数十万个节点，每个节点还带多个颜色数组，会在裁剪前就把 Mono 堆打爆。</summary>
+        private const int MaxDmNoteElements = 4096;
+
+        /// <summary>Deduplicated warning collector: a preset with 10 000 unsupported panels used to
+        /// append 10 000 identical strings, all of which were then joined into the UI message.
+        /// 警告去重收集器：曾出现上万个相同警告字符串全部拼进提示文本。</summary>
+        internal sealed class DmNoteWarnings
+        {
+            private readonly HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+            private readonly List<string> ordered = new List<string>();
+            public int Count => ordered.Count;
+            public IEnumerable<string> Items => ordered;
+            public void Add(string message)
+            {
+                if (string.IsNullOrEmpty(message) || !seen.Add(message)) return;
+                ordered.Add(message);
+            }
+        }
 
         /// <summary>Parsed DmNote data before it is turned into a new profile. / 转为新 Profile 前的解析结果。</summary>
         internal sealed class DmNoteImportDocument
         {
             public readonly List<FmNode> Nodes = new List<FmNode>();
-            public readonly List<string> Warnings = new List<string>();
+            public readonly DmNoteWarnings Warnings = new DmNoteWarnings();
+            public int SeenElements;
             public string Tab = "default";
             public bool NoteEnabled = true;
             public float NoteSpeed;
+        }
+
+        /// <summary>Profile name free in BOTH the profile list and on disk. MakeUniqueProfileName
+        /// only knows the in-memory list, so an orphan file left by an earlier failed import could
+        /// still collide and abort the import with "profile target already exists".
+        /// Profile 名需同时避开内存列表与磁盘文件：仅查列表时，早前失败导入留下的孤儿文件会撞名。
+        /// </summary>
+        private string MakeUniqueDmNoteProfileName(string baseName)
+        {
+            string clean = SanitizeFileName(string.IsNullOrWhiteSpace(baseName) ? "DmNote" : baseName.Trim());
+            var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (Settings.ProfileNames != null)
+                foreach (string p in Settings.ProfileNames)
+                    if (!string.IsNullOrWhiteSpace(p)) used.Add(SanitizeFileName(p));
+            if (!used.Contains(clean) && !File.Exists(GetProfilePath(clean))) return clean;
+            for (int i = 2; i < 1000; i++)
+            {
+                string candidate = clean + " (" + i.ToString(CultureInfo.InvariantCulture) + ")";
+                if (!used.Contains(candidate) && !File.Exists(GetProfilePath(candidate))) return candidate;
+            }
+            return clean + " (" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture) + ")";
         }
 
         /// <summary>Files offered by the DM Note import list. / DM Note 导入列表中的文件。</summary>
@@ -95,10 +138,7 @@ namespace JipperKeyViewer.KeyViewer
 
                 string baseName = Path.GetFileNameWithoutExtension(filePath);
                 if (string.IsNullOrWhiteSpace(baseName)) baseName = "DmNote";
-                string profileName = MakeUniqueProfileName(SanitizeFileName(baseName));
-                int profileSuffix = 2;
-                while (File.Exists(GetProfilePath(profileName)))
-                    profileName = MakeUniqueProfileName(SanitizeFileName(baseName) + " " + profileSuffix++);
+                string profileName = MakeUniqueDmNoteProfileName(baseName);
                 string groupId = "g1";
                 imported.KeyViewerStyle = KeyviewerStyle.Custom;
                 imported.EnableRainEffect = document.NoteEnabled;
@@ -107,6 +147,12 @@ namespace JipperKeyViewer.KeyViewer
                     imported.RainSpeedRow1 = imported.RainSpeedRow2 = imported.RainSpeedRow3 = document.NoteSpeed;
                     imported.GhostRainSpeedRow1 = imported.GhostRainSpeedRow2 = imported.GhostRainSpeedRow3 = document.NoteSpeed;
                 }
+                // A DmNote preset carries its own per-node counts, but the fixed-layout counter
+                // arrays belong to the profile we cloned from. Carrying them over would import an
+                // unrelated profile's Total/KPS history into the new layout. / 预设自带每节点计数，
+                // 但固定布局的计数数组属于被克隆的配置——继承过来会把无关配置的统计带进新布局。
+                imported.Count = new int[MaxKeySlots];
+                imported.TotalCount = 0;
                 imported.CustomNodes = document.Nodes;
                 imported.CustomNodeNextId = document.Nodes.Max(n => n.Id) + 1;
                 imported.LayerGroups = new List<FmLayerGroup>
@@ -142,11 +188,17 @@ namespace JipperKeyViewer.KeyViewer
                     Settings.CurrentProfile = previousCurrent;
                     Settings.Data = previousData;
                     try { if (File.Exists(profilePath)) File.Delete(profilePath); } catch { }
+                    // SwitchProfile already persisted the NEW meta (CurrentProfile/ProfileNames)
+                    // through SaveSettings. Without rewriting it here, settings.json would point at
+                    // the profile file we just deleted and the next launch would silently fall back
+                    // to a fresh empty profile. / SwitchProfile 已把新 Profile 名写进 meta；不回写
+                    // 就会让 settings.json 指向刚删除的文件，下次启动静默回到空配置。
+                    try { SaveMetaOnly(); } catch { }
                     throw;
                 }
 
                 string warningText = document.Warnings.Count == 0
-                    ? "" : " " + string.Join("; ", document.Warnings.Take(3));
+                    ? "" : " " + string.Join("; ", document.Warnings.Items.Take(3));
                 message = string.Format(I18n.Tr("dmnote_import_success"), document.Nodes.Count, profileName)
                     + warningText;
                 return true;
@@ -191,7 +243,13 @@ namespace JipperKeyViewer.KeyViewer
                     ? keyNames[result.Tab] as JArray : null;
                 int nextId = 1;
                 AppendDmNoteElements(result, keyElements, names, false, ref nextId);
-                AppendDmNoteElements(result, statElements, null, true, ref nextId);
+                // Stat panels normally carry `statType`; only fall back to the parallel names array
+                // when it actually covers this tab's stat elements (otherwise the index would bind
+                // a panel to an unrelated key name). / 统计面板通常带 statType；仅当 names 数组确实
+                // 覆盖本 tab 的统计元素时才作为回退，避免按下标绑到无关键名。
+                JArray statNames = names != null && statElements != null && names.Count >= statElements.Count
+                    ? names : null;
+                AppendDmNoteElements(result, statElements, statNames, true, ref nextId);
                 if (root["graphPositions"] != null)
                     result.Warnings.Add(I18n.Tr("dmnote_skip_graph"));
                 if (root["knobPositions"] != null)
@@ -219,6 +277,12 @@ namespace JipperKeyViewer.KeyViewer
             if (elements == null) return;
             for (int i = 0; i < elements.Count; i++)
             {
+                // Refuse oversized documents DURING the walk: building hundreds of thousands of
+                // FmNodes first and trimming afterwards is what blows the Mono heap. / 遍历中即拒绝
+                // 超量文档：先构造再裁剪正是把托管堆打爆的原因。
+                if (result.SeenElements >= MaxDmNoteElements)
+                    throw new FormatException("too many elements (max " + MaxDmNoteElements + ")");
+                result.SeenElements++;
                 if (!(elements[i] is JObject raw)) continue;
                 string name = names != null && i < names.Count ? names[i]?.ToString() : "";
                 int nodeType = stat ? ResolveDmNoteStatType(raw, name, result.Warnings) : 0;
@@ -229,9 +293,19 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         private static FmNode BuildDmNoteNode(JObject raw, string keyName, int nodeType, int id,
-            List<string> warnings)
+            DmNoteWarnings warnings)
         {
             JObject position = raw["position"] as JObject ?? raw;
+            // A present-but-unparseable geometry field ("width":"abc") used to fall back to the
+            // default 60x60, producing a plausible-looking but WRONG node. Treat it like missing
+            // geometry and skip the element instead. / 几何字段存在但无法解析（如 "width":"abc"）
+            // 时曾回退成默认 60x60，生成看似正常但完全错位的节点；现在按无效几何跳过该元素。
+            if (HasUnreadableNumber(raw, position, "dx", "x", "left", "dy", "y", "top",
+                    "width", "w", "size", "height", "h"))
+            {
+                warnings.Add(I18n.Tr("dmnote_skip_geometry"));
+                return null;
+            }
             float x = ReadNumber(raw, position, "dx", "x", "left", float.NaN);
             float y = ReadNumber(raw, position, "dy", "y", "top", float.NaN);
             float w = ReadNumber(raw, position, "width", "w", "size", nodeType == 0 ? 60f : 100f);
@@ -398,7 +472,7 @@ namespace JipperKeyViewer.KeyViewer
             return flags;
         }
 
-        private static void ApplyDmNoteRain(FmNode node, JObject raw, JObject position, List<string> warnings)
+        private static void ApplyDmNoteRain(FmNode node, JObject raw, JObject position, DmNoteWarnings warnings)
         {
             float width = ReadNumber(raw, position, "noteWidth", 0f);
             if (width > 0f) node.RainWidth = width;
@@ -423,6 +497,7 @@ namespace JipperKeyViewer.KeyViewer
             if (node.UseCustomRainColor)
             {
                 float opacity = Mathf.Clamp01(ReadNumber(raw, position, "noteOpacity", 100f) / 100f);
+                if (float.IsNaN(opacity)) opacity = 1f;
                 top.a *= opacity;
                 bottom.a *= opacity;
                 node.RainColorTop = DmColorArray(top);
@@ -445,7 +520,9 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainOutlineEnabled = borderWidth > 0f;
                 node.RainOutlineWidth = borderWidth;
                 Color border = ReadColor(raw, position, "noteBorderColor", Color.white);
-                border.a *= Mathf.Clamp01(ReadNumber(raw, position, "noteBorderOpacity", 100f) / 100f);
+                float borderOpacity = Mathf.Clamp01(ReadNumber(raw, position, "noteBorderOpacity", 100f) / 100f);
+                if (float.IsNaN(borderOpacity)) borderOpacity = 1f;
+                border.a *= borderOpacity;
                 node.RainOutlineColor = DmColorArray(border);
             }
             if (raw["noteBorderSide"] != null || position["noteBorderSide"] != null)
@@ -465,10 +542,19 @@ namespace JipperKeyViewer.KeyViewer
                 warnings.Add(I18n.Tr("dmnote_skip_ghost"));
         }
 
+        /// <summary>Pick the tab to import. The returned name is ALWAYS a tab that really exists in
+        /// the position tables (or "default" for a table-less document), so the element lookup and
+        /// the `keys[tab]` name array can never drift onto different tabs. The earlier version fell
+        /// back to the first array inside SelectDmNoteTabArray while still reading names for the
+        /// requested tab, which silently bound every key to the wrong name. Also: `||` binds looser
+        /// than `&&`, so a null selectedKeyType used to reach TabExists(stats, null) and throw
+        /// ArgumentNullException out of the JObject indexer. / 选中的 tab 名必定真实存在，避免元素与
+        /// 键名数组取自不同 tab；并修正 selectedKeyType 缺失时 JObject[null] 抛异常的优先级 bug。</summary>
         private static string SelectDmNoteTab(JObject root, JToken keys, JToken stats)
         {
             string selected = root["selectedKeyType"]?.ToString();
-            if (!string.IsNullOrWhiteSpace(selected) && TabExists(keys, selected) || TabExists(stats, selected))
+            if (!string.IsNullOrWhiteSpace(selected)
+                && (TabExists(keys, selected) || TabExists(stats, selected)))
                 return selected;
             string first = FirstTab(keys) ?? FirstTab(stats);
             return string.IsNullOrEmpty(first) ? "default" : first;
@@ -478,20 +564,23 @@ namespace JipperKeyViewer.KeyViewer
             => table is JObject obj ? obj.Properties().Select(p => p.Name).FirstOrDefault() : null;
 
         private static bool TabExists(JToken table, string tab)
-            => table is JObject obj && obj[tab] is JArray;
+        {
+            if (string.IsNullOrEmpty(tab)) return false;
+            return table is JObject obj && obj[tab] is JArray;
+        }
 
+        /// <summary>Strict lookup: a missing tab yields null instead of silently borrowing another
+        /// tab's elements (the caller treats null as "this table has nothing for the chosen tab").
+        /// 严格按 tab 取数组；缺失时返回 null，绝不借用别的 tab 造成元素与键名错位。</summary>
         private static JArray SelectDmNoteTabArray(JToken table, string tab)
         {
             if (table is JArray direct) return direct;
-            if (table is JObject obj)
-            {
-                if (obj[tab] is JArray selected) return selected;
-                return obj.Properties().Select(p => p.Value as JArray).FirstOrDefault(a => a != null);
-            }
+            if (table is JObject obj && !string.IsNullOrEmpty(tab))
+                return obj[tab] as JArray;
             return null;
         }
 
-        private static int ResolveDmNoteStatType(JObject raw, string name, List<string> warnings)
+        private static int ResolveDmNoteStatType(JObject raw, string name, DmNoteWarnings warnings)
         {
             JObject position = raw["position"] as JObject ?? raw;
             string type = ReadString(raw, position, "statType", ReadString(raw, position, "type", name)).ToLowerInvariant();
@@ -690,7 +779,8 @@ namespace JipperKeyViewer.KeyViewer
             if (token.Type == JTokenType.Integer || token.Type == JTokenType.Float)
             {
                 float v = token.Value<float>();
-                return new Color(v, v, v, 1f);
+                if (float.IsNaN(v) || float.IsInfinity(v)) return fallback;
+                return new Color(Mathf.Clamp01(v), Mathf.Clamp01(v), Mathf.Clamp01(v), 1f);
             }
             string text = token.ToString().Trim();
             if (text.StartsWith("#", StringComparison.Ordinal)
@@ -706,7 +796,11 @@ namespace JipperKeyViewer.KeyViewer
                     && float.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out float b))
                 {
                     float a = parts.Length > 3 && float.TryParse(parts[3], NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed) ? parsed : 1f;
-                    return new Color(r / 255f, g / 255f, b / 255f, a);
+                    // rgb()/rgba() components are 0-255 (or percentages); without clamping,
+                    // rgba(300,0,0,2) produced an out-of-gamut colour that reached the mesh vertices.
+                    // rgb()/rgba() 分量为 0-255，不钳制会让 rgba(300,0,0,2) 产生超范围颜色写进顶点色。
+                    return new Color(Mathf.Clamp01(r / 255f), Mathf.Clamp01(g / 255f), Mathf.Clamp01(b / 255f),
+                        Mathf.Clamp01(a));
                 }
             }
             return fallback;
@@ -733,16 +827,45 @@ namespace JipperKeyViewer.KeyViewer
             return true;
         }
 
+        /// <summary>Read the first present alias from outer/inner, else the last argument (default).
+        /// The args are "alias, alias, ..., default" — EVERY alias must be probed, not just the even
+        /// indexes: a step-of-two walk silently dropped `x`, `w`, `row` and `zIndex`, which are real
+        /// DmNote field names. / 依次探测所有别名，最后一个参数才是默认值；早期实现按步长 2 遍历，
+        /// 会静默丢掉 x / w / row / zIndex 这些 DmNote 原生字段名。</summary>
         private static float ReadNumber(JObject outer, JObject inner, params object[] namesAndDefault)
         {
-            for (int i = 0; i + 1 < namesAndDefault.Length; i += 2)
+            int last = namesAndDefault.Length - 1;
+            for (int i = 0; i < last; i++)
             {
                 string name = namesAndDefault[i] as string;
+                if (string.IsNullOrEmpty(name)) continue;
                 JToken token = outer?[name] ?? inner?[name];
                 if (token == null || token.Type == JTokenType.Null) continue;
-                try { return token.Value<float>(); } catch { }
+                try
+                {
+                    float value = token.Value<float>();
+                    if (!float.IsNaN(value) && !float.IsInfinity(value)) return value;
+                }
+                catch { }
             }
-            return namesAndDefault.Length == 0 ? 0f : Convert.ToSingle(namesAndDefault[namesAndDefault.Length - 1], CultureInfo.InvariantCulture);
+            return last < 0 ? 0f : Convert.ToSingle(namesAndDefault[last], CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>True when one of the named tokens EXISTS but cannot be read as a finite float.
+        /// A malformed value must not silently fall back to a default. / 命名字段存在但无法读成有限
+        /// 浮点数时返回 true：坏值不能悄悄回退成默认值。</summary>
+        private static bool HasUnreadableNumber(JObject outer, JObject inner, params string[] names)
+        {
+            for (int i = 0; i < names.Length; i++)
+            {
+                JToken token = outer?[names[i]] ?? inner?[names[i]];
+                if (token == null || token.Type == JTokenType.Null) continue;
+                float value;
+                try { value = token.Value<float>(); }
+                catch { return true; }
+                if (float.IsNaN(value) || float.IsInfinity(value)) return true;
+            }
+            return false;
         }
 
         private static bool ReadBool(JObject p, string name, bool fallback)

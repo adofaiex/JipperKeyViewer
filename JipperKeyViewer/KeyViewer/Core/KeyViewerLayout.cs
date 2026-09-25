@@ -1021,7 +1021,7 @@ namespace JipperKeyViewer.KeyViewer
             text.fontSizeMin = 0;
 
             // Per-key font size and vertical offset (via RectTransform Y) / 每键字号和垂直偏移（通过 RectTransform Y）
-            if (settings.Data.EnablePerKeyTextSize && perKeyIndex >= 0)
+            if (settings.Data.EnablePerKeyTextSize && settings.Data.PerKeyFontSize != null && perKeyIndex >= 0)
             {
                 int pi = perKeyIndex;
                 if (pi >= 0 && pi < settings.Data.PerKeyFontSize.Length && settings.Data.PerKeyFontSize[pi] > 0)

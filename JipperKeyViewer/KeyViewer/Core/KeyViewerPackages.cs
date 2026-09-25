@@ -152,6 +152,20 @@ namespace JipperKeyViewer.KeyViewer
                     catch { }
                 }
                 try { if (!string.IsNullOrEmpty(profilePath) && File.Exists(profilePath)) File.Delete(profilePath); } catch { }
+                // A failed SwitchProfile made LoadProfile back the target up as <name>.json.corrupt
+                // before returning false. Rolling back only the .json left that orphan behind, so
+                // every failed import littered the profile folder with a bogus backup.
+                // 切换失败时 LoadProfile 会先把目标备份成 <name>.json.corrupt 再返回 false；
+                // 回滚只删 .json 就会留下孤儿文件，每次失败导入都会在配置目录留下垃圾备份。
+                try
+                {
+                    if (!string.IsNullOrEmpty(profilePath))
+                    {
+                        string corrupt = profilePath + ".corrupt";
+                        if (File.Exists(corrupt)) File.Delete(corrupt);
+                    }
+                }
+                catch { }
                 TryDeleteDirectory(stagingRoot);
             }
 
