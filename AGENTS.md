@@ -1217,6 +1217,25 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
 - `RainSystem` 里唯一的两个集合字段是 `readonly`（`rainActiveKeys` / `rainActiveSet`），
   逐帧路径上无 `new`、无 `ToArray`、无 `ToList`。✓
 
+### 视频预算泄漏（2026-09-26，第 75 轮）
+`KvVideoTextureManager` 的 256 MB 渲染纹理预算是**全局静态** `liveTextureBytes`，
+第 ~295 行提交、第 ~427 行（`DestroyEntry`）归还。提交与归还用的是**同一个**已钳制的
+`width`/`height`，二者配平正确。
+
+- **【视频整体永久失效】`CreateEntry` 的 `catch` 归还了纹理，却从不归还预算**：
+  该 `catch` 会销毁 `RenderTexture`、摘掉事件、并**自己把条目从 `entries` 里移除**——于是
+  `DestroyEntry`（唯一另一条减计数路径）**永远等不到这个条目**。预算就此**永久**少一块。
+  触发点在预算提交之后：`player.Prepare()` 是现实中的抛出者（路径不合法/IO 错误）。
+  **为何严重**：`wanted` 对一个 2048×2048 节点最大 **16 MB**，而预算是 **256 MB 全局**的；
+  且失败的启动会在**每次节点编辑、配置切换、覆盖层重建**时重试。把节点指向损坏视频文件的用户，
+  每次尝试烧掉 16 MB——**16 次之后，所有配置里的所有视频节点都会静默回退到静态图**，
+  屏幕上没有任何提示，只留第一次那条日志。且 `ReleaseAll` 才有的 `liveTextureBytes = 0`
+  兜底救不了它，因为节点编辑/配置切换都不经过 `ReleaseAll`。
+  现：在 `catch` 里按是否真的提交过归还。
+- **其余减计数路径已核实无重复归还**：`DestroyEntry` 的 4 个调用点（陈旧清扫 / `ReleaseAll` /
+  `Release(nodeId)` / 复用前销毁旧条目）全部是「先从 `entries` 取出再销毁」，不会对同一条目调用两次；
+  且 `ReleaseAll` 无论如何都会把计数归零。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

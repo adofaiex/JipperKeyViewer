@@ -218,6 +218,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             GameObject go = null;
             RenderTexture texture = null;
             VideoPlayer player = null;
+            // Did this attempt take a slice of the global render-texture budget? The budget is
+            // committed at line ~295 and only returned by DestroyEntry — but the catch below
+            // removes the entry from `entries` itself, so DestroyEntry can never run for it.
+            // 这次尝试是否占用了全局渲染纹理预算？预算在 ~295 行提交、只由 DestroyEntry 归还——
+            // 而下面的 catch 自己把条目从 `entries` 里移除，故 DestroyEntry 永远等不到它。
+            bool budgetCommitted = false;
             try
             {
                 EnsureRoot();
@@ -293,6 +299,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     return null;
                 }
                 liveTextureBytes += wanted;
+                budgetCommitted = true;
                 // Register before Prepare so an immediate decoder error can be associated with
                 // this entry; the error callback marks it failed and the runtime swaps to the
                 // static image on the next frame. / Prepare 前登记，错误回调即可标记条目失败，
@@ -318,6 +325,26 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 }
                 if (entries.TryGetValue(nodeId, out Entry failed) && failed != null && failed.GameObject == go)
                     entries.Remove(nodeId);
+                // Hand the budget slice back. This is the only place that can: the entry is gone
+                // from `entries`, so DestroyEntry — the sole other path that decrements — will
+                // never see it. Leaking here is not a small drift: `wanted` is up to 16 MB for one
+                // 2048×2048 node against a 256 MB GLOBAL budget, and a failed start is
+                // re-attempted on every node edit, profile switch and overlay rebuild. A user
+                // pointing a node at a broken video file would burn 16 MB per attempt and, after
+                // 16 of them, every video node in every profile would silently fall back to its
+                // static image — with nothing on screen to explain it, only the one log line
+                // emitted the first time.
+                // 归还这一份预算。这是**唯一**能归还的地方：条目已从 `entries` 移除，故唯一另一条
+                // 减计数路径 DestroyEntry 永远看不到它。这里的泄漏不是小偏移：`wanted` 对一个
+                // 2048×2048 节点最大 16 MB，而预算是 **256 MB 全局**的；且失败的启动会在每次节点
+                // 编辑、配置切换与覆盖层重建时**重试**。把节点指向损坏视频文件的用户，每次尝试
+                // 烧掉 16 MB——16 次之后，**所有配置里**的视频节点都会静默回退到静态图，屏幕上
+                // 没有任何提示，只有第一次那条日志。
+                if (budgetCommitted)
+                {
+                    liveTextureBytes -= (long)width * height * 4L;
+                    if (liveTextureBytes < 0) liveTextureBytes = 0;
+                }
                 return null;
             }
         }
