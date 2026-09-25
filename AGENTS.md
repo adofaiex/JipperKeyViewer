@@ -794,6 +794,48 @@
 - Harness 增至 **138** 项（新测试灌入 12 条 3MB 快照 = 72 MB，要求条数与字节两个上限都满足、
   且至少留一条使撤销仍可用）。该测试对旧代码是**判别性**的：旧代码没有 `snapshotBytes` 字段。
 
+### 孤立翻译键清理 + 固定布局深审（2026-09-26，第 57 轮）
+- **12 个键定义后无人引用**（36 条三语文本）：`fm_group_assign/del/select`（已被带插值的
+  `fm_gtip_*` 工具提示取代）、`fm_stat_layout`、`fm_stat_hide_label_hint`、`fm_rain_color`、
+  `fm_rain_follow_row`、`fm_special_color_hint`、`layout_108k`、`save`、`pkg_err_format`、
+  `dmnote_imported`。逐一核实过：**没有任何控件真的缺标签**，全是历次重构的遗留。
+- **加了自动化检查**（Harness 增至 **140** 项）：键只要以**任意**字符串字面量出现、或以一个紧邻
+  拼接的字面量开头（`"tab_" + TabKeys[i]`）即算被使用。两条规则缺一不可——只匹配
+  `I18n.Tr("…")` 会误报约 60 个帮助键（它们是裸传给 `DrawEditorHelpMarker`、由它内部调
+  `I18n.Tr`）。改名后旧键残留从此会被**测试**抓到。
+- **【换脚键样式会冻结一屏光晕】光晕 Image 不是按键根的子物体**：它挂在 `keyGlowLayer` 下
+  （`CustomLayout.cs:952`），而那是 `KeyViewerSizeObject` 的整幅拉伸子物体、被 `ResetKeyViewer`
+  的重建清扫**显式排除**。故 `ResetFootKeyViewer` 的两次 `Destroy` 碰不到它：它仍 enabled、
+  停在最后的矩形与颜色上、仍被绘制，且仍留在 `fixedGlowImages` 里（顺带把已销毁的 `Key` 组件
+  钉在托管内存中）。每换一次脚键样式就在屏上叠一组冻结光晕，而新按键在第一次按压前一直没有光晕
+  （`ApplyFixedGlow` 的 `TryGetValue` 落空——新 `Key` 是另一个对象）。只有整层重建才会走到
+  `ClearFixedGlowImages` 扫掉。属功能开关门控（`EnableFixedKeyGlow` 默认关）。现销毁前显式收掉
+  光晕并从字典移除，重建后立刻 `ApplyFixedKeyGlows()`。
+- **`CanvasWidth` 除以 `Screen.height` 无守卫，而默认 X = 0 会把 Inf 变成 NaN**：
+  `Screen.height` 在某些窗口状态（最小化/零高度交换链窗口）不保证为正 → `CanvasWidth` = +Inf；
+  而 `MainKeyViewerPosition` 默认 `x = 0`，定位算法是乘法，`0 * Inf` = **NaN**，被写进
+  `SetRect` → **共享**的合并 `KeyShapeLayer`，一个非有限矩形毁掉屏上**每一个**按键框。
+  子代理诚实标注了触发条件不确定（Unity 通常会钳制），但这是这两个文件里唯一没有非有限守卫的
+  数值输入，且爆炸半径是整个按键层。现抽出 `ComputeCanvasWidth()` 同时守卫除数与结果。
+- **【构建中途抛出会让 Update 每帧 NRE】`EnableKeyViewer` 没有异常屏障**：`KeyViewerObject` 在
+  开头就赋值，而 `PressTimes`/`keyPressTimes`/`lastPerKeyKps`/**`Stopwatch`** 要到函数**尾部**
+  才创建。窗口内任何抛出都会带着「对象活着但 `Stopwatch` 为 null」逃出 `OnEnable`，于是**下一帧**
+  就死在 `Stopwatch.ElapsedMilliseconds` 上——每帧一个 NRE，输入处理、按键计数、KPS、雨滴全部
+  失效，只能靠关掉再打开恢复。抛出并非假设：构建要跑反射驱动的字体材质工作、约 40-105 对
+  `new GameObject`+`AddComponent`、以及 `GetLayout`。`SwitchProfile` 恰恰把它等价的重建包在
+  try/catch + 回滚里。现把构建主体拆成 `BuildOverlay()` 并加屏障，失败即整体拆解。
+- `ApplyKeyColors` 此前只判 `pi < 0` 就索引四个 `PerKey*` 数组，而两个同族读取点
+  （`ApplyColorToKey`、`PerKeyColorArraysValid`）都判了上界；本处在 `CreateKey` **内部**，
+  越界会从 `EnableKeyViewer` 中途逃出、升级成永久损坏的 Update。现加 `PerKeyColorsCoverSlot`，
+  不覆盖时回落到全局分支（与 `ApplyColorToKey` 一致）。
+- 删掉 `DisableKeyViewer` 里连着调了两次的 `ClearActiveDrops`——开头那次已经干了活，第二次纯属
+  冗余，且把注释错误地挂在了自己身上。幂等所以没出问题，但重复的拆解步骤会被后来人读成
+  「开头那次是承重的」。
+- 子代理另确认**干净**的部分：`Key.cs`（纯数据持有者，无 Update/OnDestroy/终结器，持有资源全在
+  `ReleaseCustomTextures` 里释放）、固定布局的 GameObject 生命周期（逐个追了 `new GameObject`
+  与父子关系，`ResetKeyViewer` 的清扫全覆盖，无泄漏、无「装好后又被销毁」的顺序 bug）、以及固定
+  路径上的索引安全（含 108K 的 105 个槽位为何永远走不到 `Count[40]`）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

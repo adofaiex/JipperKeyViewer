@@ -27,6 +27,52 @@ namespace JipperKeyViewer.KeyViewer
                 Loader.Error("KeyViewer: Cannot load AssetBundle, please check assets/ directory");
                 return;
             }
+            // Exception barrier. KeyViewerObject is assigned at :31 and ~75 lines of construction run
+            // before PressTimes / keyPressTimes / lastPerKeyKps / **Stopwatch** are created at the
+            // tail. Any throw in that window escaped OnEnable (or Update) with KeyViewerObject != null
+            // and Stopwatch == null, so the very next frame died on `Stopwatch.ElapsedMilliseconds` —
+            // a NullReferenceException EVERY frame, taking input processing, press counting, KPS and
+            // rain with it, recoverable only by toggling the display off and on.
+            //
+            // The throw is not hypothetical: the build runs reflection-backed font-material work
+            // (ConfigureText → GetTextStyleMaterial → GetFontMaterial), ~40-105 `new GameObject` +
+            // `AddComponent` pairs, and GetLayout. SwitchProfile wraps its equivalent rebuild in
+            // try/catch with a rollback precisely because this is considered reachable; this one had
+            // no such wrapper.
+            // 异常屏障。KeyViewerObject 在 :31 就被赋值，而随后约 75 行构建一直跑到尾部才创建
+            // PressTimes / keyPressTimes / lastPerKeyKps / **Stopwatch**。该窗口内任何抛出都会带着
+            // KeyViewerObject != null 且 Stopwatch == null 逃出 OnEnable（或 Update），于是**下一帧**
+            // 就死在 `Stopwatch.ElapsedMilliseconds` 上——每帧一个 NullReferenceException，把输入
+            // 处理、按键计数、KPS 与雨滴全部带走，只能靠关掉再打开显示来恢复。
+            //
+            // 抛出并非假设：构建过程会跑反射驱动的字体材质工作（ConfigureText → GetTextStyleMaterial
+            // → GetFontMaterial）、约 40-105 对 `new GameObject` + `AddComponent`，以及 GetLayout。
+            // SwitchProfile 恰恰把它等价的重建包在 try/catch + 回滚里，正因为这条被认为可达；而这里
+            // 没有。
+            try
+            {
+                BuildOverlay();
+            }
+            catch (Exception buildError)
+            {
+                Loader.Error($"KeyViewer: overlay build failed: {buildError.Message}");
+                // Tear the half-built object down so Update never sees a live KeyViewerObject with a
+                // null Stopwatch. ResetKeyViewer is the same teardown the disable path uses.
+                // 把半成品整个拆掉，使 Update 永远不会看到「KeyViewerObject 活着但 Stopwatch 为
+                // null」的状态。这里复用与关闭路径相同的拆解。
+                try { DisableKeyViewer(); }
+                catch (Exception cleanupError)
+                {
+                    Loader.Error($"KeyViewer: overlay teardown after a failed build also failed: {cleanupError.Message}");
+                    KeyViewerObject = null;
+                }
+            }
+        }
+
+        /// <summary>Body of the overlay build, split out so EnableKeyViewer can wrap it in the
+        /// exception barrier above. / 覆盖层构建主体，拆出以便 EnableKeyViewer 用上面的异常屏障包住。 </summary>
+        private void BuildOverlay()
+        {
             // Create ScreenSpaceOverlay canvas (independent of game UI) / 创建 ScreenSpaceOverlay 画布（独立于游戏 UI）
             KeyViewerObject = new GameObject("Jipper KeyViewer");
             Canvas = KeyViewerObject.AddComponent<Canvas>();
@@ -131,9 +177,16 @@ namespace JipperKeyViewer.KeyViewer
             // Explicitly clear active rain state before dropping the Keys reference — the active
             // set only stayed valid by the implicit "rain indices < 24 < any array length"
             // invariant; clearing makes correctness independent of it.
+            // (This used to be called twice back to back — the first call at the top of the method
+            // already did the work, and the second was pure redundancy that also misattributed the
+            // comment to itself. ClearActiveDrops is idempotent so nothing was broken, but a
+            // duplicated teardown step is exactly the kind of thing that later reads as "the first
+            // one is load-bearing".)
             // 显式清空活跃雨滴状态再丢弃 Keys 引用——活跃集此前仅靠"雨滴索引 <24 < 任意
             // 数组长度"的隐式不变量保持正确;清空让正确性不再依赖它。
-            rainSystem.ClearActiveDrops(Keys);
+            // （此前这里前后连着调了两次——方法开头那次已经干了活，第二次纯属冗余、且把注释
+            // 错误地挂在了自己身上。ClearActiveDrops 是幂等的所以没出问题，但重复的拆解步骤
+            // 恰恰会被后来人读成"开头那次是承重的"。）
             // Same texture-ownership reason as ResetKeyViewer — destroying KeyViewerObject does
             // not free any custom-image texture. / 与 ResetKeyViewer 同理的贴图归属问题——
             // 销毁 KeyViewerObject 不会释放任何自定义图片贴图。
@@ -1081,12 +1134,24 @@ namespace JipperKeyViewer.KeyViewer
             if (IsCustomLayout) return;
             if (Settings.Data.EnablePerKeyColors)
             {
+                // Upper bound as well as lower. Both sibling readers of these arrays guard it —
+                // ApplyColorToKey below and PerKeyColorArraysValid on the input path — and this one
+                // runs inside CreateKey, so a miss here would escape EnableKeyViewer mid-build and
+                // escalate into a permanently broken Update rather than one bad key. Falling back to
+                // the global branch is the same thing ApplyColorToKey already does.
+                // 除下界外也要上界。这几个数组的两个同族读取点都有守卫——下方的 ApplyColorToKey 与
+                // 输入路径上的 PerKeyColorArraysValid——而本处在 CreateKey **内部**，故一旦越界就会
+                // 从 EnableKeyViewer 中途逃出、升级成永久损坏的 Update，而不只是画错一个按键。
+                // 回落到全局分支正是 ApplyColorToKey 已在做的事。
+                if (pi >= 0 && PerKeyColorsCoverSlot(pi))
+                {
+                    SetShapeColors(key, Settings.Data.PerKeyBackground[pi], Settings.Data.PerKeyOutline[pi]);
+                    key.text.color = Settings.Data.PerKeyText[pi];
+                    if (key.value != null) key.value.color = Settings.Data.PerKeyText[pi];
+                    key.rainColor = Settings.Data.PerKeyRainColor[pi];
+                    return;
+                }
                 if (pi < 0) return;
-                SetShapeColors(key, Settings.Data.PerKeyBackground[pi], Settings.Data.PerKeyOutline[pi]);
-                key.text.color = Settings.Data.PerKeyText[pi];
-                if (key.value != null) key.value.color = Settings.Data.PerKeyText[pi];
-                key.rainColor = Settings.Data.PerKeyRainColor[pi];
-                return;
             }
             if (pi >= Keys.Length)
             {
@@ -1361,13 +1426,49 @@ namespace JipperKeyViewer.KeyViewer
         private Vector2[] _fkHome;
         private bool _fkHomeValid;
 
+        /// <summary>The 1080-height reference width. Screen.height is the divisor and it is NOT
+        /// guaranteed positive in every window state (a minimised / zero-height swap chain window
+        /// reports 0), which made CanvasWidth +Inf. The stored MainKeyViewerPosition defaults to
+        /// x = 0, and the positioning maths multiplies: `norm.x * (CanvasWidth - r)` is then
+        /// `0 * Inf` = **NaN**, written into SetRect on the SHARED merged KeyShapeLayer — so one
+        /// non-finite rect corrupts every key box on screen, not just one. Guard the divisor and the
+        /// result, matching how every other geometry input in this codebase is sanitized.
+        /// 1080 高度参考宽度。Screen.height 是除数，而它在某些窗口状态下**不保证为正**（最小化/
+        /// 零高度交换链窗口会上报 0），于是 CanvasWidth 变成 +Inf。而 MainKeyViewerPosition 默认
+        /// x = 0，定位算法是乘法：`norm.x * (CanvasWidth - r)` 于是是 `0 * Inf` = **NaN**，被写进
+        /// **共享**的合并 KeyShapeLayer——一个非有限矩形会毁掉屏上**每一个**按键框，而不只是那一个。
+        /// 守卫除数与结果，与本代码库其它几何输入的净化方式一致。
+        /// </summary>
+        /// <summary>Do the four per-key colour arrays actually cover this slot? The global-colour
+        /// branch is the correct fallback when they do not, which is what ApplyColorToKey does.
+        /// 四个每键颜色数组是否真的覆盖该槽位？不覆盖时回落到全局分支才是对的，这也正是
+        /// ApplyColorToKey 的做法。
+        /// </summary>
+        private static bool PerKeyColorsCoverSlot(int pi)
+        {
+            ProfileData d = Settings.Data;
+            return d != null
+                && d.PerKeyBackground != null && pi < d.PerKeyBackground.Length
+                && d.PerKeyOutline != null && pi < d.PerKeyOutline.Length
+                && d.PerKeyText != null && pi < d.PerKeyText.Length
+                && d.PerKeyRainColor != null && pi < d.PerKeyRainColor.Length;
+        }
+
+        private static float ComputeCanvasWidth()        {
+            int h = Screen.height;
+            if (h <= 0) return Screen.width > 0 ? Screen.width : 1f;
+            float w = Screen.width * 1080f / h;
+            if (float.IsNaN(w) || float.IsInfinity(w) || w <= 0f) return 1f;
+            return w;
+        }
+
         private float CanvasWidth
         {
             get
             {
                 if (lastScreenWidth != Screen.width || lastScreenHeight != Screen.height)
                 {
-                    canvasWidth = Screen.width * 1080f / Screen.height;
+                    canvasWidth = ComputeCanvasWidth();
                     lastScreenWidth = Screen.width;
                     lastScreenHeight = Screen.height;
                 }
@@ -1385,7 +1486,7 @@ namespace JipperKeyViewer.KeyViewer
         private void CheckResolutionChanged()
         {
             if (lastScreenWidth == Screen.width && lastScreenHeight == Screen.height) return;
-            canvasWidth = Screen.width * 1080f / Screen.height; // keep CanvasWidth's cache in sync / 同步 CanvasWidth 的缓存
+            canvasWidth = ComputeCanvasWidth(); // keep CanvasWidth's cache in sync / 同步 CanvasWidth 的缓存
             lastScreenWidth = Screen.width;
             lastScreenHeight = Screen.height;
             if (KeyViewerObject == null) return;
@@ -1705,10 +1806,37 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     if (key.gameObject != null)
                         Object.Destroy(key.gameObject);
+                    // The glow Image is NOT a child of the key root — it is parented to
+                    // keyGlowLayer (CustomLayout.cs:952), a full-stretch child of
+                    // KeyViewerSizeObject that ResetKeyViewer explicitly EXCLUDES from its rebuild
+                    // sweep. So the two Destroy calls above leave it alive: still enabled at its
+                    // last rect and colour, still drawn, and still held in fixedGlowImages (which
+                    // also pins the destroyed Key component in managed memory). Every foot-style
+                    // change stacked another set of frozen halos on screen, and the replacement
+                    // keys stayed glow-less until their first press because ApplyFixedGlow's
+                    // TryGetValue misses — the new Key is a different object. Only a full overlay
+                    // rebuild reached ClearFixedGlowImages and swept them.
+                    // Destroy the glow explicitly here, before the Key reference dies.
+                    // 光晕 Image **不是**按键根的子物体——它挂在 keyGlowLayer 下（CustomLayout.cs:952），
+                    // 而那是 KeyViewerSizeObject 的整幅拉伸子物体，被 ResetKeyViewer 的重建清扫
+                    // **显式排除**。故上面两次 Destroy 不会碰它：它仍是 enabled、停在最后的矩形与
+                    // 颜色上、仍被绘制，且仍留在 fixedGlowImages 里（同时把已销毁的 Key 组件钉在
+                    // 托管内存中）。每换一次脚键样式就在屏上叠一组冻结的光晕，而新按键在第一次
+                    // 按压前一直没有光晕——因为 ApplyFixedGlow 的 TryGetValue 落空，新 Key 是另一个
+                    // 对象。只有整层重建才会走到 ClearFixedGlowImages 把它们扫掉。
+                    if (fixedGlowImages.TryGetValue(key, out Image footGlow) && footGlow != null)
+                    {
+                        footGlow.enabled = false;
+                        Object.Destroy(footGlow.gameObject);
+                    }
+                    fixedGlowImages.Remove(key);
                 }
             }
             int footSize = FootKeySize(Settings.Data.FootKeyViewerStyle);
             if (footSize > 0) InitializeFootKeyViewer(footSize);
+            // Light the replacement keys now rather than on their first press — see above.
+            // 立刻点亮替换后的按键，而不是等第一次按压——见上。
+            ApplyFixedKeyGlows();
             if (Settings.Data.CustomPositionEnabled)
                 ResetFootKeyViewerPosition();
             // Every foot TMP_Text was just destroyed (Object.Destroy is deferred to the end of the
