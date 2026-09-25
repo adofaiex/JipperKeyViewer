@@ -1347,6 +1347,31 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
   **教训**：第 77 轮引入中央化缓存时，必须回头检查所有「实例死亡时清理共享资源」的位置——
   逐实例安全不等于逐实例安全 + 共享资源安全。
 
+### 静态字段全量清点（2026-09-26，第 81 轮）
+第 80 轮新发现的缺陷类别（「死实例的静态踩踏」）值得系统排查一次。全仓 37 个可变静态字段逐个核实，
+**除第 80 轮已修的三处外，全部正确**——记录在此以免重复审计。
+
+- **`_slimCacheKey` / `_slimCacheValue`（`KeyViewerLayout` 的两比特记忆化）**：注释声称
+  「结果只取决于 style + StandardKeyWidth，故双比特键覆盖全部失效场景」。**核实为真**：缓存命中的
+  分支只读 `GetLayout(style)` 与 `e.slim`；`HideKpsTotalLabel` / `KpsTotalCentered` 由缓存**之前**
+  的两个早返回处理（FullKeyboard 与 Custom 各一条）。而 `GetLayout` 只读 `style` 与
+  `Settings?.Data?.StandardKeyWidth`（`extras` 全是字面量表），两者都在键内。切配置时 `Settings.Data`
+  虽被整体换掉，但新值产生新键；即使风格与宽度恰好相同，复用缓存值也**正确**——因为值本就只由
+  这两者决定。✓
+- **7 个 `GUIStyle` 静态**（`saveErrorStyle`、`redButtonStyle`、`perKeyBtnStyle`、`redBtnStyle`、
+  `fmHelpButtonStyle/LabelStyle/BoxStyle`）：全部「惰性 `== null` 创建 + 从不置空」，故能安全跨越
+  组件销毁与重建。✓
+- **`Loader.Instance` 的 setter**：`resolvedPath` / `warnedMissingPath` / `ResetCachedPaths()` 全部清空，
+  而 `ResetCachedPaths` 又清了 `configPath` / `profileDir` / `packagesDir` 三个惰性路径缓存，**null
+  分支同样清**。第 40 轮的修复完整。✓
+- **`cachedMaterialMember` / `cachedMaterialType`**：按**类型**为键的反射缓存，与组件身份无关，
+  跨重建安全。✓
+- **`generation` / `liveTextureBytes` / `liveCachedImageBytes` / `_loadImage*`**：代次与账本
+  （第 76/78 轮已核实配平）、反射方法缓存（成功永久缓存、失败按 10 秒重试）。✓
+- **`KvVideoTextureManager.root`**：由 `ReleaseAll()` 销毁，而 `ReleaseAll` 只在
+  `DisableKeyViewer` 里被调——那是**同步**调用，发生在替代者被创建**之前**，故无第 80 轮那种竞态。✓
+- **`colorPickerFieldSeq` / `sliderFieldSeq`**：序号计数器，无状态。✓
+
 ### 仍待处理（有意未修）
 - **【多秒冻结，非玩法期】每次加载器开关都重烘 58 张字形图集**：`fontList` 是**静态**而重载闸门
   `keyBackgroundSprite != null` 是**实例**字段。`Main.DisableKeyViewer` 销毁整个 GameObject，故下次
