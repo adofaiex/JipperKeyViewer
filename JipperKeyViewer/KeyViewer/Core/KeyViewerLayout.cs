@@ -1317,9 +1317,9 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>
         /// Lowest key bottom edge Y for normalized positioning / 归一化定位中最低按键底边的 Y 值
         /// </summary>
-        private float GetMinMainKeyOffset()
+        private static float GetMinMainKeyOffset(LayoutDesc layout)
         {
-            float bottomY = GetLayout(Settings.Data.KeyViewerStyle).bottomY;
+            float bottomY = layout.bottomY;
             return Settings.Data.DownLocation ? bottomY - 200 : bottomY;
         }
 
@@ -1327,9 +1327,9 @@ namespace JipperKeyViewer.KeyViewer
         private float GetMainLayoutRightmostOffset() => 428f;
 
         /// <summary>Topmost key top edge Y for normalized positioning / 归一化定位中最顶部按键顶边的 Y 值</summary>
-        private float GetMaxMainKeyOffset()
+        private static float GetMaxMainKeyOffset(LayoutDesc layout)
         {
-            return GetLayout(Settings.Data.KeyViewerStyle).frontY + 25;
+            return layout.frontY + 25;
         }
 
         /// <summary>Width of the foot key section in reference pixels / 脚键区域的宽度（参考像素）</summary>
@@ -1355,11 +1355,21 @@ namespace JipperKeyViewer.KeyViewer
             float r = GetMainLayoutRightmostOffset();
             float baseX = norm.x * (CanvasWidth - r);
             int remove = Settings.Data.DownLocation ? 200 : 0;
+            // Resolve the layout ONCE. GetLayout returns a struct carrying a freshly allocated
+            // ExtraSlot[] (up to 14 entries), and this method used to call it three times — twice
+            // via the two offset helpers plus once here — while the custom-position X/Y sliders
+            // drive it on every IMGUI event (60-120/s during a drag). The codebase already gave
+            // KpsTotalIslim a cache for exactly this cost; these three sites bypassed it.
+            // 只解析**一次**布局。GetLayout 返回的结构体里带一个刚分配的 ExtraSlot[]（最多 14 项），
+            // 而本方法此前调了三次——两个偏移辅助各一次再加这里一次——同时自定义位置 X/Y 滑杆在
+            // 每个 IMGUI 事件都驱动它（拖动时 60-120 次/秒）。本代码库已为 KpsTotalIslim 的同一
+            // 开销加过缓存，这三处绕过了它。
+            LayoutDesc layout = GetLayout(Settings.Data.KeyViewerStyle);
             // Y: lerp so Y=0 = top edge at screen top, Y=1 = bottom edge at screen bottom
-            float topBaseY = 1080f - GetMaxMainKeyOffset() + remove;
-            float bottomBaseY = -GetMinMainKeyOffset();
+            float topBaseY = 1080f - GetMaxMainKeyOffset(layout) + remove;
+            float bottomBaseY = -GetMinMainKeyOffset(layout);
             float baseY = Mathf.Lerp(bottomBaseY, topBaseY, 1f - norm.y);
-            RepositionMainKeys(GetLayout(Settings.Data.KeyViewerStyle), baseX, baseY);
+            RepositionMainKeys(layout, baseX, baseY);
         }
 
         private static int FootKeySize(FootKeyviewerStyle style) => style switch

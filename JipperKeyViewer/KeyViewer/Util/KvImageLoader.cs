@@ -17,6 +17,15 @@ namespace JipperKeyViewer.KeyViewer.Util
         private static bool _loadImageCached;
         private static MethodInfo _cachedLoadImage;
         private static int _loadImageParamCount;
+        /// <summary>Rate limit for retrying a FAILED reflection lookup, in seconds. A success is
+        /// cached forever; an absence is retried this often so a late-loading module recovers,
+        /// without turning a genuinely missing one into a per-image log spam. / 反射查找**失败**后
+        /// 的重试间隔（秒）。成功永久缓存；「缺席」则按此频率重试，使较晚加载的模块能恢复，
+        /// 同时不让真的缺失变成每张图刷一次日志。
+        /// </summary>
+        private const float _loadImageRetrySeconds = 10f;
+        private static float _loadImageRetryAfter = float.NegativeInfinity;
+        private static float _loadImageRetryLoggedAfter = float.NegativeInfinity;
 
         /// <summary>
         /// Load a PNG as a Sprite. Pass a border to get a 9-slice sprite (bordered images smaller
@@ -106,14 +115,43 @@ namespace JipperKeyViewer.KeyViewer.Util
             Texture2D tex = null;
             try
             {
-                var info = new FileInfo(path);
-                if (info.Length > MaxImageBytes)
+                // Read through a single FileStream and enforce the cap on the bytes actually read.
+                // The previous shape — `new FileInfo(path).Length` to decide, then
+                // File.ReadAllBytes(path) to load — is a TOCTOU window: the stat and the read are
+                // two separate opens, so a file that grows in between (or a path that resolves
+                // differently on the second open) bypasses the documented 16 MB limit and lands the
+                // whole thing in a managed byte[]. This 16 MB cap is the only thing between a
+                // user-supplied / .jkv-carried path and an unbounded allocation, so make it exact
+                // rather than advisory. It also avoids allocating a FileInfo we never dispose.
+                // 经单个 FileStream 读取，并按**实际读到的**字节强制上限。旧写法是
+                // `new FileInfo(path).Length` 判定、再 `File.ReadAllBytes(path)` 载入——这是一个
+                // TOCTOU 窗口：stat 与读取是两次独立的打开，故期间增长的文件（或第二次打开时
+                // 解析到别处的路径）能绕过文档承诺的 16MB 上限，把整份内容塞进托管 byte[]。
+                // 这道 16MB 上限是「用户可填 / .jkv 可携带的路径」与无界分配之间**唯一**的屏障，
+                // 故它必须是精确的而非参考性的；顺带省掉一个从不释放的 FileInfo。
+                byte[] bytes;
+                using (FileStream src = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
-                    Loader.Error($"KeyViewer: image '{path}' is {info.Length / (1024 * 1024)} MB, over the {MaxImageBytes / (1024 * 1024)} MB limit — not loaded");
-                    return null;
+                    if (src.Length > MaxImageBytes)
+                    {
+                        Loader.Error($"KeyViewer: image '{path}' is {src.Length / (1024 * 1024)} MB, over the {MaxImageBytes / (1024 * 1024)} MB limit — not loaded");
+                        return null;
+                    }
+                    bytes = new byte[src.Length];
+                    int filled = 0;
+                    while (filled < bytes.Length)
+                    {
+                        int read = src.Read(bytes, filled, bytes.Length - filled);
+                        if (read <= 0) break;
+                        filled += read;
+                    }
+                    if (filled > MaxImageBytes || filled != bytes.Length)
+                    {
+                        Loader.Error($"KeyViewer: image '{path}' changed size while being read — not loaded");
+                        return null;
+                    }
                 }
                 tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                byte[] bytes = File.ReadAllBytes(path);
                 if (!IsPngHeaderReasonable(bytes))
                 {
                     UnityEngine.Object.Destroy(tex);
@@ -148,7 +186,20 @@ namespace JipperKeyViewer.KeyViewer.Util
 
         private static bool EnsureLoadImageMethod()
         {
-            if (_loadImageCached) return _cachedLoadImage != null;
+            // A successful lookup is cached forever. A FAILED one is not: the latch is permanent,
+            // so a single early failure (the module not yet resolvable during a fast OnEnable, a
+            // host that loads modules later, a domain-reload ordering quirk) left _cachedLoadImage
+            // null for the rest of the process and EVERY image failed with one log line. Retry
+            // occasionally instead of caching the absence forever, and rate-limit the complaint so
+            // a genuinely missing module does not spam the log once per image.
+            // 查找成功则永久缓存。**失败**不缓存：该闩锁是永久的，故一次早期失败（快速 OnEnable
+            // 时模块尚不可解析、宿主较晚加载模块、域重载顺序问题）会让 _cachedLoadImage 在整个
+            // 进程内为 null，此后**每一张**图片都失败且只有一行日志。改为偶尔重试而不是把「缺席」
+            // 永久缓存，并对抱怨做限流，使模块真的缺失时不会每张图刷一次日志。
+            if (_cachedLoadImage != null) return true;
+            float now = Time.realtimeSinceStartup;
+            if (_loadImageCached && now - _loadImageRetryAfter < _loadImageRetrySeconds) return false;
+
             Type type = Type.GetType("UnityEngine.ImageConversion, UnityEngine.ImageConversionModule");
             if (type == null)
             {
@@ -177,15 +228,18 @@ namespace JipperKeyViewer.KeyViewer.Util
                     break;
                 }
             }
-            // Only latch the negative result once the search actually ran. Setting the flag BEFORE
-            // the lookup meant a failed search was cached forever, so images silently disappeared
-            // for the rest of the session with no way to recover.
-            // 仅在查找真正执行后才锁定结果。此前在查找前置位，查找失败会被永久缓存，此后整个
-            // 会话图片静默消失且无法恢复。
             _loadImageCached = true;
             if (_cachedLoadImage == null)
-                Loader.Error("KeyViewer: ImageConversion.LoadImage not found via reflection, images will be missing");
-            return _cachedLoadImage != null;
+            {
+                _loadImageRetryAfter = now + _loadImageRetrySeconds;
+                if (now - _loadImageRetryLoggedAfter >= _loadImageRetrySeconds)
+                {
+                    _loadImageRetryLoggedAfter = now;
+                    Loader.Error("KeyViewer: ImageConversion.LoadImage not found via reflection, images will be missing (will retry)");
+                }
+                return false;
+            }
+            return true;
         }
     }
 }
