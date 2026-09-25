@@ -44,11 +44,12 @@ namespace JipperKeyViewer.KeyViewer.Editor
                 snapshots.RemoveAt(0);
                 position--;
             }
-            // Deliberately NOT resetting lastNudgeStamp here: PushNudge sets it just before
-            // calling in, and a plain Push shouldn't interfere with an open nudge burst either
-            // (only EndNudge/Clear close it). / 此处刻意不重置 lastNudgeStamp：PushNudge 在
-            // 调入前刚设置它；普通 Push 也不应打断未闭合的微调连发（只有 EndNudge/Clear
-            // 闭合）。
+            // Every recorded state closes the nudge burst: a structural edit landing mid-burst
+            // must start a fresh entry for the next nudge instead of riding the same window
+            // (PushNudge re-stamps after calling in, so its own entry keeps the window open). /
+            // 每次记录都闭合微调连发：结构编辑落在连发中途时，下一次微调必须开新条目，而不是
+            // 搭同一窗口的车（PushNudge 在调入后重新打戳，故它自己那条仍保持窗口打开）。
+            EndNudge();
         }
 
         /// <summary>Nudge variant: only the first nudge inside the merge window records. /
@@ -56,8 +57,11 @@ namespace JipperKeyViewer.KeyViewer.Editor
         internal void PushNudge(string snapshot, float now)
         {
             if (now - lastNudgeStamp <= NudgeMergeWindow) return;
-            lastNudgeStamp = now;
+            // Record first, THEN open the window: Push closes any burst (EndNudge), so stamping
+            // before the call would be wiped and every nudge would record its own entry. /
+            // 先记录再开窗：Push 会闭合连发（EndNudge），若先打戳会被清掉，导致每次微调各记一条。
             Push(snapshot);
+            lastNudgeStamp = now;
         }
 
         /// <summary>Close a nudge burst so the next one starts a fresh entry. /

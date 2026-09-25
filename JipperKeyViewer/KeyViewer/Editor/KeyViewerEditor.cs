@@ -56,11 +56,11 @@ namespace JipperKeyViewer.KeyViewer
         private Vector2 fmMarqueeCur;
         private bool fmDragArmed;
         private bool fmDragMoved;
+        private bool fmDragHistoryPushed;
         private bool fmAxisLocked;
         private bool fmLockToX;
         private float fmDragTotalX;
         private float fmDragTotalY;
-        private string fmPendingSnapshot;
         private readonly Dictionary<FmNode, Vector2> fmDragStart = new Dictionary<FmNode, Vector2>();
         private readonly List<FmNode> editorSelectionAtPress = new List<FmNode>();
         /// <summary>The ACTIVE node of the selection — the last one the user clicked. The
@@ -90,6 +90,7 @@ namespace JipperKeyViewer.KeyViewer
         private Rect fmLastCanvasRect;
         private int fmResizeHandle = -1;
         private bool fmResizeMoved;
+        private bool fmResizeHistoryPushed;
         private Rect fmResizeBBox;
         private readonly List<KeyValuePair<FmNode, Rect>> fmResizeOrig = new List<KeyValuePair<FmNode, Rect>>();
         private readonly List<float> fmSiblingW = new List<float>();
@@ -108,6 +109,14 @@ namespace JipperKeyViewer.KeyViewer
         {
             editorOpen = true;
             editorNeedsCentre = true;
+            // The first edit must be undoable back to the state the editor opened on. Without
+            // this seeded baseline the timeline started empty, position stayed at -1 after the
+            // first Push and CanUndo was false — the user's first structural edit could never
+            // be undone, and the one after it walked straight past it. /
+            // 首次编辑必须能撤回到打开编辑器时的状态。没有这条基线时时间线从空开始，首次 Push
+            // 后 position 停在 -1、CanUndo 为 false——首个结构编辑永远撤不掉，紧随其后的那次
+            // 则直接跨过它。
+            SeedEditorHistoryBaseline();
         }
 
         /// <summary>Root-level window host: a plain MonoBehaviour OnGUI keeps the popup fully
@@ -275,7 +284,6 @@ namespace JipperKeyViewer.KeyViewer
                 // 追加进当前画布——现有节点原封不动（此前误做成整画布替换）。批次先落入自己的
                 // 新建图层组——按组的面板唯一性因此能保住预设的 KPS/Total（即使其它组已有
                 // 面板）。与现有节点重叠时整体挪到空白处。
-                PushEditorHistory();
                 string presetGroupId = "g" + Settings.Data.LayerGroupNextId++;
                 Settings.Data.LayerGroups.Add(new FmLayerGroup
                 {
@@ -318,6 +326,7 @@ namespace JipperKeyViewer.KeyViewer
                 EnsureCustomNodes();
                 editorSelection.Clear();
                 editorSelection.AddRange(add);
+                PushEditorHistory(false);
                 EditorMutated();
                 return;
             }
@@ -348,9 +357,12 @@ namespace JipperKeyViewer.KeyViewer
             EnsureCustomNodes();
             editorSelection.Clear();
             // Undo snapshots belong to the previous profile — restoring them here would write the
-            // old layout's nodes into the preset profile. / 撤销快照属于原配置——在这里恢复会把
-            // 旧布局的节点写进预设配置。
+            // old layout's nodes into the preset profile. Re-seed the baseline so the first edit
+            // in the new profile stays undoable. / 撤销快照属于原配置——在这里恢复会把
+            // 旧布局的节点写进预设配置。重新播种基线，使新配置里的首次编辑仍可撤销。
             editorHistory.Clear();
+            editorBaselineSeeded = false;
+            SeedEditorHistoryBaseline();
             EditorMutated();
         }
 
@@ -528,10 +540,10 @@ namespace JipperKeyViewer.KeyViewer
         private void EditorWipeCanvas()
         {
             if (Settings.Data.CustomNodes.Count == 0) return;
-            PushEditorHistory();
             Settings.Data.CustomNodes = new List<FmNode>();
             EnsureCustomNodes(); // wipe every group too — no members survive / 连组一并清——无成员存活
             editorSelection.Clear();
+            PushEditorHistory(false);
             EditorMutated();
         }
 
@@ -632,7 +644,6 @@ namespace JipperKeyViewer.KeyViewer
             if ((type == 1 || type == 2) && GroupHasStat(targetGroup, type)) return;
             if (type != 3 && KeyLikeCountInGroup(targetGroup) >= CustomKeyNodeCap) return;
             if (type == 3 && Settings.Data.CustomNodes.Count(n => n != null && n.NodeType == 3) >= 8) return;
-            PushEditorHistory();
             Vector2 center = EditorViewCenter();
             FmNode node = new FmNode
             {
@@ -650,19 +661,20 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Data.CustomNodes.Add(node);
             editorSelection.Clear();
             editorSelection.Add(node);
+            PushEditorHistory(false);
             EditorMutated();
         }
 
         private void EditorDeleteSelection()
         {
             if (editorSelection.Count == 0) return;
-            PushEditorHistory();
             for (int i = editorSelection.Count - 1; i >= 0; i--)
                 Settings.Data.CustomNodes.Remove(editorSelection[i]);
             editorSelection.Clear();
             // Prune groups that just lost their last member. /
             // 剔除刚刚失去全部成员的组。
             EnsureCustomNodes();
+            PushEditorHistory(false);
             EditorMutated();
         }
 
@@ -677,7 +689,6 @@ namespace JipperKeyViewer.KeyViewer
         private void EditorPaste()
         {
             if (editorClipboard.Count == 0) return;
-            PushEditorHistory();
             editorPasteSerial++;
             float offset = 20f * editorPasteSerial;
             // Paste honors the node caps — the data list used to grow past them and
@@ -706,6 +717,7 @@ namespace JipperKeyViewer.KeyViewer
             if (pasted.Count == 0) return;
             editorSelection.Clear();
             editorSelection.AddRange(pasted);
+            PushEditorHistory(false);
             EditorMutated();
         }
 
@@ -752,6 +764,7 @@ namespace JipperKeyViewer.KeyViewer
                     sel[i].Y = sel[i - 1].Y + sel[i - 1].Height + gap;
             }
             EditorPropertyChanged();
+            PushEditorHistory(false);
         }
 
         /// <summary>Distribute the selection evenly along one axis: the OUTERMOST nodes stay
@@ -762,7 +775,6 @@ namespace JipperKeyViewer.KeyViewer
             List<FmNode> sel = new List<FmNode>();
             foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
             if (sel.Count < 3) return;
-            PushEditorHistory();
             if (horizontal)
             {
                 sel.Sort((a, b) => a.X.CompareTo(b.X));
@@ -784,6 +796,7 @@ namespace JipperKeyViewer.KeyViewer
                     sel[i].Y = first + step * i - sel[i].Height * 0.5f;
             }
             EditorPropertyChanged();
+            PushEditorHistory(false);
         }
 
         /// <summary>Stamp `count` copies of the selection along one axis, each offset by the
@@ -805,7 +818,6 @@ namespace JipperKeyViewer.KeyViewer
             if (minX > maxX) return; // selection was all nulls / 选区全为空
             float dx = horizontal ? (maxX - minX) + gap : 0f;
             float dy = horizontal ? 0f : (maxY - minY) + gap;
-            PushEditorHistory();
             // Snapshot the templates: copies are APPENDED to editorSelection below, and
             // enumerating it directly while adding would throw. / 先快照模板：副本会追加进
             // editorSelection，边枚举边添加会抛异常。
@@ -834,6 +846,7 @@ namespace JipperKeyViewer.KeyViewer
                 stamped++;
             }
             if (stamped == 0) return;
+            PushEditorHistory(false);
             EditorMutated();
         }
 
@@ -854,15 +867,88 @@ namespace JipperKeyViewer.KeyViewer
 
         // ======================== history / 撤销 ========================
 
-        private string SnapshotCustomNodes()
+        // One timeline entry: the whole editable FreeMake document, not just the node list —
+        // layer groups, the id counters and the global TotalCount live outside CustomNodes, and
+        // omitting them made group/count edits unrestorable. The field names match the old
+        // node-list JSON, so snapshots taken by earlier builds still parse. /
+        // 单条时间线条目：整份可编辑 FreeMake 文档，而不仅是节点表——图层组、id 计数器与全局
+        // TotalCount 都在 CustomNodes 之外，漏掉它们会让组/计数编辑无法恢复。字段名与旧的
+        // 节点表 JSON 一致，早前构建拍的快照仍可解析。
+        private sealed class FmDocumentSnapshot
         {
-            return JsonConvert.SerializeObject(Settings.Data.CustomNodes);
+            public List<FmNode> Nodes;
+            public List<FmLayerGroup> Groups;
+            public int NodeNextId;
+            public int GroupNextId;
+            public int TotalCount;
         }
-        private void PushEditorHistory()
+
+        private bool editorBaselineSeeded;
+
+        internal void SeedEditorHistoryBaseline()
+        {
+            if (editorBaselineSeeded) return;
+            editorBaselineSeeded = true;
+            PushEditorHistory(false);
+        }
+
+        /// <summary>A profile switch swaps the whole document out from under the editor: drop the
+        /// old timeline (restoring it would write the previous profile's nodes into the new one)
+        /// and re-seed so the first edit in the new profile stays undoable. / 切换配置时整份文档
+        /// 被换走：丢弃旧时间线（恢复它会把上一配置的节点写进新配置）并重新播种，使新配置里的
+        /// 首次编辑仍可撤销。</summary>
+        internal void ResetEditorHistoryForProfileSwitch()
+        {
+            editorHistory.Clear();
+            editorBaselineSeeded = false;
+            // The old selection/active-node/group references point into the previous document. /
+            // 旧的选中项/活动节点/组引用指向上一份文档。
+            editorSelection.Clear();
+            fmActiveNode = null;
+            fmActiveGroupId = "";
+            fmCaptureNode = null;
+            fmCaptureGhostNode = null;
+            SeedEditorHistoryBaseline();
+        }
+
+        private string SnapshotEditorDocument()
+        {
+            return JsonConvert.SerializeObject(new FmDocumentSnapshot
+            {
+                Nodes = Settings.Data.CustomNodes,
+                Groups = Settings.Data.LayerGroups,
+                NodeNextId = Settings.Data.CustomNodeNextId,
+                GroupNextId = Settings.Data.LayerGroupNextId,
+                TotalCount = Settings.Data.TotalCount,
+            });
+        }
+
+        /// <summary>Record the CURRENT document state as one timeline entry. `allowSave` is false
+        /// for continuous edits (slider/text bursts) that already save through the debounced GUI
+        /// path, true for discrete structural edits. / 把当前文档状态记为一条时间线记录。
+        /// 连续编辑（滑杆/文本突发，已走 GUI 去抖保存）传 allowSave=false；离散的结构编辑传
+        /// true。</summary>
+        private void PushEditorHistory(bool allowSave = true)
         {
             try
             {
-                editorHistory.Push(SnapshotCustomNodes());
+                editorHistory.Push(SnapshotEditorDocument());
+            }
+            catch (Exception e)
+            {
+                Loader.Warning($"KeyViewer: editor snapshot failed: {e.Message}");
+                return;
+            }
+            if (allowSave) SaveSettings();
+        }
+
+        /// <summary>Nudge variant: coalesces a burst of continuous edits into one entry. /
+        /// 微调变体：把一连串连续编辑合并成一条记录。</summary>
+        private void PushEditorHistoryNudge()
+        {
+            try
+            {
+                editorHistory.PushNudge(SnapshotEditorDocument(), Time.unscaledTime);
             }
             catch (Exception e)
             {
@@ -872,13 +958,13 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorUndo()
         {
-            string current = SnapshotCustomNodes();
+            string current = SnapshotEditorDocument();
             RestoreEditorSnapshot(editorHistory.Undo(current));
         }
 
         private void EditorRedo()
         {
-            string current = SnapshotCustomNodes();
+            string current = SnapshotEditorDocument();
             RestoreEditorSnapshot(editorHistory.Redo(current));
         }
 
@@ -887,17 +973,50 @@ namespace JipperKeyViewer.KeyViewer
             if (snapshot == null) return;
             try
             {
-                Settings.Data.CustomNodes = string.IsNullOrEmpty(snapshot)
-                    ? new List<FmNode>()
-                    : JsonConvert.DeserializeObject<List<FmNode>>(snapshot) ?? new List<FmNode>();
+                FmDocumentSnapshot doc = string.IsNullOrEmpty(snapshot)
+                    ? new FmDocumentSnapshot()
+                    : JsonConvert.DeserializeObject<FmDocumentSnapshot>(snapshot);
+                Settings.Data.CustomNodes = doc?.Nodes ?? new List<FmNode>();
+                Settings.Data.LayerGroups = doc?.Groups ?? new List<FmLayerGroup>();
+                if (doc != null)
+                {
+                    if (doc.NodeNextId > 0) Settings.Data.CustomNodeNextId = doc.NodeNextId;
+                    if (doc.GroupNextId > 0) Settings.Data.LayerGroupNextId = doc.GroupNextId;
+                    Settings.Data.TotalCount = doc.TotalCount;
+                }
                 EnsureCustomNodes();
-                editorSelection.RemoveAll(n => !Settings.Data.CustomNodes.Contains(n));
+                SetEditorSelectionById(doc?.Nodes);
+                RefreshAllCountDisplay();
                 EditorMutated();
             }
             catch (Exception e)
             {
                 Loader.Error($"KeyViewer: editor snapshot did not parse: {e.Message}");
             }
+        }
+
+        /// <summary>Re-select the restored nodes by id — the deserialized document holds fresh
+        /// FmNode instances, so the pre-undo references would point at nodes no longer in the
+        /// list. Unknown/gone ids and dangling group/active-node references drop out. /
+        /// 按 id 重新选中恢复后的节点——反序列化出的文档是全新 FmNode 实例，撤销前的引用指向
+        /// 已不在表里的节点。找不到的 id 与悬空的组/活动节点引用一并清除。</summary>
+        private void SetEditorSelectionById(List<FmNode> nodes)
+        {
+            var byId = new Dictionary<int, FmNode>();
+            if (nodes != null)
+                foreach (FmNode n in nodes)
+                    if (n != null) byId[n.Id] = n;
+            var kept = new List<FmNode>();
+            foreach (FmNode n in editorSelection)
+                if (n != null && byId.TryGetValue(n.Id, out FmNode same)) kept.Add(same);
+            editorSelection.Clear();
+            editorSelection.AddRange(kept);
+            if (fmActiveNode == null || !editorSelection.Contains(fmActiveNode))
+                fmActiveNode = editorSelection.Count > 0 ? editorSelection[0] : null;
+            // Undo/redo drops any binding capture — the node it pointed at may be gone. /
+            // 撤销/重做清掉绑定捕获——它指向的节点可能已不存在。
+            fmCaptureNode = null;
+            fmCaptureGhostNode = null;
         }
 
         // ======================== canvas / 画布 ========================
@@ -1057,10 +1176,10 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     if (!fmDragMoved)
                     {
-                        // First real movement: commit the pre-drag snapshot taken at press. /
-                        // 首次真实移动：提交按下时预留的拖拽前快照。
-                        PushEditorHistorySnapshot(fmPendingSnapshot);
-                        fmPendingSnapshot = null;
+                        // First real movement: the move below lands the post-drag geometry, and
+                        // this records it as one timeline entry (the pre-drag state is the entry
+                        // before it). / 首次真实移动：下方的位移写入拖拽后的几何，这里把它记为
+                        // 一条时间线记录（拖拽前状态是它的前一条）。
                         fmDragMoved = true;
                     }
                 }
@@ -1076,6 +1195,11 @@ namespace JipperKeyViewer.KeyViewer
                     else dx = 0f;
                 }
                 ApplyEditorDrag(dx, dy, e.alt);
+                if (fmDragMoved && !fmDragHistoryPushed)
+                {
+                    fmDragHistoryPushed = true;
+                    PushEditorHistory(false);
+                }
             }
             else if (fmGesture == FmGesture.Marquee)
             {
@@ -1108,7 +1232,7 @@ namespace JipperKeyViewer.KeyViewer
             fmGesture = FmGesture.None;
             fmAlignLines.Clear();
             fmDragStart.Clear();
-            fmPendingSnapshot = null;
+            fmDragHistoryPushed = false;
             fmResizeHandle = -1;
         }
 
@@ -1125,16 +1249,8 @@ namespace JipperKeyViewer.KeyViewer
             fmDragTotalX = 0f;
             fmDragTotalY = 0f;
             fmDragMoved = false;
+            fmDragHistoryPushed = false;
             fmAxisLocked = false;
-            try
-            {
-                fmPendingSnapshot = SnapshotCustomNodes();
-            }
-            catch (Exception ex)
-            {
-                fmPendingSnapshot = null;
-                Loader.Warning($"KeyViewer: editor snapshot failed: {ex.Message}");
-            }
         }
 
         private void EndNodeDrag()
@@ -1260,6 +1376,7 @@ namespace JipperKeyViewer.KeyViewer
                     fmResizeOrig.Add(new KeyValuePair<FmNode, Rect>(node, new Rect(node.X, node.Y, node.Width, node.Height)));
             fmResizeBBox = EditorSelectionBounds();
             fmResizeMoved = false;
+            fmResizeHistoryPushed = false;
             // Sibling sizes for size-snapping during the resize. /
             // 兄弟节点尺寸表，供缩放时的尺寸吸附。
             fmSiblingW.Clear();
@@ -1270,15 +1387,6 @@ namespace JipperKeyViewer.KeyViewer
                 fmSiblingW.Add(node.Width);
                 fmSiblingH.Add(node.Height);
             }
-            try
-            {
-                fmPendingSnapshot = SnapshotCustomNodes();
-            }
-            catch (Exception ex)
-            {
-                fmPendingSnapshot = null;
-                Loader.Warning($"KeyViewer: editor snapshot failed: {ex.Message}");
-            }
         }
 
         private void UpdateEditorResize(Rect rect, Event e)
@@ -1287,8 +1395,6 @@ namespace JipperKeyViewer.KeyViewer
             if (!fmResizeMoved)
             {
                 if ((canvasPos - fmPressCanvas).sqrMagnitude < 0.01f) return;
-                PushEditorHistorySnapshot(fmPendingSnapshot);
-                fmPendingSnapshot = null;
                 fmResizeMoved = true;
             }
             const float minSize = 10f;
@@ -1326,6 +1432,7 @@ namespace JipperKeyViewer.KeyViewer
                 node.X = dx < 0 ? o.xMax - w : o.x;
                 node.Y = dy < 0 ? o.yMax - h : o.y;
                 ApplyLiveGeometry();
+                PushResizeHistory();
                 return;
             }
             // Multi-selection: scale the whole bounding box from the opposite corner, clamped
@@ -1356,11 +1463,23 @@ namespace JipperKeyViewer.KeyViewer
                 kv.Key.Y = anchorY + (kv.Value.y - anchorY) * sy;
             }
             ApplyLiveGeometry();
+            PushResizeHistory();
+        }
+
+        /// <summary>Record the post-resize geometry once per gesture — the incremental handler
+        /// runs every drag frame, so only the first moved frame becomes a timeline entry. /
+        /// 每次缩放手势只记录一次拖拽后的几何——增量处理逐帧运行，只有首个真正移动的帧入栈。</summary>
+        private void PushResizeHistory()
+        {
+            if (!fmResizeMoved || fmResizeHistoryPushed) return;
+            fmResizeHistoryPushed = true;
+            PushEditorHistory(false);
         }
 
         private void EndEditorResize()
         {
             fmResizeOrig.Clear();
+            fmResizeHistoryPushed = false;
             if (fmResizeMoved)
             {
                 SaveSettingsFromGui();
@@ -1533,12 +1652,14 @@ namespace JipperKeyViewer.KeyViewer
                 if (!string.Equals(name, g.Name ?? "", StringComparison.Ordinal))
                 {
                     g.Name = name;
+                    PushEditorHistoryNudge();
                     SaveSettingsFromGui();
                 }
                 bool vis = GUILayout.Toggle(g.Visible, I18n.Tr("fm_group_show"), GUILayout.MinWidth(48f));
                 if (vis != g.Visible)
                 {
                     g.Visible = vis;
+                    PushEditorHistory(false);
                     EditorMutated();
                 }
                 bool isActive = g.Id == fmActiveGroupId;
@@ -1558,19 +1679,19 @@ namespace JipperKeyViewer.KeyViewer
                 string assignTip = string.Format(I18n.Tr("fm_gtip_assign"), editorSelection.Count, g.Name);
                 if (GUILayout.Button(new GUIContent("＋" + editorSelection.Count, assignTip), GUILayout.Width(52f)))
                 {
-                    PushEditorHistory();
                     foreach (FmNode n in editorSelection) n.GroupId = g.Id;
+                    PushEditorHistory(false);
                     EditorMutated();
                 }
                 GUI.enabled = true;
                 if (GUILayout.Button(new GUIContent("✕", I18n.Tr("fm_gtip_del")), GUILayout.Width(30f)))
                 {
-                    PushEditorHistory();
                     string deadId = g.Id;
                     groups.RemoveAt(i);
                     foreach (FmNode n in Settings.Data.CustomNodes)
                         if (n != null && n.GroupId == deadId) n.GroupId = "";
                     if (fmActiveGroupId == deadId) fmActiveGroupId = "";
+                    PushEditorHistory(false);
                     EditorMutated();
                     break;
                 }
@@ -1578,7 +1699,6 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (GUILayout.Button(I18n.Tr("fm_group_add"), GUILayout.MinWidth(140f)))
             {
-                PushEditorHistory();
                 // Id stays monotonic (uniqueness); the NAME reuses the smallest free number —
                 // it used to follow the Id counter, so names climbed to "组 18" forever even
                 // after deleting old groups. / Id 保持单调（保唯一性）；名称复用最小空闲编号
@@ -1593,20 +1713,8 @@ namespace JipperKeyViewer.KeyViewer
                     name = name.Substring(0, sep + 1) + (num + 1);
                 }
                 groups.Add(new FmLayerGroup { Id = "g" + n, Name = name, Visible = true });
+                PushEditorHistory(false);
                 SaveSettingsFromGui();
-        }
-            }
-
-        private void PushEditorHistorySnapshot(string snapshot)
-        {
-            if (snapshot == null) return;
-            try
-            {
-                editorHistory.Push(snapshot);
-            }
-            catch (Exception e)
-            {
-                Loader.Warning($"KeyViewer: editor snapshot failed: {e.Message}");
             }
         }
 
@@ -2210,20 +2318,13 @@ namespace JipperKeyViewer.KeyViewer
                 default: return;
             }
             if (editorSelection.Count == 0) return;
-            try
-            {
-                editorHistory.PushNudge(SnapshotCustomNodes(), Time.unscaledTime);
-            }
-            catch (Exception ex)
-            {
-                Loader.Warning($"KeyViewer: editor snapshot failed: {ex.Message}");
-            }
             foreach (FmNode node in editorSelection)
             {
                 node.X += dx;
                 node.Y += dy;
             }
             e.Use();
+            PushEditorHistoryNudge();
             SaveSettingsFromGui();
             RequestEditorRebuild();
         }
@@ -2763,8 +2864,8 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.Label(I18n.Tr("fm_group") + ": " + (grp != null ? grp.Name : first.GroupId));
                 if (GUILayout.Button(I18n.Tr("fm_group_ungroup"), GUILayout.MinWidth(140f)))
                 {
-                    PushEditorHistory();
                     foreach (FmNode n in editorSelection) n.GroupId = "";
+                    PushEditorHistory(false);
                     EditorMutated();
                 }
             }
@@ -2855,6 +2956,7 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     if (Settings.Data.TotalCount < 0) Settings.Data.TotalCount = 0;
                     RefreshAllCountDisplay();
+                    PushEditorHistoryNudge();
                     SaveSettingsFromGui();
                 }
                 GUILayout.EndHorizontal();
@@ -2887,6 +2989,7 @@ namespace JipperKeyViewer.KeyViewer
                         }
                     }
                     RefreshAllCountDisplay();
+                    PushEditorHistory(false);
                     SaveSettingsFromGui();
                 }
                 DrawEditorHelpMarker("fm_help_reset_count");
@@ -2915,8 +3018,8 @@ namespace JipperKeyViewer.KeyViewer
             if ((newType == 1 && GroupHasStat(node.GroupId, 1))
                 || (newType == 2 && GroupHasStat(node.GroupId, 2)))
                 return; // one stat panel per group / 每组最多 1 个统计面板
-            PushEditorHistory();
             node.NodeType = newType;
+            PushEditorHistory(false);
             EditorMutated();
         }
 
@@ -3333,17 +3436,14 @@ namespace JipperKeyViewer.KeyViewer
 
         private void EditorPropertyChanged()
         {
-            // Property edits are undoable too: record the pre-change state once per change burst
-            // (the 0.4s nudge window coalesces slider drags). Without this, Ctrl+Z after a color
-            // tweak didn't revert it — it undid the last STRUCTURAL op instead, destroying
-            // unrelated work. / 属性修改同样可撤销：每个修改突发记录一次变更前状态（0.4 秒
-            // 微调窗口合并滑杆拖动）。此前改完颜色按 Ctrl+Z 不会回退——反而会误撤销上一个
-            // 结构性操作，破坏无关改动。
-            try
-            {
-                editorHistory.PushNudge(SnapshotCustomNodes(), Time.unscaledTime);
-            }
-            catch (Exception) { /* snapshot failure must not block the edit / 快照失败不阻塞编辑 */ }
+            // Property edits are undoable too: record the POST-change state once per change burst
+            // (the 0.4s nudge window coalesces slider drags), so Ctrl+Z steps back to the value
+            // the edit started from. Without this, Ctrl+Z after a color tweak didn't revert it —
+            // it undid the last STRUCTURAL op instead, destroying unrelated work. /
+            // 属性修改同样可撤销：每个修改突发记录一次变更后状态（0.4 秒微调窗口合并滑杆拖动），
+            // Ctrl+Z 因而回退到该次编辑开始前的值。此前改完颜色按 Ctrl+Z 不会回退——反而会误撤销
+            // 上一个结构性操作，破坏无关改动。
+            PushEditorHistoryNudge();
             SaveSettingsFromGui();
             // If the selection contains a video node whose path was just changed, force the
             // video texture manager to drop any stale entry for that node before the rebuild —

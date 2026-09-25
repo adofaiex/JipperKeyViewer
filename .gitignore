@@ -378,6 +378,7 @@ Assembly-CSharp*.csproj
 
 # Local code-agent tool config / 本地代码代理工具配置
 codeagent.json
+.commandcode/
 
 # Local serialization debugging harness (contains local DLL copies and profile backups) / 本地序列化调试工具（含本地 DLL 副本与配置备份）
 Harness/

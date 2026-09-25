@@ -1307,6 +1307,11 @@ namespace JipperKeyViewer.KeyViewer
             Settings.CurrentProfile = newName;
             EnsureSettingsArrays();
             ClearKpsTimers();
+            // The editor's undo timeline describes the profile we just left — keeping it would
+            // let Ctrl+Z write that layout's nodes into this one, and would leave the editor's
+            // selection pointing at nodes that are gone. / 编辑器的撤销时间线描述的是刚离开的
+            // 配置——留着它会让 Ctrl+Z 把那份布局的节点写进当前配置，且编辑器选中项会指向已不存在的节点。
+            ResetEditorHistoryForProfileSwitch();
             cachedKeyStyle = (KeyviewerStyle)(-1);
             cachedFootStyle = (FootKeyviewerStyle)(-1);
             cachedMainKeys = null;
