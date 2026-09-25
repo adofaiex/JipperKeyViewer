@@ -162,6 +162,27 @@ namespace JipperKeyViewer.KeyViewer
                 foreach (FmNode node in imported.CustomNodes) node.GroupId = groupId;
                 imported.LayerGroupNextId = 2;
                 imported.DataVersion = Settings.Version;
+                // These nodes are produced by `new FmNode { … }`, so the field initializers ran and
+                // every defaulted field already holds its intended value — there is nothing for the
+                // legacy FmNode-defaults repair to fix. Stamp it so the repair does not re-derive
+                // them on every load.
+                //
+                // Today it is harmless either way, because the repair early-outs on
+                // `LabelScale > 0 && CountScale > 0` and the object initializer never assigns those
+                // two. That is a subtle coincidence: a future DmNote field mapping that set
+                // LabelScale to 0 (say, from a `noteScale` alias) would make the repair fire and
+                // silently reset ~25 fields this importer deliberately set — including the
+                // TextOpacity it maps from `noteOpacity` and the CountInTotal it reads at :369.
+                // Stating the intent beats relying on that.
+                // 这些节点由 `new FmNode { … }` 产生，字段初始化器已跑过，每个带默认值的字段都已持有
+                // 其应有值——旧 FmNode 默认值修复无事可修。盖上戳，使它不会在每次加载时重算一遍。
+                //
+                // 今天两种做法都无害，因为修复会在 `LabelScale > 0 && CountScale > 0` 处早退，而对象
+                // 初始化器从不赋这两个值。但那是个微妙的巧合：将来某个 DmNote 字段映射若把
+                // LabelScale 设成 0（例如来自 `noteScale` 别名），修复就会触发并静默重置本导入器
+                // 刻意设置的约 25 个字段——包括从 `noteOpacity` 映射来的 TextOpacity 与 :369 读到的
+                // CountInTotal。把意图写出来，胜过依赖那个巧合。
+                imported.NodeDefaultsVersion = ProfileData.NodeTextDefaultsVersion;
                 imported.SyncListsToArrays();
 
                 string profilePath = GetProfilePath(profileName);

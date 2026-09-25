@@ -977,6 +977,23 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   产出 `internal const int PerKeySlotCount = PerKeySlotCount;`。靠编译前的实际输出发现并用
   `edit` 工具修回；**不要**用脚本做这种全文件替换。
 
+### 新戳的写入路径覆盖（2026-09-26，第 64 轮）
+- **哪些路径会写 Profile、哪些会盖章**（第 62 轮新增 `NodeDefaultsVersion` 之后的核对）：
+  - `SaveCurrentProfile`：唯一会同时盖 `DataVersion` 与 `NodeDefaultsVersion` 的路径，正确。
+  - `.jkv` 导入（`KeyViewerPackages.cs:729`）直接 `SerializeObject(imported)` 落盘、**绕过**
+    `SaveCurrentProfile`，故不盖章——这是**正确**的：包里的节点可能来自旧构建，确实需要修复。
+  - DmNote 导入（`KeyViewerDmNoteImport.cs`）：节点由 `new FmNode { … }` 产生，字段初始化器已跑过，
+    每个带默认值的字段都已是应有值，**无需**修复。
+- **DmNote 导入此前依赖一个微妙的巧合才安全**：修复会在 `LabelScale > 0 && CountScale > 0`
+  处早退，而导入器的对象初始化器从不赋这两个值。今天无害，但将来某个 DmNote 字段映射若把
+  `LabelScale` 设成 0（例如从 `noteScale` 别名），修复就会触发并静默重置本导入器**刻意**设置的
+  约 25 个字段——包括从 `noteOpacity` 映射来的 `TextOpacity` 与导入器显式读到的 `CountInTotal`。
+  现与 `DataVersion` 一样显式盖戳，把意图写出来而不是依赖那个巧合。
+- **否证结论**：`PerKeyColorArraysValid`（`KeyViewerInput.cs`，校验 6 个数组、**不含**雨色）与
+  `PerKeyColorsCoverSlot`（`KeyViewerLayout.cs`，校验 4 个数组、**不含** Clicked 变体）看似是同一
+  谓词的两份拷贝，实则**各自只守护自己真正读取的数组**——收敛它们反而会写错。今天二者都依赖
+  `EnsureSettingsArrays` 把全部八个数组强制为同一长度，该不变量成立，无分叉风险。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
