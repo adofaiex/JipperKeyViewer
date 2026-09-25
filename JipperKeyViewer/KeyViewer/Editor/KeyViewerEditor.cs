@@ -768,7 +768,19 @@ namespace JipperKeyViewer.KeyViewer
             editorClipboard.Clear();
             editorPasteSerial = 0;
             foreach (FmNode node in editorSelection)
-                if (node != null) editorClipboard.Add(node.Clone());
+            {
+                if (node == null) continue;
+                FmNode copy = node.Clone();
+                // The clipboard holds a TEMPLATE, not a record of what the user did. Clone() copies
+                // the live press count, so every paste added the SOURCE node's count to the
+                // document again — duplicating a session's totals, and a second paste duplicated
+                // them once more. A pasted node is a fresh node: its count starts at zero.
+                // 剪贴板持有的是**模板**，不是用户做过什么的记录。Clone() 会复制实时按压计数，于是
+                // 每次粘贴都把**源**节点的计数再加进文档一遍——把一次游玩的总数翻倍，第二次粘贴
+                // 再翻一倍。粘贴出的节点是全新节点：计数从零开始。
+                copy.Count = 0;
+                editorClipboard.Add(copy);
+            }
         }
 
         private void EditorPaste()

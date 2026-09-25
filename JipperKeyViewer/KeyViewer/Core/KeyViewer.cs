@@ -332,8 +332,12 @@ namespace JipperKeyViewer.KeyViewer
         private RainSystem rainSystem;
         /// <summary>Font name → index lookup dictionary / 字体名称到索引的查找字典</summary>
         static Dictionary<string, int> fontNameIndex;
-        /// <summary>All non-joystick KeyCodes, cached for input detection / 所有非摇杆按键代码缓存，用于按键检测</summary>
-        private static readonly KeyCode[] AllKeyCodes;
+        /// <summary>All non-joystick KeyCodes, cached for input detection / 所有非摇杆按键代码缓存，用于按键检测。
+        /// Public because the loader entry points need the SAME list: MelonLoader's hotkey capture
+        /// called Enum.GetValues, which allocates a fresh ~500-element array on every capture.
+        /// 公开是因为各加载器入口需要**同一份**列表：MelonLoader 的热键捕获此前调
+        /// Enum.GetValues，每次捕获都要分配一个约 500 元素的数组。</summary>
+        public static readonly KeyCode[] AllKeyCodes;
         /// <summary>Cached current style to avoid redundant GetKeyCode calls / 缓存当前样式，避免重复调用 GetKeyCode</summary>
         private KeyviewerStyle cachedKeyStyle = (KeyviewerStyle)(-1);
         /// <summary>Cached main key array / 缓存的主按键数组</summary>

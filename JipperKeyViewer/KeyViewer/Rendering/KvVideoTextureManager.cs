@@ -362,6 +362,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 }
                 catch (Exception) { /* a player destroyed mid-callback needs no cleanup */ }
                 Loader.Warning($"KeyViewer: video decode failed for node {pair.Key}: {message}");
+                // Tell the custom layout that THIS node still owes a static fallback. The scan
+                // that applies it is per-frame, so without this signal it would have to walk every
+                // node every frame just to discover the failure again.
+                // 通知自定义布局：该节点仍欠一次静态回退。施加回退的扫描是逐帧的，没有这个信号
+                // 就得每帧遍历每个节点，只为重新发现这次失败。
+                try { global::JipperKeyViewer.KeyViewer.KeyViewer.NoteVideoDecodeFailure(pair.Key); }
+                catch (Exception) { /* the layout may be torn down; the placeholder is cosmetic */ }
                 break;
             }
         }

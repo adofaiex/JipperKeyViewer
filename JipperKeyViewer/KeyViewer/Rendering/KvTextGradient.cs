@@ -28,13 +28,36 @@ namespace JipperKeyViewer.KeyViewer
             ProfileData d = Settings.Data;
             if (d.EnableKeyTextGradient || d.EnableCountTextGradient) return true;
             if (!IsCustomLayout || d.CustomNodes == null) return false;
+            // Cached per document. This runs EVERY frame, and with no gradient anywhere — the
+            // factory default — it used to walk all CustomNodes just to return false, which is
+            // pure O(nodes) cost on the default path (a 2048-node document: 2048 iterations per
+            // frame, forever). The answer only changes when the node list does.
+            // 按文档缓存。该判断**每帧**运行，而在完全没有渐变时（出厂默认）此前都要遍历全部
+            // CustomNodes 只为返回 false——纯粹的 O(节点数) 开销落在默认路径上（2048 节点的文档
+            // 即每帧 2048 次迭代，且永不停歇）。该答案只在节点表变化时才可能改变。
+            if (customGradientCacheCount == d.CustomNodes.Count)
+                return customGradientCacheResult;
+            bool found = false;
             for (int i = 0; i < d.CustomNodes.Count; i++)
             {
                 FmNode node = d.CustomNodes[i];
-                if (node != null && (node.UseTextGradient || node.UseCountTextGradient)) return true;
+                if (node != null && (node.UseTextGradient || node.UseCountTextGradient)) { found = true; break; }
             }
-            return false;
+            customGradientCacheCount = d.CustomNodes.Count;
+            customGradientCacheResult = found;
+            return found;
         }
+
+        /// <summary>Document-length stamp + answer for the per-frame scan above. Cleared on every
+        // overlay rebuild so an edit that keeps the node COUNT (toggling a gradient on an existing
+        // node) is still picked up. / 上面的逐帧扫描所用的「文档长度戳 + 答案」。每次覆盖层重建都
+        // 清空，使**节点数不变**的编辑（在已有节点上切换渐变）仍能被看到。</summary>
+        private int customGradientCacheCount = -1;
+        private bool customGradientCacheResult;
+
+        /// <summary>Forget the cached scan; call whenever the node list is rebuilt or edited. /
+        /// 忘记缓存的扫描结果；节点表重建或被编辑时调用。</summary>
+        internal void InvalidateGradientScanCache() => customGradientCacheCount = -1;
 
         private void TickTextGradients()
         {
@@ -231,6 +254,10 @@ namespace JipperKeyViewer.KeyViewer
         private void ClearTextGradientStates()
         {
             textGradientStates.Clear();
+            // Every caller is an overlay rebuild / font change, which is exactly when the cached
+            // "does this document use text gradients at all" scan must be redone. / 每个调用方都是
+            // 覆盖层重建/字体变更，正是必须重算"本文档是否用到文字渐变"缓存的时刻。
+            InvalidateGradientScanCache();
         }
     }
 }

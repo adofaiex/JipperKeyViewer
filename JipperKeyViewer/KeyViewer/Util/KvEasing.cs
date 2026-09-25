@@ -46,7 +46,16 @@ namespace JipperKeyViewer.KeyViewer.Util
 
         /// <summary>Apply the named easing. t is clamped to [0,1]; the result may leave [0,1] for the
         /// back variants (that overshoot IS the effect). / 应用命名缓动。t 钳制到 [0,1]；back 系列
-        /// 的结果可越出 [0,1]（那一下过冲正是效果本身）。</summary>
+        /// 的结果可越出 [0,1]（那一下过冲正是效果本身）。
+        /// Left as a string switch on purpose: <see cref="Normalize"/> returns an element of the
+        /// static <see cref="Names"/> array, so the cases compare against interned literals and
+        /// <c>string.Equals</c> short-circuits on reference equality. An index-based rewrite would
+        /// have to renumber 26 cases — an off-by-one that silently picks the WRONG easing curve
+        /// for a saved profile, in exchange for saving a few pointer comparisons. / 刻意保留为
+        /// 字符串 switch：<see cref="Normalize"/> 返回静态 <see cref="Names"/> 数组的元素，故各
+        /// case 与 interned 字面量比较，<c>string.Equals</c> 会以引用相等短路。改写成下标就必须
+        /// 重编 26 个 case——一个 off-by-one 就会让已保存的配置静默用上**错误**的缓动曲线，
+        /// 换来的是省下几次指针比较，不值得。</summary>
         public static float Ease(string name, float t)
         {
             t = Mathf.Clamp01(t);

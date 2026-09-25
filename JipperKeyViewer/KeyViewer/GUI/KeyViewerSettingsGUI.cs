@@ -34,11 +34,54 @@ namespace JipperKeyViewer.KeyViewer
         private static bool IsFiniteFloat(float v)
             => !float.IsNaN(v) && !float.IsInfinity(v);
 
+        /// <summary>Width options for the float rows. GUILayoutOption is a CLASS, so passing a
+        /// constant width allocated one per field per IMGUI event — the rain page alone has 30 of
+        /// these, i.e. 30 objects per event, every event, for the whole session. /
+        /// 浮点行的宽度选项。GUILayoutOption 是**类**，故传常量宽度会每字段每 IMGUI 事件分配
+        /// 一个——仅雨滴页就有 30 处，即每事件 30 个对象，整个会话持续不断。
+        /// Instance fields, not static ones: a STATIC initializer runs when the partial class is
+        /// first touched, which would drag GUIContent/GUILayoutOption into the type's static
+        /// construction and require UnityEngine.IMGUIModule even for callers that never draw a
+        /// settings page. / 实例字段而非静态：静态初始化器会在该分部类首次被触碰时运行，从而把
+        /// GUIContent/GUILayoutOption 拖进类型的静态构造，让从不绘制设置页的调用方也需要
+        /// UnityEngine.IMGUIModule。</summary>
+        private readonly GUILayoutOption floatLabelWidth = GUILayout.Width(100f);
+        private readonly GUILayoutOption floatSliderWidth = GUILayout.Width(120f);
+
+        /// <summary>Pre-generated control names for the float rows. The name only has to be unique
+        /// WITHIN one pass, and the pass draws the same fields in the same order every event — so
+        /// the strings can be built once instead of concatenated per field per event. /
+        /// 浮点行的预生成控件名。该名字只需在**单次** pass 内唯一，而每个 pass 都以相同顺序绘制
+        /// 相同字段——故字符串只需构建一次，而非每字段每事件拼接一次。</summary>
+        private static readonly string[] FloatCtrlNames = BuildFloatCtrlNames(256);
+
+        private static string[] BuildFloatCtrlNames(int count)
+        {
+            var names = new string[count];
+            for (int i = 0; i < count; i++) names[i] = "fsf_" + i;
+            return names;
+        }
+
+        /// <summary>Label GUIContent cache, keyed by the label string. A dictionary lookup replaces
+        /// a `new GUIContent` per field per event. / 按标签字符串缓存的 Label GUIContent。一次
+        /// 字典查找取代每字段每事件一个 new GUIContent。</summary>
+        private readonly Dictionary<string, GUIContent> floatLabelCache = new Dictionary<string, GUIContent>(StringComparer.Ordinal);
+
+        private GUIContent CachedFloatLabel(string label)
+        {
+            if (!floatLabelCache.TryGetValue(label, out GUIContent content))
+            {
+                content = new GUIContent(label);
+                floatLabelCache[label] = content;
+            }
+            return content;
+        }
+
         private float FloatSliderField(GUIContent label, float value, float min, float max, string format = "F2")
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(100));
-            float slid = GUILayout.HorizontalSlider(value, min, max, GUILayout.Width(120));
+            GUILayout.Label(label, floatLabelWidth);
+            float slid = GUILayout.HorizontalSlider(value, min, max, floatSliderWidth);
             // Buffered text field (TextInputField): typed intermediate states ("", "-", "0.") survive
             // until they parse, and the model only changes when the text actually differs from the
             // model echo. The old version re-fed value.ToString every event, wiping half-typed values
@@ -47,8 +90,24 @@ namespace JipperKeyViewer.KeyViewer
             // 缓冲文本框（TextInputField）：输入中间态（""、"-"、"0."）保留到可解析为止；仅当文本
             // 与模型回显不同才写回模型。旧版每事件重灌 value.ToString，半输入的值被立刻冲掉
             // （-10..10 偏移字段无法用键盘输入负数），且存储值低于下限时打开标签页就被静默改写。
-            string ctrl = "fsf_" + (++sliderFieldSeq);
-            string modelText = slid.ToString(format);
+            //
+            // The formatted echo is only rebuilt when the value or the format actually changed —
+            // Layout and Repaint carry the same value, and formatting it twice per event per field
+            // allocated a string for each. / 格式化回显只在值或格式**真的**变化时重建——Layout 与
+            // Repaint 带着同一个值，每事件每字段格式化两次各自都要分配一个字符串。
+            sliderModelText.Clear();
+            bool sameAsModel = lastFloatModelValue == slid
+                && lastFloatModelFormat == format
+                && sliderModelText.Length > 0;
+            if (!sameAsModel)
+            {
+                sliderModelText.Append(slid.ToString(format));
+                lastFloatModelValue = slid;
+                lastFloatModelFormat = format;
+            }
+            string modelText = sliderModelText.ToString();
+            int seq = ++sliderFieldSeq;
+            string ctrl = seq < FloatCtrlNames.Length ? FloatCtrlNames[seq] : "fsf_" + seq;
             if (slid != value) textInputBuffer.Remove(ctrl); // slider drag refreshes the field / 拖动滑块时刷新文本框
             string text = TextInputField(ctrl, modelText, FloatFieldWidth(modelText));
             if (text != modelText && float.TryParse(text, out float parsed) && IsFiniteFloat(parsed))
@@ -67,8 +126,17 @@ namespace JipperKeyViewer.KeyViewer
             return slid;
         }
 
+        /// <summary>One reusable builder for the current field's model echo. TextInputField takes
+        /// the string, so one ToString is unavoidable per changed value; the point is not to
+        /// format on the Layout AND the Repaint of the same unchanged value.
+        /// 当前字段模型回显的可复用构建器。TextInputField 需要 string，故每个变化的值一次 ToString
+        /// 无法避免；要避免的是对同一个未变化值在 Layout 与 Repaint 各格式化一次。</summary>
+        private readonly System.Text.StringBuilder sliderModelText = new System.Text.StringBuilder(16);
+        private float lastFloatModelValue = float.NaN;
+        private string lastFloatModelFormat;
+
         private float FloatSliderField(string label, float value, float min, float max, string format = "F2")
-            => FloatSliderField(new GUIContent(label), value, min, max, format);
+            => FloatSliderField(CachedFloatLabel(label), value, min, max, format);
 
         private static bool DrawFoldoutButton(string label, bool expanded)
         {

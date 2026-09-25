@@ -427,6 +427,40 @@
   路径会在改键那一帧抛 NRE。现补齐。
 - Harness 增至 116 项（含雨高净化、存活上限、浮点字段精确往返/不再截断两位小数/非有限值显示）。
 
+### 每帧分配与增量计数（2026-09-26，第 43 轮）
+- **`FloatSliderField` 每 IMGUI 事件约 7 次堆分配**：`new GUIContent(label)`、`"fsf_" + n` 拼接、
+  `slid.ToString(format)`、三处 `GUILayout.Width(...)`（`GUILayoutOption` 是 **class**）以及
+  `TextInputField(..., params GUILayoutOption[])` 的数组。雨滴页单页 30 处调用 × 每帧 ≥2 个事件
+  ≈ **每帧 400+ 次、60fps 下约 25,000 次/秒**托管分配，是全项目最大 GC 压力源，且正是用户调
+  雨滴时一直待着的那一页。现：`GUILayoutOption` 与格式化回显改为实例字段并**只在值真的变化时**
+  重建、控件名预生成数组、Label `GUIContent` 按字符串缓存。
+  注：宽度/标签缓存刻意用**实例**字段而非静态——静态初始化器会在该分部类首次被触碰时运行，
+  从而把 `GUIContent`/`GUILayoutOption` 拖进类型的静态构造，让从不绘制设置页的调用方也需要
+  `UnityEngine.IMGUIModule`（Harness 立刻暴露了这一点）。
+- **`CustomGroupTotal` 每帧 O(面板数 × 节点数)**：该方法每帧被**每块** Total 面板各调一次，而
+  实现是带每节点一次 `GroupId` 字符串比较的完整 `CustomNodes` 遍历。现改为增量
+  `Dictionary<string, long>`：计数只在 `ApplyCustomKeyEdge`（一次按压）与
+  `RecalculateCustomTotalCount`（结构/成员变化）两处改变，前者增量、后者置无效后重建，
+  重建后的首次读取走惰性构建，保证该表始终由实时文档推导。
+- **`HasTextGradientSettings()` 在出厂默认路径上每帧扫全部节点**：完全没有渐变时（默认）它仍要
+  遍历 `CustomNodes` 只为返回 false——2048 节点的文档即每帧 2048 次迭代，永不停歇。现按
+  「文档长度戳 + 答案」缓存，`ClearTextGradientStates()`（每个调用方都是覆盖层重建/字体变更）
+  负责失效。
+- **`UpdateCustomVideoFallbacks` 每帧遍历全部节点**：回退是对一次解码错误回调的**一次性**反应，
+  扫描却在每帧对每个节点做 `IsNullOrWhiteSpace` + 两次哈希探针。现由 `OnVideoError` 登记到
+  `pendingVideoFallbacks`，集合为空时**完全不扫描**；处理后从集合移除，仍待处理且已不存在的 id
+  会被剪除（否则一次失败会让该扫描永远运行）。
+- **粘贴把源节点的按压计数也复制过来**：`EditorCopySelection` 直接 `Clone()`，而 `Clone` 复制实时
+  `Count`，于是每次粘贴都把**源**节点的计数再加进文档一遍——把一次游玩的总数翻倍，第二次粘贴
+  再翻一倍。剪贴板是**模板**不是记录，粘贴出的节点是全新节点。现复制后清零。
+- **MelonLoader 每帧 `Enum.TryParse` 解析热键**（对所有用户，每秒 60 次重新发现同一个值）；
+  `ReadPressedKey` 每次捕获 `Enum.GetValues` 分配约 500 元素数组。现缓存解析结果（仅在存储
+  字符串变化时重解析）并复用 `KeyViewer.AllKeyCodes`（为此把该字段从 `private` 提升为
+  `public`——各加载器需要同一份列表）。
+- **刻意不修**：`KvEasing.Ease` 的字符串 switch 保留。`Normalize` 返回静态 `Names` 数组的元素，
+  故各 case 与 interned 字面量比较、`string.Equals` 以引用相等短路；改写成下标必须重编 26 个
+  case，一个 off-by-one 就会让已保存的配置静默用上**错误**的缓动曲线，不值得省那几次指针比较。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

@@ -87,11 +87,55 @@ namespace JipperKeyViewer.KeyViewer
         {
             string g = groupId ?? "";
             if (g.Length == 0) return Settings.Data.TotalCount;
-            long sum = 0;
-            foreach (FmNode n in Settings.Data.CustomNodes)
-                if (n != null && n.GroupId == g && n.CountInTotal && (n.NodeType == 0 || n.NodeType == 3))
-                    sum += n.Count;
-            return sum;
+            // Incremental, not a scan. This is called once per Total panel PER FRAME, and the scan
+            // it replaced was a full CustomNodes walk with a string comparison per node — so P
+            // panels cost O(P × N) node visits every frame. The two places a count changes are
+            // ApplyCustomKeyEdge (one press, incremental below) and RecalculateCustomTotalCount
+            // (a structural/membership change, which invalidates and rebuilds). First use after a
+            // rebuild builds lazily, so the table is always derived from the live document.
+            // 增量维护而非扫描。该方法每帧被每块 Total 面板各调一次，而它取代的扫描是带每节点一次
+            // 字符串比较的完整 CustomNodes 遍历——P 块面板即每帧 O(P × N) 次节点访问。计数变化的
+            // 只有两处：ApplyCustomKeyEdge（一次按压，下方增量）与 RecalculateCustomTotalCount
+            // （结构/成员变化，令缓存失效并重建）。重建后的首次使用走惰性构建，故该表始终由
+            // 实时文档推导而来。
+            if (!groupTotalsValid) RebuildGroupTotals();
+            groupTotals.TryGetValue(g, out long cached);
+            return cached;
+        }
+
+        private readonly Dictionary<string, long> groupTotals = new Dictionary<string, long>(StringComparer.Ordinal);
+        private bool groupTotalsValid;
+
+        private void BumpGroupTotal(string groupId, long delta)
+        {
+            if (!groupTotalsValid) return; // a rebuild is pending; it recomputes from the document
+            string g = groupId ?? "";
+            long current = groupTotals.TryGetValue(g, out long v) ? v : 0L;
+            current += delta;
+            if (current > int.MaxValue) current = int.MaxValue;
+            groupTotals[g] = current;
+        }
+
+        /// <summary>Rebuild the incremental per-group totals from the node document. /
+        /// 从节点文档重建增量式每组总数。</summary>
+        private void RebuildGroupTotals()
+        {
+            groupTotals.Clear();
+            List<FmNode> nodes = Settings.Data.CustomNodes;
+            if (nodes != null)
+            {
+                for (int i = 0; i < nodes.Count; i++)
+                {
+                    FmNode n = nodes[i];
+                    if (n == null || !n.CountInTotal || (n.NodeType != 0 && n.NodeType != 3)) continue;
+                    string g = n.GroupId ?? "";
+                    long current = groupTotals.TryGetValue(g, out long v) ? v : 0L;
+                    current += Math.Max(0, n.Count);
+                    if (current > int.MaxValue) current = int.MaxValue;
+                    groupTotals[g] = current;
+                }
+            }
+            groupTotalsValid = true;
         }
 
         /// <summary>Recompute the global Custom Total from the node document. CountInTotal is a
@@ -108,6 +152,13 @@ namespace JipperKeyViewer.KeyViewer
                 if (total >= int.MaxValue) { total = int.MaxValue; break; }
             }
             Settings.Data.TotalCount = (int)total;
+            // The per-group incremental totals derive from the same document walk, so rebuild them
+            // here rather than letting them drift. Marking the cache invalid FIRST means a press
+            // racing this rebuild takes the lazy path instead of adding to a stale table. /
+            // 每组增量总数来自同一次文档遍历，故在此一并重建，避免各自漂移。先把缓存标记为无效，
+            // 使与本次重建竞态的按压走惰性路径，而不是往陈旧表里累加。
+            groupTotalsValid = false;
+            RebuildGroupTotals();
         }
 
         /// <summary>Write one custom stat panel with ITS OWN group's value. A panel in group G
@@ -1469,13 +1520,31 @@ namespace JipperKeyViewer.KeyViewer
             return Enum.TryParse(node.KeyBind, true, out KeyCode parsed) ? parsed : KeyCode.None;
         }
 
+        /// <summary>Ids whose video decoder has failed and whose node therefore still needs the
+        /// static fallback. A fallback is a ONE-TIME reaction to an error callback, yet the scan
+        /// that applied it walked every CustomNode on every single frame — a per-frame
+        /// IsNullOrWhiteSpace + two hash probes per node, on a document that may hold 2048 of
+        /// them. Registered from OnVideoError so an ordinary frame does no scanning at all. /
+        /// 解码失败、因而仍需套用静态回退图的节点 id。回退是对一次错误回调的**一次性**反应，
+        /// 而施加它的扫描此前每帧遍历每个 CustomNode——每帧每节点一次 IsNullOrWhiteSpace 加两次
+        /// 哈希探针，而文档最多可有 2048 个节点。改由 OnVideoError 登记，使普通帧完全不扫描。</summary>
+        private static readonly HashSet<int> pendingVideoFallbacks = new HashSet<int>();
+
+        /// <summary>Called by the video manager when a node's decoder errors. / 视频管理器在某个
+        /// 节点解码出错时调用。</summary>
+        internal static void NoteVideoDecodeFailure(int nodeId) => pendingVideoFallbacks.Add(nodeId);
+
         private void UpdateCustomVideoFallbacks()
         {
+            // Nothing failed → nothing to do. This is the overwhelmingly common case. /
+            // 没有失败 → 无事可做。这占绝大多数情况。
+            if (pendingVideoFallbacks.Count == 0) return;
             if (Settings.Data?.CustomNodes == null) return;
             foreach (FmNode node in Settings.Data.CustomNodes)
             {
                 if (node == null || node.NodeType != 3 || string.IsNullOrWhiteSpace(node.VideoPath)
                     || customVideoFallbackApplied.Contains(node.Id)
+                    || !pendingVideoFallbacks.Contains(node.Id)
                     || !KvVideoTextureManager.HasFailed(node.Id)) continue;
                 RawImage raw;
                 if (!customImageRaws.TryGetValue(node, out raw) || raw == null) continue;
@@ -1511,8 +1580,23 @@ namespace JipperKeyViewer.KeyViewer
                     raw.color = new Color(0.25f, 0.25f, 0.28f, 0.85f * Mathf.Clamp01(node.Opacity));
                 }
                 customVideoFallbackApplied.Add(node.Id);
+                pendingVideoFallbacks.Remove(node.Id);
+            }
+            // Anything still pending belongs to a node that no longer exists (deleted, or rebuilt
+            // away) — keeping it would make this scan run forever on a document that has no video
+            // failures at all. / 仍待处理的项属于已不存在的节点（被删除或重建掉）——留着会让这次
+            // 扫描在一个根本没有视频失败的文档上永远运行。
+            if (pendingVideoFallbacks.Count > 0 && customVideoFallbackApplied.Count > 0)
+            {
+                customFallbackPruneBuffer.Clear();
+                foreach (int id in pendingVideoFallbacks)
+                    if (!customVideoFallbackApplied.Contains(id)) customFallbackPruneBuffer.Add(id);
+                for (int i = 0; i < customFallbackPruneBuffer.Count; i++)
+                    pendingVideoFallbacks.Remove(customFallbackPruneBuffer[i]);
             }
         }
+
+        private static readonly List<int> customFallbackPruneBuffer = new List<int>();
 
         // ======================== per-frame input / 逐帧输入 ========================
 
@@ -1671,7 +1755,10 @@ namespace JipperKeyViewer.KeyViewer
             }
             node.Count++;
             if (node.CountInTotal)
+            {
                 d.TotalCount++;
+                BumpGroupTotal(node.GroupId, 1);
+            }
             // CountInTotal controls Total membership only. KPS must continue to see every
             // physical/replay press, including nodes excluded from Total. / CountInTotal 只控制
             // Total 成员资格；KPS 仍必须看到所有物理/回放按压，包括被排除在 Total 之外的节点。

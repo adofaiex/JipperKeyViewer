@@ -89,14 +89,42 @@ namespace JipperKeyViewer.LoaderMelon
                 return;
             }
 
+            // Cache the parsed hotkey and only re-parse when the stored STRING actually changed.
+            // This runs every frame for every MelonLoader user, and Enum.TryParse scans ~500
+            // KeyCode names with OrdinalIgnoreCase comparisons — pure waste to rediscover an
+            // unchanged value 60 times a second. / 缓存解析后的热键，仅在存储**字符串**真的变化时
+            // 才重新解析。该方法对每个 MelonLoader 用户每帧都跑，而 Enum.TryParse 会对约 500 个
+            // KeyCode 名字做 OrdinalIgnoreCase 比较——每秒 60 次重新发现一个没变的值，纯属浪费。
             string keyName = _hotkeyEntry.Value;
             if (string.IsNullOrEmpty(keyName)) return;
-            if (Enum.TryParse(keyName, true, out KeyCode key) && Input.GetKeyDown(key))
+            if (!string.Equals(keyName, _hotkeyParsedFrom, System.StringComparison.Ordinal))
+            {
+                _hotkeyParsedFrom = keyName;
+                _hotkeyKey = Enum.TryParse(keyName, true, out KeyCode parsed) ? parsed : KeyCode.None;
+            }
+            if (_hotkeyKey != KeyCode.None && Input.GetKeyDown(_hotkeyKey))
                 ToggleSettings();
         }
 
+        private string _hotkeyParsedFrom;
+        private KeyCode _hotkeyKey = KeyCode.None;
+
         private static KeyCode ReadPressedKey()
         {
+            // Enum.GetValues allocates a fresh ~500-element array on every capture; KeyViewer's
+            // static AllKeyCodes is the same set, already built once, without the joystick axes.
+            // Enum.GetValues 在每次捕获时都会分配一个约 500 元素的数组；KeyViewer 的静态
+            // AllKeyCodes 是同一集合，只构建一次，且不含摇杆轴。
+            KeyCode[] all = global::JipperKeyViewer.KeyViewer.KeyViewer.AllKeyCodes;
+            if (all != null)
+            {
+                foreach (KeyCode k in all)
+                {
+                    if (k >= KeyCode.Mouse0 && k <= KeyCode.Mouse6) continue;
+                    if (Input.GetKeyDown(k)) return k;
+                }
+                return KeyCode.None;
+            }
             foreach (KeyCode k in System.Enum.GetValues(typeof(KeyCode)))
             {
                 if (k >= KeyCode.Mouse0 && k <= KeyCode.Mouse6) continue;
