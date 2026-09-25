@@ -491,21 +491,49 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         void OnDestroy()        {
             SaveSettings();
-            instance = null; // stop loader GUI callbacks from running on the destroyed component / 阻止加载器 GUI 回调继续在已销毁组件上运行
+            // Only unregister if the statics are still OURS. Object.Destroy is deferred, and
+            // Main.DisableKeyViewer nulls its KeyViewerGO immediately, so a disable→enable in the
+            // same frame builds a replacement whose Awake has ALREADY claimed `instance` and
+            // installed its own KvTextStyle bridge — before this dying instance runs OnDestroy at
+            // end of frame. Clearing unconditionally then stole both back from the live component:
+            // the settings panel found no instance and drew nothing, and KvTextStyle.Apply stopped
+            // routing entirely, so text styles silently stopped applying — neither recoverable
+            // without another toggle. A component may only release a registration it still holds.
+            // 只在静态字段**仍属于我们**时才注销。Object.Destroy 是延迟的，而 Main 的
+            // DisableKeyViewer 立刻把 KeyViewerGO 置空，故同一帧内的「关→开」会建出替代者，其
+            // Awake **已经**领取了 `instance` 并装好自己的 KvTextStyle 桥接——而本将死的实例在帧末
+            // 才跑 OnDestroy。此时无条件清除就把两者从**存活**组件手里又抢了回去：设置面板找不到
+            // 实例、画不出任何内容；KvTextStyle.Apply 彻底停止转发，文字样式静默失效——两者都要再
+            // 开关一次才能恢复。组件只能注销**自己仍持有**的注册。
+            bool stillOurs = ReferenceEquals(instance, this);
+            if (stillOurs) instance = null; // stop loader GUI callbacks from running on the destroyed component / 阻止加载器 GUI 回调继续在已销毁组件上运行
             SceneManager.sceneLoaded -= OnSceneLoaded;
             rainSystem?.ClearAll(Keys);
             // The cross-rebuild image cache outlives every per-build teardown by design; without this
             // the cached PNG textures would outlive the component that hands them out. / 跨重建图片
             // 缓存在设计上比每一次逐构建拆解都活得久；没有这一句，缓存的 PNG 贴图会比交出它们的
             // 组件活得更久。
-            Util.KvImageLoader.ReleaseCachedTextures();
+            // ...but the cache is a SINGLE shared resource (unlike ReleaseTextStyleMaterials, which
+            // clears this instance's own dictionary), so a same-frame replacement has already
+            // populated it by now. Releasing here would destroy textures the live component is
+            // actively drawing, and its next rebuild would hand out the dead ones. Release it only
+            // when nothing replaced us — the true shutdown case.
+            // ……但该缓存是**单一共享**资源（不像 ReleaseTextStyleMaterials 清的是本实例自己的
+            // 字典），故同一帧的替代者此刻已经把它填满了。在此释放会销毁存活组件正在绘制的贴图，
+            // 而它的下一次重建会把死的那批交出去。只在无人替代我们时释放——即真正的关停场景。
+            if (stillOurs) Util.KvImageLoader.ReleaseCachedTextures();
             ReleaseTextStyleMaterials();
             // Unhook the static bridge KvTextStyle.Apply routes through. It is an ASSIGNMENT, so it
             // never double-registered — but it left a static field holding this (now destroyed)
             // component for the rest of the process, and any Apply call after teardown would write
             // through it. / 摘掉 KvTextStyle.Apply 转发所用的静态桥接。它是**赋值**故从不重复注册，
             // 但会让静态字段在本组件销毁后仍持有它直到进程结束，此后任何 Apply 调用都会写向死组件。
-            if (Rendering.KvTextStyle.KeyViewerApplier.Apply != null)
+            // ...but only while it is still OUR bridge (see `stillOurs`): the lambda closes over
+            // this component and cannot be compared by target, and a replacement installed its own
+            // one in Awake before this method ran.
+            // ……但只在桥接**仍属于我们**时才摘（见 `stillOurs`）：该 lambda 闭包捕获本组件、无法按
+            // 目标比较，而替代者已在本方法执行前于 Awake 装好了它自己的桥接。
+            if (stillOurs && Rendering.KvTextStyle.KeyViewerApplier.Apply != null)
                 Rendering.KvTextStyle.KeyViewerApplier.Apply = null;
         }
 
