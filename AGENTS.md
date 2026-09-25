@@ -618,6 +618,23 @@
   Profile 的故意 0 不透明度/0.5 缩放/无光晕原样通过加载**、陈旧 Profile 仍被修复、以及那条覆盖
   测试）。
 
+### DmNote 统计面板绑定（2026-09-26，第 49 轮）
+- **【用户的 Total 面板直接消失】统计面板拿按键名去判定类型**：回退条件是
+  `names.Count >= statElements.Count`，而**最常见**的「7 个按键 + 2 个面板」预设恰好满足，故回退
+  常态触发。于是：(a) 无 `displayText` 的面板把某个**按键的名字**当成了自己的标签；(b) 无
+  `statType` 的面板在 `ResolveDmNoteStatType` 里拿那个按键名去匹配，既不含 total 也不含 kps，
+  于是被**丢弃**——用户的 Total 面板就这么没了，只留下一条泛化的「不支持的统计面板」提示，
+  而真实原因（面板没写 statType）根本没提到。
+  现回退条件改为**等长**：等长是「同一下标互相对应」的唯一条件，不等长时传 null，让面板回退到
+  全局 KPS/Total 标签（无名面板本就该如此），并新增 `dmnote_stat_names_skipped` 提示说明原因。
+- **无 statType 的面板改用专门提示**：`dmnote_skip_stat_untyped`，不再把「没写 statType」报成
+  「不支持的面板」——后者把用户引向错误的排查方向。
+- **`UseCustomCountFontStyle = true` 是死赋值**：四行后被 `ApplyDmNoteFontStyles` 无条件覆盖
+  （后者依据 counter 对象是否真的带样式键来决定）。若哪天活下来，每个导入节点都会声称自己有一个
+  并不存在的计数字体覆盖。现删除并在原处写明理由。
+- Harness 增至 **129** 项（含「keys 非等长平行数组时统计面板仍保住自己的 statType」与
+  「无 statType 的面板给出具体原因」）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

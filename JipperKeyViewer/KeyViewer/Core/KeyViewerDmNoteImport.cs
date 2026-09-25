@@ -270,12 +270,21 @@ namespace JipperKeyViewer.KeyViewer
                     ? keyNames[result.Tab] as JArray : null;
                 int nextId = 1;
                 AppendDmNoteElements(result, keyElements, names, false, ref nextId);
-                // Stat panels normally carry `statType`; only fall back to the parallel names array
-                // when it actually covers this tab's stat elements (otherwise the index would bind
-                // a panel to an unrelated key name). / 统计面板通常带 statType；仅当 names 数组确实
-                // 覆盖本 tab 的统计元素时才作为回退，避免按下标绑到无关键名。
-                JArray statNames = names != null && statElements != null && names.Count >= statElements.Count
+                // Stat panels normally carry `statType`. The parallel-array fallback is only
+                // meaningful when the key-name array and the stat-element array are the SAME
+                // length — that is what makes index i of one correspond to index i of the other.
+                // The test used to be `names.Count >= statElements.Count`, which the ordinary
+                // 7-keys-plus-2-panels preset satisfies, so the fallback fired routinely and:
+                //   (a) a panel with no displayText displayed a KEY's name as its label;
+                //   (b) a panel with no statType fell back to that key name in
+                //       ResolveDmNoteStatType, matched neither "total" nor "kps", and was DROPPED
+                //       with only a generic "unsupported statistic panel" warning.
+                // Require exact equality; otherwise pass null and let the panels fall back to the
+                // global KPS/Total labels, which is what a nameless panel should show.
+                JArray statNames = names != null && statElements != null && names.Count == statElements.Count
                     ? names : null;
+                if (names != null && statElements != null && statNames == null)
+                    result.Warnings.Add(I18n.Tr("dmnote_stat_names_skipped"));
                 AppendDmNoteElements(result, statElements, statNames, true, ref nextId);
                 if (root["graphPositions"] != null)
                     result.Warnings.Add(I18n.Tr("dmnote_skip_graph"));
@@ -370,7 +379,13 @@ namespace JipperKeyViewer.KeyViewer
                 FontSize = Mathf.Max(0f, ReadNumber(raw, position, "fontSize", nodeType == 0 ? 18f : 16f)),
                 CountFontSize = Mathf.Max(0f, ReadNumber(raw, position, "counterFontSize", 16f)),
                 CountShowWhilePressed = ReadBool(raw, "quartzCounterShowWhilePressed", true),
-                UseCustomCountFontStyle = true,
+                // UseCustomCountFontStyle is set by ApplyDmNoteFontStyles below, which decides it
+                // from whether the counter object actually carries style keys. Setting it true here
+                // was a dead assignment overwritten four lines later — and had it survived, every
+                // imported node would have claimed a count-font override it did not have.
+                // 该标志由下方 ApplyDmNoteFontStyles 依据 counter 对象是否真的带样式键来决定。此处
+                // 设 true 是死赋值，四行后即被覆盖——若真活下来，每个导入节点都会声称自己有一个
+                // 并不存在的计数字体覆盖。
             };
 
             ApplyDmNoteColors(node, raw, position);
@@ -617,13 +632,26 @@ namespace JipperKeyViewer.KeyViewer
             return null;
         }
 
+        /// <summary>Classify a stat panel. A panel with no statType and no type is a nameless panel,
+        /// NOT a key name — the caller only passes a name here when the key-name array is a true
+        /// parallel array of the stat elements, so a non-empty `name` really is a panel label and
+        /// there is no way to tell KPS from Total by it. Guessing "key" and dropping the panel is the
+        /// safe half; what matters is that the reason reaches the user instead of a generic
+        /// "unsupported panel" line that points at the wrong cause.
+        /// 判定统计面板的类型。没有 statType 也没有 type 的面板是**无名义面板**，不是键名——调用方
+        /// 只在键名数组确实是统计元素的等长平行数组时才会传名字，故非空 `name` 确实是面板标签，
+        /// 无法由它区分 KPS 与 Total。猜成「按键」并丢弃是安全的一半；关键是要让真实原因到达
+        /// 用户，而不是一条指向错误原因的泛化「不支持的面板」提示。
+        /// </summary>
         private static int ResolveDmNoteStatType(JObject raw, string name, DmNoteWarnings warnings)
         {
             JObject position = raw["position"] as JObject ?? raw;
             string type = ReadString(raw, position, "statType", ReadString(raw, position, "type", name)).ToLowerInvariant();
             if (type.Contains("total")) return 2;
             if (type.Contains("kps") && !type.Contains("avg") && !type.Contains("max")) return 1;
-            warnings.Add(I18n.Tr("dmnote_skip_stat"));
+            warnings.Add(string.IsNullOrEmpty(type)
+                ? I18n.Tr("dmnote_skip_stat_untyped")
+                : I18n.Tr("dmnote_skip_stat"));
             return 0;
         }
 
