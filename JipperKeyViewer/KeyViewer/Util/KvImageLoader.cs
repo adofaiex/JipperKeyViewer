@@ -6,6 +6,7 @@
 // 以及不带边框的 FreeMake 图片节点。所有失败路径都会先释放占位纹理再返回 null，绝不泄漏。
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using UnityEngine;
@@ -14,6 +15,110 @@ namespace JipperKeyViewer.KeyViewer.Util
 {
     internal static class KvImageLoader
     {
+        /// <summary>One cached decode of a PNG, plus the file identity it was decoded from so an
+        /// edited file is not served stale. / 一次缓存的 PNG 解码结果，外加解码时的文件身份，
+        /// 以便文件被改动后不会返回陈旧结果。</summary>
+        private sealed class CachedTexture
+        {
+            public Texture2D Texture;
+            public DateTime LastWriteUtc;
+            public long Length;
+        }
+
+        // Cross-rebuild cache for the FreeMake image-node path. LoadTexture itself stays uncached on
+        // purpose: the editor keeps its OWN cache (fmTexCache, destroyed by its own Clear) and
+        // LoadSprite bakes a 9-slice that owns a different lifetime, so making the shared entry point
+        // own memory would break both. This is a separate, explicitly-owned cache for the one caller
+        // that re-decodes the same files dozens of times a second.
+        //
+        // WHY it exists: ResetKeyViewer — the rebuild a text-style slider drag drives 60-120x/second
+        // on a custom layout — destroyed every custom image and then re-read and re-decoded all of
+        // them from disk. One 4096x4096 PNG is a 16 MB synchronous read plus 20-60 ms of PNG inflate
+        // and 64 MB of VRAM, twice per node (normal + pressed); ten image nodes is 200-600 ms of
+        // blocking main-thread work PER REBUILD. A two-second drag issued 120-240 rebuilds.
+        // 跨重建缓存，专供 FreeMake 图片节点路径。LoadTexture 本身刻意不加缓存：编辑器有自己的缓存
+        // （fmTexCache，由它自己的 Clear 销毁），而 LoadSprite 烘焙的九宫格拥有不同的生命周期，
+        // 若让共享入口持有内存会同时破坏两者。这是为**唯一**那个每秒几十次重复解码同一批文件的
+        // 调用方准备的、独立且所有权明确的缓存。
+        //
+        // 存在的原因：ResetKeyViewer（自定义布局上拖一个文字样式滑杆会每秒触发 60-120 次）会先销毁
+        // 全部自定义图片、再从磁盘重新读盘并重新解码。一张 4096x4096 PNG = 16 MB 同步读取 + 20-60 毫秒
+        // PNG 解压 + 64 MB 显存，每个节点**两次**（常态 + 按下）；十个图片节点即每次重建 200-600 毫秒
+        // 的主线程阻塞。两秒的拖拽会发出 120-240 次重建。
+        private static readonly Dictionary<string, CachedTexture> textureCache
+            = new Dictionary<string, CachedTexture>(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<Texture2D> cachedOwnership = new HashSet<Texture2D>();
+
+        /// <summary>Is this texture owned by the cross-rebuild cache? A caller that is tearing down
+        /// per-rebuild state must NOT destroy it — the next rebuild will hand out the same instance.
+        /// / 该贴图是否由跨重建缓存持有？拆除逐次构建状态的调用方**不得**销毁它——下一次构建会交出
+        /// 同一个实例。</summary>
+        internal static bool IsCacheOwned(Texture2D tex)
+            => tex != null && cachedOwnership.Contains(tex);
+
+        /// <summary>Destroy every cached texture. Call on FULL teardown only (disable / OnDestroy),
+        /// never per rebuild. / 销毁全部缓存贴图。仅在**完全**拆解时调用（禁用 / OnDestroy），
+        /// 绝不可逐次构建调用。</summary>
+        internal static void ReleaseCachedTextures()
+        {
+            foreach (KeyValuePair<string, CachedTexture> pair in textureCache)
+            {
+                Texture2D tex = pair.Value?.Texture;
+                if (tex == null) continue;
+                try { UnityEngine.Object.Destroy(tex); }
+                catch (Exception) { /* already destroyed by a domain reload */ }
+            }
+            textureCache.Clear();
+            cachedOwnership.Clear();
+        }
+
+        /// <summary>Load a PNG, reusing the previous decode when the file is unchanged. For callers
+        /// that re-request the same paths on every rebuild. / 加载 PNG，文件未变时复用上次的解码结果。
+        /// 供那些每次重建都重新请求同一批路径的调用方使用。</summary>
+        internal static Texture2D LoadTextureCached(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            if (textureCache.TryGetValue(path, out CachedTexture hit) && hit?.Texture != null)
+            {
+                // A stat is microseconds; a re-decode is tens of milliseconds. Comparing mtime+length
+                // is what keeps an image the user just replaced from showing the previous artwork.
+                // 一次 stat 是微秒级，重新解码是几十毫秒级。比对 mtime+长度正是防止「用户刚换的图仍
+                // 显示旧画面」的关键。
+                try
+                {
+                    FileInfo fi = new FileInfo(path);
+                    if (fi.Exists && fi.LastWriteTimeUtc == hit.LastWriteUtc && fi.Length == hit.Length)
+                        return hit.Texture;
+                }
+                catch (Exception) { /* fall through to a reload */ }
+                textureCache.Remove(path);
+                cachedOwnership.Remove(hit.Texture);
+                try { UnityEngine.Object.Destroy(hit.Texture); }
+                catch (Exception) { /* already gone */ }
+            }
+            Texture2D loaded = LoadTexture(path);
+            if (loaded == null) return null;
+            try
+            {
+                FileInfo fi = new FileInfo(path);
+                textureCache[path] = new CachedTexture
+                {
+                    Texture = loaded,
+                    LastWriteUtc = fi.LastWriteTimeUtc,
+                    Length = fi.Length,
+                };
+                cachedOwnership.Add(loaded);
+            }
+            catch (Exception)
+            {
+                // Uncacheable (path vanished between the two opens): still hand the texture over —
+                // it is owned by the caller's usual teardown, which will destroy it as before.
+                // 无法记录缓存（两次打开之间路径消失）：仍把贴图交出去——它由调用方原有的拆除路径
+                // 持有，会照旧被销毁。
+            }
+            return loaded;
+        }
+
         private static bool _loadImageCached;
         private static MethodInfo _cachedLoadImage;
         private static int _loadImageParamCount;

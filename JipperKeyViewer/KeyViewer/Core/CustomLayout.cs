@@ -1243,13 +1243,13 @@ namespace JipperKeyViewer.KeyViewer
                     // overlay the video and the normal image remains available as a fallback.
                     // 有效视频仍保留静态常态/按压纹理，使按压图片能覆盖视频，正常图片也可回退。
                     key.CustomVideoTexture = video;
-                    key.CustomTexNormal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
-                    key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
+                    key.CustomTexNormal = KvImageLoader.LoadTextureCached(ResolveCustomImagePath(node.ImagePath));
+                    key.CustomTexPressed = KvImageLoader.LoadTextureCached(ResolveCustomImagePath(node.ImagePathPressed));
                 }
             }
             else
             {
-                Texture2D normal = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                Texture2D normal = KvImageLoader.LoadTextureCached(ResolveCustomImagePath(node.ImagePath));
                 if (normal == null)
                 {
                     raw.color = new Color(0.25f, 0.25f, 0.28f, 0.85f);
@@ -1265,7 +1265,7 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     key.CustomVideoTexture = null;
                     key.CustomTexNormal = normal;
-                    key.CustomTexPressed = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePathPressed));
+                    key.CustomTexPressed = KvImageLoader.LoadTextureCached(ResolveCustomImagePath(node.ImagePathPressed));
                 }
                 else if (normal != null)
                 {
@@ -1338,14 +1338,23 @@ namespace JipperKeyViewer.KeyViewer
             ClearTextGradientStates();
             ClearFixedGlowImages();
             ClearCustomGlowImages();
+            // Cache-owned textures survive this call on purpose — KvImageLoader's cross-rebuild
+            // cache hands the SAME instance to the next rebuild, and destroying it here would both
+            // free memory the next build still needs and leave the cache pointing at a dead
+            // object. They are released once, by KvImageLoader.ReleaseCachedTextures(), on full
+            // teardown. Everything not in that cache is still ours to destroy as before.
+            // 缓存持有的贴图刻意**不**在此销毁——KvImageLoader 的跨重建缓存会把**同一个**实例交给
+            // 下一次构建，在这里销毁它既会释放下一次构建仍需要的显存，也会让缓存指向一个死对象。
+            // 它们由 KvImageLoader.ReleaseCachedTextures() 在完全拆解时一次性释放。不在缓存里的
+            // 仍照旧由我们销毁。
             if (Keys != null)
             {
                 for (int i = 0; i < Keys.Length; i++)
                 {
                     Key k = Keys[i];
                     if (k == null) continue;
-                    if (k.CustomTexNormal != null) Destroy(k.CustomTexNormal);
-                    if (k.CustomTexPressed != null) Destroy(k.CustomTexPressed);
+                    DestroyCustomImageTexture(k.CustomTexNormal);
+                    DestroyCustomImageTexture(k.CustomTexPressed);
                     k.CustomTexNormal = null;
                     k.CustomTexPressed = null;
                     k.CustomImage = null;
@@ -1354,12 +1363,21 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             for (int i = 0; i < customDecorationTextures.Count; i++)
-                if (customDecorationTextures[i] != null) Destroy(customDecorationTextures[i]);
+                DestroyCustomImageTexture(customDecorationTextures[i]);
             customDecorationTextures.Clear();
             customImageRects.Clear();
             customImageRaws.Clear();
             customGlowImages.Clear();
             customVideoFallbackApplied.Clear();
+        }
+
+        /// <summary>Destroy a custom image texture unless the cross-rebuild cache owns it. /
+        /// 销毁自定义图片贴图，除非它由跨重建缓存持有。</summary>
+        private static void DestroyCustomImageTexture(Texture2D tex)
+        {
+            if (tex == null) return;
+            if (KvImageLoader.IsCacheOwned(tex)) return;
+            Destroy(tex);
         }
 
         /// <summary>Resolve an image reference: absolute path as-is, otherwise relative to
@@ -1625,7 +1643,7 @@ namespace JipperKeyViewer.KeyViewer
                 Texture normal = key != null ? key.CustomTexNormal : null;
                 if (normal == null)
                 {
-                    Texture2D loaded = KvImageLoader.LoadTexture(ResolveCustomImagePath(node.ImagePath));
+                    Texture2D loaded = KvImageLoader.LoadTextureCached(ResolveCustomImagePath(node.ImagePath));
                     normal = loaded;
                     // A DECORATION video node (no key) owns whatever it loads. Without registering
                     // it, ReleaseCustomTextures — which only walks the Keys array and this list —

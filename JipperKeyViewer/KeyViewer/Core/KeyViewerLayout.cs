@@ -197,6 +197,13 @@ namespace JipperKeyViewer.KeyViewer
             // not free any custom-image texture. / 与 ResetKeyViewer 同理的贴图归属问题——
             // 销毁 KeyViewerObject 不会释放任何自定义图片贴图。
             ReleaseCustomTextures();
+            // ...and this IS the full teardown, so the cross-rebuild image cache is released here and
+            // nowhere else. ReleaseCustomTextures deliberately left those textures alone (the cache
+            // hands the same instance to the next build); if they were not freed now, they would
+            // outlive the overlay. / ……而这里**就是**完全拆解，故跨重建图片缓存在此释放、且**只**
+            // 在此。ReleaseCustomTextures 刻意没动那些贴图（缓存会把同一个实例交给下一次构建）；
+            // 若不在此释放，它们会比覆盖层活得更久。
+            Util.KvImageLoader.ReleaseCachedTextures();
             ReleaseCustomGlowSprite();
             Object.Destroy(KeyViewerObject);
             KeyViewerObject = null;

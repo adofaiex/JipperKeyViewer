@@ -494,6 +494,11 @@ namespace JipperKeyViewer.KeyViewer
             instance = null; // stop loader GUI callbacks from running on the destroyed component / 阻止加载器 GUI 回调继续在已销毁组件上运行
             SceneManager.sceneLoaded -= OnSceneLoaded;
             rainSystem?.ClearAll(Keys);
+            // The cross-rebuild image cache outlives every per-build teardown by design; without this
+            // the cached PNG textures would outlive the component that hands them out. / 跨重建图片
+            // 缓存在设计上比每一次逐构建拆解都活得久；没有这一句，缓存的 PNG 贴图会比交出它们的
+            // 组件活得更久。
+            Util.KvImageLoader.ReleaseCachedTextures();
             ReleaseTextStyleMaterials();
             // Unhook the static bridge KvTextStyle.Apply routes through. It is an ASSIGNMENT, so it
             // never double-registered — but it left a static field holding this (now destroyed)
