@@ -87,7 +87,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
             for (int i = 0; i < rainActiveKeys.Count; i++)
             {
                 int ki = rainActiveKeys[i];
-                Key key = keys[ki];
+                // The index came from a PREVIOUS Keys array: rainActiveKeys is only emptied by
+                // ClearActiveDrops, and that is not called from every path that swaps Keys in
+                // (a shorter array after a profile/layout switch, or the empty-array early return
+                // above, which does not touch the active set at all). Indexing without this guard
+                // throws IndexOutOfRangeException in Update, on EVERY frame, which takes down
+                // input processing and press counting for the whole overlay until restart.
+                // Make the loop self-heal instead: drop the dead index and carry on.
+                // 该下标来自**上一个** Keys 数组：rainActiveKeys 只由 ClearActiveDrops 清空，而
+                // 并非所有替换 Keys 的路径都调它（切换配置/布局后数组变短，或上面空数组的早退
+                // 完全不碰活跃集）。不守卫就索引会在 Update 里抛 IndexOutOfRangeException，且
+                // **每帧**都抛——整个覆盖层的输入处理与按键计数随之失效直到重启。
+                // 改为自愈：丢掉这个死下标继续。
+                Key key = (uint)ki < (uint)keys.Length ? keys[ki] : null;
                 if (key == null || key.rainList.Count == 0)
                 {
                     rainActiveSet.Remove(ki);
@@ -148,7 +160,6 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 内存与逐帧遍历成本持续泄漏)。极小正速度保留"近乎冻结"的观感,同时保证最终
             // 落出轨道被回收;高度下限 1 保证离轨分支数学良定义。下限取 1px/s(1e-3 px/ms):
             // 零速雨滴在典型高度下数分钟内回收,而不是更小下限意味着的小时级。
-            const float minSpeedFactor = 1e-3f;
             // Clamp the per-row height to the same band the settings sliders use. A typed (or
             // hand-edited, or .jkv-imported) height of 100000 with a speed of 1 gives a drop a
             // lifetime of RainHeight*300/RainSpeed ≈ 8.3 HOURS, so one key at 10 presses/second
@@ -164,15 +175,38 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 不是存活数。2000px 的轨道仍远高于任何屏幕。
             const float minHeight = 1f;
             const float maxHeight = 2000f;
-            rowSpeeds[0] = Mathf.Max(settings.Data.RainSpeedRow1 / 300f, minSpeedFactor);
-            rowSpeeds[1] = Mathf.Max(settings.Data.RainSpeedRow2 / 300f, minSpeedFactor);
-            rowSpeeds[2] = Mathf.Max(settings.Data.RainSpeedRow3 / 300f, minSpeedFactor);
+            // Speed was the LAST per-row value still missing the scrub the heights got right
+            // below, and the argument is identical: unclamped text fields, hand-edited JSON and
+            // .jkv imports. `Mathf.Max` is `a > b ? a : b`, so Mathf.Max(NaN, x) returns x and NaN
+            // happens to be safe — but Mathf.Max(+Inf, x) returns +Inf and that is the bad case:
+            //   UpdateLocation: y = elapsedMs * Inf = +Inf
+            //   sizeY = FinalSize.y - dropY + height = Inf - Inf + height = NaN
+            //   `if (sizeY < 0)` is FALSE for NaN, so the drop never retires and writes NaN
+            //   vertices into the shared mesh every frame for the rest of the session. Ghost
+            //   drops never fade out, so an immortal ghost drop is guaranteed. A huge but finite
+            //   speed is not a crash but still wrong: while growing, FinalSize.y is reassigned to
+            //   the current y each frame, so sizeY algebraically collapses to a constant and the
+            //   drop can never recycle off the top — the user sees a frozen full-height bar.
+            // 上限与下方高度同样的净化此前**唯独**漏了速度，理由完全相同：未钳制的文本框、手改 JSON、
+            // .jkv 导入。`Mathf.Max` 是 `a > b ? a : b`，故 Mathf.Max(NaN, x) 返回 x——NaN 恰好安全；
+            // 但 Mathf.Max(+Inf, x) 返回 +Inf，这才是坏的情形：
+            //   UpdateLocation: y = elapsedMs * Inf = +Inf
+            //   sizeY = FinalSize.y - dropY + height = Inf - Inf + height = NaN
+            //   `if (sizeY < 0)` 对 NaN 为**假**，故雨滴永不退役，每帧往共享 mesh 写 NaN 顶点直到
+            //   会话结束。鬼雨从不淡出，故不死鬼雨是必然的。极大但有限的速度不崩但同样错：生长
+            //   期间 FinalSize.y 每帧被重新赋为当前 y，于是 sizeY 代数上塌成一个常量，雨滴永远
+            //   无法越过顶端回收——用户看到的是一根卡住的全高条。
+            const float minSpeed = 1e-3f;
+            const float maxSpeed = 200f;
+            rowSpeeds[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainSpeedRow1, 300f) / 300f, minSpeed, maxSpeed);
+            rowSpeeds[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainSpeedRow2, 300f) / 300f, minSpeed, maxSpeed);
+            rowSpeeds[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainSpeedRow3, 300f) / 300f, minSpeed, maxSpeed);
             rowHeights[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow1, 275f), minHeight, maxHeight);
             rowHeights[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow2, 275f), minHeight, maxHeight);
             rowHeights[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainHeightRow3, 275f), minHeight, maxHeight);
-            ghostRowSpeeds[0] = Mathf.Max(settings.Data.GhostRainSpeedRow1 / 300f, minSpeedFactor);
-            ghostRowSpeeds[1] = Mathf.Max(settings.Data.GhostRainSpeedRow2 / 300f, minSpeedFactor);
-            ghostRowSpeeds[2] = Mathf.Max(settings.Data.GhostRainSpeedRow3 / 300f, minSpeedFactor);
+            ghostRowSpeeds[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainSpeedRow1, 300f) / 300f, minSpeed, maxSpeed);
+            ghostRowSpeeds[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainSpeedRow2, 300f) / 300f, minSpeed, maxSpeed);
+            ghostRowSpeeds[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainSpeedRow3, 300f) / 300f, minSpeed, maxSpeed);
             ghostRowHeights[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow1, 275f), minHeight, maxHeight);
             ghostRowHeights[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow2, 275f), minHeight, maxHeight);
             ghostRowHeights[2] = Mathf.Clamp(SanitizeRowFloat(settings.Data.GhostRainHeightRow3, 275f), minHeight, maxHeight);
@@ -306,11 +340,24 @@ namespace JipperKeyViewer.KeyViewer.Rain
             float alignOffset = 0f;
             if (key.CustomNode != null)
             {
+                // Align against the drop's OWN resolved width, not key.rainWidth. rainWidth is
+                // written in exactly one place — the FIXED-layout key factory — so every FreeMake
+                // key kept the field default 50f forever while the rect used the real width. With
+                // Left/Right alignment the drop then hung off the node edge by (50 - w)/2; with a
+                // node 200 wide and RainWidth 80 that is 15px outside the box. The row defaults are
+                // already 50/40/30, so row 2/3 nodes were off by 5-10px with NO user config at all.
+                // Center alignment was accidentally correct (the offsets cancel), which is why
+                // nobody noticed.
+                // 用雨滴**自身**解析出的宽度对齐，而不是 key.rainWidth。rainWidth 只有固定布局的
+                // 按键工厂写过一次，于是每个 FreeMake 按键永远保留字段默认值 50f，而矩形用的是真实
+                // 宽度。左/右对齐时雨滴因此按 (50 - w)/2 挂到节点外：节点宽 200、RainWidth 80 时
+                // 就有 15px 在框外。按排默认值本就是 50/40/30，故第 2/3 排节点在**完全没配置**时
+                // 就已偏 5–10px。居中对齐恰好正确（两个偏移相消），所以一直没人发现。
                 if (key.CustomNode.RainAlignment == 0) alignOffset = 0f;
-                else if (key.CustomNode.RainAlignment == 1) alignOffset = (key.keySize.x - key.rainWidth) * 0.5f;
-                else alignOffset = key.keySize.x - key.rainWidth;
+                else if (key.CustomNode.RainAlignment == 1) alignOffset = (key.keySize.x - w) * 0.5f;
+                else alignOffset = key.keySize.x - w;
             }
-            float cx = keyPos.x + alignOffset + ox + key.rainWidth * 0.5f;
+            float cx = keyPos.x + alignOffset + ox + w * 0.5f;
             float topY = keyPos.y - key.keySize.y * 0.5f + baseStart + RainContainerHeight + travel;
 
             float s = keyScale;
@@ -400,9 +447,18 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         public void ClearActiveDrops(Key[] keys)
         {
-            if (keys == null) return;
+            // Clear the bookkeeping FIRST, unconditionally. It used to sit behind the `keys == null`
+            // early-out, so a toggle flipped while the overlay was disabled silently left stale
+            // indices in rainActiveKeys — and those indices are exactly what UpdateEffects indexes
+            // with. Every other early-out in this class (UpdateEffects, UpdateSingleRainDrop,
+            // TriggerRainEffect, UpdateFade) still does its bookkeeping.
+            // 先**无条件**清活跃集。此前它在 `keys == null` 早退之后，故覆盖层关闭期间切换开关会
+            // 把陈旧下标留在 rainActiveKeys 里——而那些下标正是 UpdateEffects 用来索引的。
+            // 本类其它早退（UpdateEffects、UpdateSingleRainDrop、TriggerRainEffect、UpdateFade）
+            // 都会照常做记账。
             rainActiveKeys.Clear();
             rainActiveSet.Clear();
+            if (keys == null) return;
             foreach (var key in keys)
             {
                 if (key == null) continue;
@@ -731,6 +787,16 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     ? (widthRow == 0 ? settings.Data.GhostRainWidthRow1 : widthRow == 1 ? settings.Data.GhostRainWidthRow2 : settings.Data.GhostRainWidthRow3)
                     : (widthRow == 0 ? settings.Data.RainWidthRow1 : widthRow == 1 ? settings.Data.RainWidthRow2 : settings.Data.RainWidthRow3);
             }
+            // The per-row WIDTH was the last unsanitised per-row value. RawRain applies
+            // Mathf.Max(NodeWidth, 1f), which floors NaN (returns 1f) but passes +Inf straight
+            // through: FinalSize.x = Inf → rect = (cx - Inf*0.5, …, Inf, h), i.e. xMin = -Inf and
+            // xMax = +Inf, and AddQuad wrote those into the SHARED rain mesh. The row defaults are
+            // already 50/40/30, so 0..2000 is a generous band that no real config can exceed.
+            // 按排**宽度**是最后一个未净化的按排值。RawRain 里的 Mathf.Max(NodeWidth, 1f) 会把 NaN
+            // 兜到 1f，却让 +Inf 原样通过：FinalSize.x = Inf → rect = (cx - Inf*0.5, …, Inf, h)，
+            // 即 xMin = -Inf、xMax = +Inf，而 AddQuad 把它们写进了**共享**雨滴 mesh。
+            // 按排默认值本就是 50/40/30，故 0..2000 远宽于任何真实配置。
+            rawRain.NodeWidth = Mathf.Clamp(SanitizeRowFloat(rawRain.NodeWidth, 50f), 0f, 2000f);
 
             rawRain.isGhost = isGhost;
             rawRain.growing = true;

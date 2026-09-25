@@ -154,6 +154,19 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             }
         }
 
+        /// <summary>NaN or +/-Infinity? / 是否为 NaN 或 ±无穷？</summary>
+        internal static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+
+        /// <summary>Is every component of this drop rect finite? A non-finite component poisons the
+        /// WHOLE shared mesh (one drop, every key on screen), and an infinite xMax additionally
+        /// hangs the tiling loop, so both layers reject such a drop before emitting vertices.
+        /// 该雨滴矩形的每个分量是否都有限？非有限分量会污染**整个**共享 mesh（一滴雨滴、屏幕上
+        /// 所有键），而无穷的 xMax 还会让平铺循环卡死，故两层在输出顶点前都拒绝这种雨滴。
+        /// </summary>
+        internal static bool IsFiniteRect(Rect r)
+            => IsFinite(r.xMin) && IsFinite(r.yMin) && IsFinite(r.width) && IsFinite(r.height)
+               && IsFinite(r.xMax) && IsFinite(r.yMax);
+
         /// <summary>Emit one drop's shadow/outline/(main) quads with the trail gradient. The
         /// body carries a bottom→top two-color gradient (bottom-to-top two-color gradient); the
         /// shadow/outline stay single-color. / 输出一滴雨的阴影/描边/(本体)四边形及轨迹渐变。
@@ -164,10 +177,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (r.width <= 0f || r.height <= 0f) return;
             // NaN fails every `<=` comparison, so a single poisoned rect/scale would slip past the
             // guard above and write NaN vertices into the SHARED mesh — one bad drop would then
-            // corrupt the whole rain canvas. / NaN 能通过所有 `<=` 比较，坏矩形/缩放会把 NaN 顶点
-            // 写进共享 mesh，一个坏雨滴就会污染整块雨滴画布。
-            if (float.IsNaN(r.xMin) || float.IsNaN(r.yMin) || float.IsNaN(r.width) || float.IsNaN(r.height)
-                || float.IsNaN(rain.scaleF) || float.IsInfinity(rain.scaleF)) return;
+            // corrupt the whole rain canvas. Infinity matters just as much and was missed here:
+            // the guard tested IsInfinity on scaleF ONLY, so an infinite width produced
+            // xMin = -Inf / xMax = +Inf and AddQuad wrote those into the shared mesh.
+            // / NaN 能通过所有 `<=` 比较，坏矩形/缩放会把 NaN 顶点写进共享 mesh，一个坏雨滴就会
+            // 污染整块雨滴画布。无穷同样致命而此前被漏掉：守卫只对 scaleF 测了 IsInfinity，
+            // 故无限宽会产出 xMin=-Inf / xMax=+Inf 并被 AddQuad 写进共享 mesh。
+            if (!IsFiniteRect(r) || !IsFinite(rain.scaleF)) return;
             float baseA = rain.isGhost && !drawMain ? rain.alpha : rain.mainColor.a * rain.alpha;
             float h = r.height;
             float span = rain.dFar - rain.dNear;
@@ -560,7 +576,21 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     RawRain rain = key.rainList[d];
                     if (rain.removed || !rain.isGhost) continue;
                     Rect r = rain.rect;
-                    if (r.width <= 0f || r.height <= 0f) continue;
+                    // Same hazard DrawDrop guards against, and it was missing HERE: this layer
+                    // reads the SAME rain.rect from the SAME shared rainList. The old test
+                    // (`r.width <= 0f`) is false for NaN AND for +/-Inf, so a single poisoned
+                    // drop wrote 8 NaN vertices per quad into the shared ghost mesh and corrupted
+                    // the ENTIRE ghost canvas (every key, every drop) on every frame for the rest
+                    // of the session. AddTiled is worse: its `while (x < r.xMax - 0.01f)` loop has
+                    // no iteration bound, so an infinite xMax never terminates and grows the
+                    // VertexHelper until the process hangs.
+                    // 与 DrawDrop 相同、而此处**缺失**的防护：这一层读的是**同一个**共享 rainList
+                    // 里的**同一个** rain.rect。旧判据（`r.width <= 0f`）对 NaN 与 ±Inf 都为假，
+                    // 故一滴坏雨滴就会把每帧 8 个 NaN 顶点写进共享鬼雨 mesh，把**整块**鬼雨画布
+                    // （所有键、所有雨滴）在本次会话余下时间里全部搞坏。AddTiled 更糟：它的
+                    // `while (x < r.xMax - 0.01f)` 循环**没有迭代上限**，xMax 为无穷时永不退出，
+                    // 不断撑大 VertexHelper 直到进程卡死。
+                    if (!RainLayer.IsFiniteRect(r) || !RainLayer.IsFinite(rain.scaleF)) continue;
                     Color c = rain.mainColor;
                     c.a *= rain.alpha;
                     if (hasBorder && !degenerate)
@@ -659,17 +689,31 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             float u0 = tr.x / texW, u1 = tr.xMax / texW;
             float v0 = tr.y / texH, v1 = tr.yMax / texH;
+            // These loops advance by tileW/tileH, so a non-positive or non-finite step would spin
+            // forever (adding 4 vertices per iteration until the process dies). Callers reject
+            // non-finite rects, but a zero/sprite-scale-degenerate tile size is reachable on its
+            // own, so bound the iteration count explicitly rather than trusting the geometry.
+            // 这些循环按 tileW/tileH 前进，故步长非正或非有限就会**永远**自旋（每次迭代加 4 个
+            // 顶点直到进程死）。调用方已拒绝非有限矩形，但步长为零/因精灵缩放退化是可以单独发生
+            // 的，故显式限制迭代次数而不是信任几何。
+            if (!RainLayer.IsFinite(tileW) || tileW <= 0f) tileW = r.width > 0f ? r.width : 1f;
+            if (!RainLayer.IsFinite(tileH) || tileH <= 0f) tileH = r.height > 0f ? r.height : 1f;
+            const int maxTilesPerAxis = 256;
             float x = r.xMin;
-            while (x < r.xMax - 0.01f)
+            for (int tx = 0; x < r.xMax - 0.01f && tx < maxTilesPerAxis; tx++)
             {
                 float wTile = Mathf.Min(tileW, r.xMax - x);
                 float uu1 = u0 + (u1 - u0) * (wTile / tileW);
                 float y = r.yMin;
-                while (y < r.yMax - 0.01f)
+                for (int ty = 0; y < r.yMax - 0.01f && ty < maxTilesPerAxis; ty++)
                 {
                     float hTile = Mathf.Min(tileH, r.yMax - y);
                     float vv1 = v0 + (v1 - v0) * (hTile / tileH);
                     RainLayer.AddQuad(vh, x, x + wTile, y, y + hTile, u0, uu1, v0, vv1, c, c);
+                    // Advance by the (possibly clipped) tile size, exactly as before — using the
+                    // full tile size here would skip pixels on the clipped edge tile.
+                    // 按（可能被裁剪的）平铺尺寸前进，与此前完全一致——用完整尺寸会在被裁剪的
+                    // 边缘块上跳过像素。
                     y += hTile;
                 }
                 x += wTile;
