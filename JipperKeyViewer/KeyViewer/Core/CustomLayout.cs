@@ -275,6 +275,10 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 if (node.Id <= 0) node.Id = Settings.Data.CustomNodeNextId++;
                 if (node.Id >= Settings.Data.CustomNodeNextId) Settings.Data.CustomNodeNextId = node.Id + 1;
+                // A legacy profile can reach here without SyncArraysFromLists (e.g. a package
+                // export/import path); restore non-zero field defaults before clamping would
+                // otherwise turn LabelScale=0 into 0.5 and leave TextOpacity=0 invisible.
+                ProfileData.ApplyLegacyFmNodeDefaults(node);
                 // Hand-edited profiles may carry an unknown node type — treat as a key node. /
                 // 手改配置可能带未知节点类型——按按键节点处理。
                 if (node.NodeType is not (0 or 1 or 2 or 3)) node.NodeType = 0;

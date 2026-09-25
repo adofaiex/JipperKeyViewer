@@ -421,6 +421,54 @@ namespace JipperKeyViewer.KeyViewer.Settings
             ImportLegacyCarriers();
             _customNodes = new List<FmNode>(CustomNodesData ?? new FmNode[0]);
             _layerGroups = new List<FmLayerGroup>(LayerGroupsData ?? new FmLayerGroup[0]);
+            ApplyLegacyFmNodeDefaults(_customNodes);
+        }
+
+        /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
+        /// legacy node object, leaving newly added non-zero defaults (notably TextOpacity and
+        /// LabelScale) at 0. A zero label scale is an invalid runtime value, so it is a reliable
+        /// marker for a pre-transform node; restore every non-zero default introduced since the
+        /// old schema while leaving a deliberately configured node (LabelScale &gt; 0) untouched.
+        /// Newtonsoft 的字段模式会绕过字段初始化，旧节点缺失的新字段会变成 0；LabelScale=0 是
+        /// 运行时不合法值，可作为旧节点标记，恢复新增字段的非零默认值。</summary>
+        internal static void ApplyLegacyFmNodeDefaults(List<FmNode> nodes)
+        {
+            if (nodes == null) return;
+            for (int i = 0; i < nodes.Count; i++)
+                ApplyLegacyFmNodeDefaults(nodes[i]);
+        }
+
+        internal static void ApplyLegacyFmNodeDefaults(FmNode node)
+        {
+            if (node == null) return;
+            if (node.LabelScale > 0f && node.CountScale > 0f) return;
+            node.TextOpacity = 1f;
+            node.CountTextOpacity = 1f;
+            node.LabelScale = 1f;
+            node.CountScale = 1f;
+            node.PressedLabelScale = 1f;
+            node.PressedCountScale = 1f;
+            node.CountShowWhilePressed = true;
+            node.RainAlignment = 1;
+            node.RainDotLength = 12f;
+            node.RainGapLength = 8f;
+            node.GhostRainDotLength = 12f;
+            node.GhostRainGapLength = 8f;
+            node.GlowFollowBody = true;
+            node.GlowSize = 20f;
+            node.GlowOpacity = 0.7f;
+            node.GlowFollowBodyPressed = true;
+            node.GlowSizePressed = 20f;
+            node.GlowOpacityPressed = 0.7f;
+            node.VideoLoop = true;
+            node.PressAnimEnabled = true;
+            node.PressAnimScale = 0.9f;
+            node.PressAnimDurationMs = 80f;
+            node.PressAnimEasing = "linear";
+            node.CounterAnimEnabled = true;
+            node.CounterAnimScale = 1.1f;
+            node.CounterAnimDurationMs = 300f;
+            node.CounterAnimBezier = new float[] { 0.25f, 0.46f, 0.45f, 0.94f };
         }
 
         // Interim-build string carriers (that build persisted the lists as escaped JSON strings

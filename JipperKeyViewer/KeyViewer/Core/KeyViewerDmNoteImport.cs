@@ -30,6 +30,8 @@ namespace JipperKeyViewer.KeyViewer
             public readonly List<FmNode> Nodes = new List<FmNode>();
             public readonly List<string> Warnings = new List<string>();
             public string Tab = "default";
+            public bool NoteEnabled = true;
+            public float NoteSpeed;
         }
 
         /// <summary>Files offered by the DM Note import list. / DM Note 导入列表中的文件。</summary>
@@ -99,6 +101,12 @@ namespace JipperKeyViewer.KeyViewer
                     profileName = MakeUniqueProfileName(SanitizeFileName(baseName) + " " + profileSuffix++);
                 string groupId = "g1";
                 imported.KeyViewerStyle = KeyviewerStyle.Custom;
+                imported.EnableRainEffect = document.NoteEnabled;
+                if (document.NoteSpeed > 0f)
+                {
+                    imported.RainSpeedRow1 = imported.RainSpeedRow2 = imported.RainSpeedRow3 = document.NoteSpeed;
+                    imported.GhostRainSpeedRow1 = imported.GhostRainSpeedRow2 = imported.GhostRainSpeedRow3 = document.NoteSpeed;
+                }
                 imported.CustomNodes = document.Nodes;
                 imported.CustomNodeNextId = document.Nodes.Max(n => n.Id) + 1;
                 imported.LayerGroups = new List<FmLayerGroup>
@@ -168,7 +176,10 @@ namespace JipperKeyViewer.KeyViewer
 
                 DmNoteImportDocument result = new DmNoteImportDocument
                 {
-                    Tab = SelectDmNoteTab(root, keyTable, statTable)
+                    Tab = SelectDmNoteTab(root, keyTable, statTable),
+                    NoteEnabled = ReadBool(root, "noteEffect", true),
+                    NoteSpeed = root["noteSettings"] is JObject noteSettings
+                        ? ReadNumber(noteSettings, noteSettings, "speed", 0f) : 0f
                 };
                 JArray keyElements = SelectDmNoteTabArray(keyTable, result.Tab);
                 JArray statElements = SelectDmNoteTabArray(statTable, result.Tab);
@@ -240,6 +251,7 @@ namespace JipperKeyViewer.KeyViewer
                 Width = Mathf.Clamp(w, 1f, 2000f),
                 Height = Mathf.Clamp(h, 1f, 2000f),
                 Depth = Mathf.Max(0, Mathf.RoundToInt(ReadNumber(raw, position, "z", "zIndex", "layer", id))),
+                Count = Mathf.Max(0, Mathf.RoundToInt(ReadNumber(raw, position, "count", 0f))),
                 KeyBind = nodeType == 0 ? ResolveDmNoteKeyName(keyName) : "",
                 GhostKey = ResolveDmNoteKeyName(ReadString(raw, position, "ghostKey", "")),
                 CustomText = ReadString(raw, position, "displayText", keyName ?? ""),
@@ -266,6 +278,28 @@ namespace JipperKeyViewer.KeyViewer
             JObject counter = (raw["counter"] ?? position["counter"]) as JObject;
             if (counter?["fontSize"] != null)
                 node.CountFontSize = Mathf.Clamp(ReadNumber(counter, counter, "fontSize", 16f), 0f, 200f);
+            if (counter?["animation"] is JObject animation)
+            {
+                node.CounterAnimEnabled = ReadBool(animation, "enabled", true);
+                node.CounterAnimScale = Mathf.Clamp(ReadNumber(animation, animation, "scale", 1.1f), 0.25f, 4f);
+                node.CounterAnimDurationMs = Mathf.Clamp(ReadNumber(animation, animation, "durationMs", 300f), 1f, 5000f);
+                if (animation["bezier"] is JArray bezier && bezier.Count == 4)
+                {
+                    float[] curve = new float[4];
+                    for (int i = 0; i < 4; i++)
+                    {
+                        try { curve[i] = Mathf.Clamp01(bezier[i].Value<float>()); }
+                        catch { curve[i] = i == 0 ? 0.25f : i == 1 ? 0.46f : i == 2 ? 0.45f : 0.94f; }
+                    }
+                    node.CounterAnimBezier = curve;
+                }
+            }
+            float pressScale = ReadNumber(raw, position, "quartzPressScale", 1f);
+            if (Math.Abs(pressScale - 1f) > 0.001f)
+            {
+                node.UseCustomPressAnim = true;
+                node.PressAnimScale = Mathf.Clamp(pressScale, 0.25f, 2f);
+            }
             if (ReadBool(raw, position, "quartzLabelEnabled", true) == false)
             {
                 node.CustomText = "";
@@ -477,17 +511,38 @@ namespace JipperKeyViewer.KeyViewer
         private static string ResolveDmNoteKeyName(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return "";
+            if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int numeric))
+            {
+                KeyCode numericKey = ResolveDmNumericKey(numeric);
+                return numericKey == KeyCode.None ? "" : numericKey.ToString();
+            }
             string normalized = new string(value.Trim().Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
             if (normalized.StartsWith("KEY", StringComparison.Ordinal) && normalized.Length > 3)
                 normalized = normalized.Substring(3);
             if (normalized.StartsWith("DIGIT", StringComparison.Ordinal) && normalized.Length > 5)
                 normalized = normalized.Substring(5);
-            if (Enum.TryParse(normalized, true, out KeyCode direct)) return direct.ToString();
+            if (normalized.StartsWith("NUMPAD", StringComparison.Ordinal) && normalized.Length > 6)
+            {
+                string pad = normalized.Substring(6);
+                if (pad.Length == 1 && pad[0] >= '0' && pad[0] <= '9')
+                    return ((KeyCode)((int)KeyCode.Keypad0 + (pad[0] - '0'))).ToString();
+                switch (pad)
+                {
+                    case "ENTER": case "RETURN": return KeyCode.Return.ToString();
+                    case "PLUS": case "ADD": return KeyCode.KeypadPlus.ToString();
+                    case "MINUS": case "SUBTRACT": return KeyCode.KeypadMinus.ToString();
+                    case "MULTIPLY": case "STAR": case "ASTERISK": return KeyCode.KeypadMultiply.ToString();
+                    case "DIVIDE": case "SLASH": return KeyCode.KeypadDivide.ToString();
+                    case "DELETE": case "DECIMAL": case "PERIOD": case "DOT": case "DEL": return KeyCode.KeypadPeriod.ToString();
+                    case "EQUALS": case "EQUAL": return KeyCode.KeypadEquals.ToString();
+                }
+            }
+            if (Enum.TryParse(normalized, true, out KeyCode direct) && direct != KeyCode.None)
+                return direct.ToString();
             switch (normalized)
             {
                 case "ESC": return KeyCode.Escape.ToString();
-                case "RETURN": return KeyCode.Return.ToString();
-                case "ENTER": return KeyCode.KeypadEnter.ToString();
+                case "RETURN": case "ENTER": return KeyCode.Return.ToString();
                 case "SPACE": return KeyCode.Space.ToString();
                 case "BACK": return KeyCode.Backspace.ToString();
                 case "DEL": return KeyCode.Delete.ToString();
@@ -498,7 +553,90 @@ namespace JipperKeyViewer.KeyViewer
                 case "RIGHT": return KeyCode.RightArrow.ToString();
                 case "UP": return KeyCode.UpArrow.ToString();
                 case "DOWN": return KeyCode.DownArrow.ToString();
+                case "DOT": case "PERIOD": return KeyCode.Period.ToString();
+                case "FORWARDSLASH": case "SLASH": return KeyCode.Slash.ToString();
+                case "LCONTROL": case "LEFTCONTROL": case "LEFTCTRL": case "CTRL": case "CONTROL": case "LCTRL":
+                    return KeyCode.LeftControl.ToString();
+                case "RCONTROL": case "RIGHTCONTROL": case "RIGHTCTRL": case "RCTRL": case "HANJA":
+                    return KeyCode.RightControl.ToString();
+                case "LALT": case "LEFTALT": return KeyCode.LeftAlt.ToString();
+                case "RALT": case "RIGHTALT": case "ALTGR": case "HANGUL": return KeyCode.RightAlt.ToString();
+                case "PRINTSCREEN": case "PRTSC": case "PRTSCR": case "SYSREQ": return KeyCode.Print.ToString();
+                case "CONTEXTMENU": return KeyCode.Menu.ToString();
+                case "CAPSLOCK": return KeyCode.CapsLock.ToString();
+                case "COMMA": return KeyCode.Comma.ToString();
+                case "PLUS": return KeyCode.Plus.ToString();
+                case "MINUS": return KeyCode.Minus.ToString();
+                case "EQUAL": case "EQUALS": return KeyCode.Equals.ToString();
+                case "SEMICOLON": return KeyCode.Semicolon.ToString();
+                case "QUOTE": return KeyCode.Quote.ToString();
+                case "BACKQUOTE": case "SECTION": return KeyCode.BackQuote.ToString();
+                case "SQUAREBRACKETOPEN": case "OPENBRACKET": case "LBRACKET": return KeyCode.LeftBracket.ToString();
+                case "SQUAREBRACKETCLOSE": case "CLOSEBRACKET": case "RBRACKET": return KeyCode.RightBracket.ToString();
+                case "BACKSLASH": return KeyCode.Backslash.ToString();
                 default: return "";
+            }
+        }
+
+        /// <summary>Common Windows virtual-key numbers used by DmNote's numeric key ids. / DmNote
+        /// 数字键名使用的常见 Windows 虚拟键码映射，独立于 Quartz 的实现。</summary>
+        private static KeyCode ResolveDmNumericKey(int value)
+        {
+            if (value >= 0x30 && value <= 0x39) return (KeyCode)((int)KeyCode.Alpha0 + value - 0x30);
+            if (value >= 0x41 && value <= 0x5A) return (KeyCode)((int)KeyCode.A + value - 0x41);
+            if (value >= 0x60 && value <= 0x69) return (KeyCode)((int)KeyCode.Keypad0 + value - 0x60);
+            if (value >= 0x70 && value <= 0x7E) return (KeyCode)((int)KeyCode.F1 + value - 0x70);
+            switch (value)
+            {
+                case 0x08: return KeyCode.Backspace;
+                case 0x09: return KeyCode.Tab;
+                case 0x0D: return KeyCode.Return;
+                case 0x10: return KeyCode.LeftShift;
+                case 0x11: return KeyCode.LeftControl;
+                case 0x12: return KeyCode.LeftAlt;
+                case 0x13: return KeyCode.Pause;
+                case 0x15: case 0xA5: return KeyCode.RightAlt;
+                case 0x19: case 0xA3: return KeyCode.RightControl;
+                case 0x14: return KeyCode.CapsLock;
+                case 0x1B: return KeyCode.Escape;
+                case 0x20: return KeyCode.Space;
+                case 0x21: return KeyCode.PageUp;
+                case 0x22: return KeyCode.PageDown;
+                case 0x23: return KeyCode.End;
+                case 0x24: return KeyCode.Home;
+                case 0x25: return KeyCode.LeftArrow;
+                case 0x26: return KeyCode.UpArrow;
+                case 0x27: return KeyCode.RightArrow;
+                case 0x28: return KeyCode.DownArrow;
+                case 0x2C: return KeyCode.Print;
+                case 0x2D: return KeyCode.Insert;
+                case 0x2E: return KeyCode.Delete;
+                case 0x5B: return KeyCode.LeftWindows;
+                case 0x5C: return KeyCode.RightWindows;
+                case 0x5D: return KeyCode.Menu;
+                case 0x6A: return KeyCode.KeypadMultiply;
+                case 0x6B: return KeyCode.KeypadPlus;
+                case 0x6D: return KeyCode.KeypadMinus;
+                case 0x6E: return KeyCode.KeypadPeriod;
+                case 0x6F: return KeyCode.KeypadDivide;
+                case 0x90: return KeyCode.Numlock;
+                case 0x91: return KeyCode.ScrollLock;
+                case 0xA0: return KeyCode.LeftShift;
+                case 0xA1: return KeyCode.RightShift;
+                case 0xA2: return KeyCode.LeftControl;
+                case 0xA4: return KeyCode.LeftAlt;
+                case 0xBA: return KeyCode.Semicolon;
+                case 0xBB: return KeyCode.Equals;
+                case 0xBC: return KeyCode.Comma;
+                case 0xBD: return KeyCode.Minus;
+                case 0xBE: return KeyCode.Period;
+                case 0xBF: return KeyCode.Slash;
+                case 0xC0: return KeyCode.BackQuote;
+                case 0xDB: return KeyCode.LeftBracket;
+                case 0xDC: return KeyCode.Backslash;
+                case 0xDD: return KeyCode.RightBracket;
+                case 0xDE: return KeyCode.Quote;
+                default: return KeyCode.None;
             }
         }
 
