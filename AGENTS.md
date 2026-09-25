@@ -853,6 +853,25 @@
   在每个 IMGUI 事件都驱动它（拖动时 60-120 次/秒）。本代码库已为 `KpsTotalIsSlim` 的同一开销加过
   缓存，这三处绕过了它。现把布局解析提到调用点一次，两个辅助改为接受已解析的 `LayoutDesc`。
 
+### 设置窗口剩余的每事件分配 + 一条否证结论（2026-09-26，第 59 轮）
+- 清掉第 55 轮审计里列的剩余每事件数组字面量：
+  - `DrawKpsTotalColors`（`KeyViewerColorGUI`）的 `string[3]` + `Color[3]`：每事件画两次；
+    `DrawFullKeyboardColorSection` 的 `string[6]` + `Color[6]`：每事件六次。i18n 标签**不能**提为
+    静态（见第 45 轮：静态初始化器会把 IMGUI 类型拖进类型静态构造），故标签表是每次绘制区块
+    填充的**实例**暂存；颜色便宜且无 i18n，仍是局部。
+  - `DrawLanguageSection` 的 `string[3]` 与 `DrawFontSection` 的 `string[9]`+`int[9]`×2：全是固定
+    字面量表，**不含** IMGUI 类型，提为静态是安全的。
+  - `BuildFontStyleSummary` 每事件 `new List<string>(4)` + `string.Join`——它在**每个** IMGUI
+    事件都跑，包括用户已滚远、根本看不到的字体行。现改为复用 `StringBuilder`（结果很短，有界）。
+- **【否证结论，不是修复】「被索引却未定长的设置数组」这一整类问题都不存在**：脚本枚举了
+  `KeyViewerSettings.cs` 里 88 个数组字段，减去 `EnsureSettingsArrays` 覆盖的 49 个后，剩下 39 个
+  中只有 2 个在别处被下标访问——`CounterAnimBezier`（每次覆盖层重建都由 `EnsureCustomNodes` 校正
+  null/长度/NaN）与 `ProfileNames`（`DrawProfileList` 有 null 判空 + 有界循环）。其余 37 个只有写、
+  从不索引。这与第 37 轮「每键颜色面板的索引无守卫」是**同一类**问题，那次修完后该类已闭合。
+  （第一版脚本把每个键拿去和**每个文件**比，得出 474 个键全部孤立的假结果；改成全局汇总字面量后
+  才正确。第二版又因 `EnsureSettingsArrays` 实际位于 `Core\KeyViewer.cs` 而匹配到空体。两版都靠
+  实际输出发现，没有留下假绿。）
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

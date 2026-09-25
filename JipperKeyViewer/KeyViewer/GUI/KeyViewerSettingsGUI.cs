@@ -421,10 +421,31 @@ namespace JipperKeyViewer.KeyViewer
             GUI.enabled = true;
         }
 
+        /// <summary>Language names are fixed literals, never translated, so a static table is safe
+        /// here — nothing IMGUI-typed is involved, which is what makes a static field legal in this
+        /// partial class (see the round-45 note about GUIContent/GUILayoutOption in static
+        /// initialisers). The per-event `string[3]` literal this replaces was pure garbage.
+        /// 语言名是固定字面量、从不翻译，故静态表在此是安全的——其中不涉及任何 IMGUI 类型，
+        /// 而这正是该分部类里静态字段合法的前提（见第 45 轮关于静态初始化器里 GUIContent/
+        /// GUILayoutOption 的说明）。被替换掉的每事件 `string[3]` 字面量纯属垃圾。
+        /// </summary>
+        private static readonly string[] LanguageLabels = { "English", "中文", "한국어" };
+
+        /// <summary>Global font-style toggles: display name, TMP mask bit, and an exclusivity
+        /// group (0 = independent, 1 = mutually exclusive with Lowercase/Uppercase/SmallCaps,
+        /// 2 = with Superscript/Subscript). Fixed tables — hoisted out of the per-event path.
+        /// 全局字体样式开关：显示名、TMP 掩码位、互斥组（0=独立，1=与 Lowercase/Uppercase/
+        /// SmallCaps 互斥，2=与 Superscript/Subscript 互斥）。固定表——已提出每事件路径。
+        /// </summary>
+        private static readonly string[] FontStyleNames =
+            { "Bold", "Italic", "Underline", "Lowercase", "Uppercase", "SmallCaps", "Strikethrough", "Superscript", "Subscript" };
+        private static readonly int[] FontStyleFlagValues = { 1, 2, 4, 8, 16, 32, 64, 128, 256 };
+        private static readonly int[] FontStyleGroups = { 0, 0, 0, 1, 1, 1, 0, 2, 2 };
+
         private void DrawLanguageSection()
         {
             GUILayout.BeginHorizontal();
-            string[] langLabels = { "English", "中文", "한국어" };
+            string[] langLabels = LanguageLabels;
             // I18n renders unknown language codes as English — mirror that here so the highlighted
             // entry matches what is actually shown. / I18n 将未知语言代码按英文渲染——此处保持一致,
             // 让高亮项与实际显示一致。
@@ -485,11 +506,27 @@ namespace JipperKeyViewer.KeyViewer
         {
             int f = Settings.Data.FontStyleFlags;
             if (f == 0) return "Normal";
-            var parts = new List<string>(4);
+            // This runs on EVERY IMGUI event, including for the font rows the user has scrolled
+            // far past, and the font-style row itself never leaves the screen while the Fonts page
+            // is open. A fresh List<string> plus a Join (which allocates the joined string anyway)
+            // per event is pure garbage. Reused scratch + a small StringBuilder; the result is
+            // short (at most 9 two-to-three character labels) so a bounded StringBuilder never
+            // outgrows its first chunk.
+            // 本方法在**每个** IMGUI 事件都跑，包括用户已滚得很远、根本看不到的那些字体行；而
+            // 字体页开着时字体样式行从不离开屏幕。每个事件新建 List<string> 外加一次 Join（后者
+            // 本就要分配拼接结果）纯属垃圾。改用复用暂存 + 一个小的 StringBuilder；结果很短
+            // （最多 9 个两三字符的标签），有界 StringBuilder 不会超出它的首个块。
+            fontStyleSummary.Length = 0;
             foreach (var (flag, label) in FontStyleFlagLabels)
-                if ((f & flag) != 0) parts.Add(label);
-            return string.Join(" ", parts);
+            {
+                if ((f & flag) == 0) continue;
+                if (fontStyleSummary.Length > 0) fontStyleSummary.Append(' ');
+                fontStyleSummary.Append(label);
+            }
+            return fontStyleSummary.ToString();
         }
+
+        private readonly System.Text.StringBuilder fontStyleSummary = new System.Text.StringBuilder(48);
 
         private void DrawFontSection()
         {
@@ -532,14 +569,18 @@ namespace JipperKeyViewer.KeyViewer
             fontStyleExpanded = DrawFoldoutButton(I18n.Tr("font_style") + ": " + styleSummary, fontStyleExpanded);
             if (fontStyleExpanded)
             {
-                string[] styleNames = { "Bold", "Italic", "Underline", "Lowercase", "Uppercase", "SmallCaps", "Strikethrough", "Superscript", "Subscript" };
-                int[] styleFlags = { 1, 2, 4, 8, 16, 32, 64, 128, 256 };
-                int[] styleGroups = { 0, 0, 0, 1, 1, 1, 0, 2, 2 };
+                // Three fixed tables, hoisted to statics. Nothing here is i18n or IMGUI-typed, so
+                // static is safe in this partial class (see the round-45 note) — and the section
+                // stays open while the user fiddles, so this was 3 arrays per IMGUI event.
+                // 三张固定表，提为静态。其中既非 i18n 也非 IMGUI 类型，故在该分部类里用静态是
+                // 安全的（见第 45 轮说明）——而用户摆弄时该区块一直开着，故此前是每事件 3 个数组。
+                int[] styleFlags = FontStyleFlagValues;
+                int[] styleGroups = FontStyleGroups;
                 bool changed = false;
                 for (int i = 0; i < styleFlags.Length; i++)
                 {
                     bool active = (Settings.Data.FontStyleFlags & styleFlags[i]) != 0;
-                    bool newActive = GUILayout.Toggle(active, styleNames[i]);
+                    bool newActive = GUILayout.Toggle(active, FontStyleNames[i]);
                     if (newActive != active)
                     {
                         if (newActive)

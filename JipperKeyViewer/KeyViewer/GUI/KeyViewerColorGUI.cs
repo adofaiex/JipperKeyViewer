@@ -124,14 +124,31 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        // Reusable scratch for the two colour tables below. Both were array literals rebuilt on
+        // EVERY IMGUI event, and both sections are on the Colors page that stays open: the KPS/Total
+        // one is drawn twice per event, the full-keyboard one six times. The i18n labels cannot be
+        // static (see the round-45 note: a static field initialiser would drag GUIContent /
+        // GUILayoutOption into the type's static constructor and make callers that never draw the
+        // settings page require UnityEngine.IMGUIModule — the Harness surfaces that as a load
+        // failure), so the tables are instance scratch filled every time the section is drawn.
+        // Colours are cheap and carry no i18n, so they stay a local.
+        // 下面两张颜色表的复用暂存。二者此前都是**每个 IMGUI 事件**重建的数组字面量，而两个区块
+        // 都在一直开着的「颜色」页上：KPS/Total 每事件画两次，全键盘六次。i18n 标签不能做成静态
+        // （见第 45 轮：静态字段初始化器会把 GUIContent / GUILayoutOption 拖进类型的静态构造，
+        // 使从不绘制设置页的调用方也需要 UnityEngine.IMGUIModule——Harness 会把它暴露成加载
+        // 失败），故两张表是每次绘制区块时填充的实例暂存。颜色便宜且不含 i18n，仍是局部变量。
+        private readonly string[] fkColorNames = new string[6];
+        private readonly string[] kpsTotalTypeNames = new string[3];
+
         private void DrawKpsTotalColors(int pi, string label, ref int expandedType)
         {
             expandedType = DrawFoldoutButton(label, expandedType);
             if (expandedType < 0) return;
 
-            string[] typeNames = {
-                I18n.Tr("color_bg"), I18n.Tr("color_outline"), I18n.Tr("color_text")
-            };
+            kpsTotalTypeNames[0] = I18n.Tr("color_bg");
+            kpsTotalTypeNames[1] = I18n.Tr("color_outline");
+            kpsTotalTypeNames[2] = I18n.Tr("color_text");
+            string[] typeNames = kpsTotalTypeNames;
             Color[] defaults = { Background, Outline, Text };
 
             for (int t = 0; t < 3; t++)
@@ -745,10 +762,13 @@ namespace JipperKeyViewer.KeyViewer
                 SaveSettingsFromGui();
             }
 
-            string[] names = {
-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"),
-                I18n.Tr("color_outline_clicked"), I18n.Tr("color_text"), I18n.Tr("color_text_clicked")
-            };
+            fkColorNames[0] = I18n.Tr("color_bg");
+            fkColorNames[1] = I18n.Tr("color_bg_clicked");
+            fkColorNames[2] = I18n.Tr("color_outline");
+            fkColorNames[3] = I18n.Tr("color_outline_clicked");
+            fkColorNames[4] = I18n.Tr("color_text");
+            fkColorNames[5] = I18n.Tr("color_text_clicked");
+            string[] names = fkColorNames;
             Color[] defaults = {
                 Background, BackgroundClicked, Outline, OutlineClicked, Text, TextClicked
             };
