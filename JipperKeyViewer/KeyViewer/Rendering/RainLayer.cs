@@ -566,6 +566,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // Borders swallowing the whole sprite: uGUI stretches a single tile instead of tiling /
             // 边框吞掉整张贴图时，uGUI 用单块拉伸而非平铺
             bool degenerate = hasBorder && (tileW <= 0f || tileH <= 0f);
+            // The STANDALONE (borderless) path computes its UVs inline as r.width / tileW, and
+            // AddTiled divides by tileW too. A non-positive or non-finite tile size therefore
+            // yields Inf/NaN UVs even though the drop's own rect is perfectly finite — the finite
+            // guard above cannot catch it, because the poison is introduced here, not in the rect.
+            // A sprite small enough (or ppu-large enough) to hit this is unusual, but the ghost
+            // sprite is a user-replaceable file, so it is reachable. Floor it once, here, so every
+            // consumer of tileW/tileH below is safe.
+            // **独立**（无边框）路径的内联 UV 按 r.width / tileW 计算，AddTiled 也除以 tileW。
+            // 故非正或非有限的平铺尺寸会产出 Inf/NaN UV，**尽管**雨滴矩形本身完全有限——上方的
+            // 有限守卫抓不到它，因为毒是在这里产生的、不在矩形里。够小（或 ppu 够大）的精灵才会
+            // 触发，但这不寻常；鬼雨精灵是**用户可替换**的文件，故确实可达。在此一次性兜住，
+            // 使下方每个 tileW/tileH 的使用者都安全。
+            if (!RainLayer.IsFinite(tileW) || tileW <= 0f) tileW = tr.width > 0f ? tr.width : 1f;
+            if (!RainLayer.IsFinite(tileH) || tileH <= 0f) tileH = tr.height > 0f ? tr.height : 1f;
             bool standalone = !hasBorder && RainLayer.IsStandaloneRect(Sprite);
             for (int i = 0; i < keys.Length; i++)
             {
