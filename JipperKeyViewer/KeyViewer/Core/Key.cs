@@ -52,7 +52,24 @@ namespace JipperKeyViewer.KeyViewer
         public Vector2 customValueBasePos;
         /// <summary>X offset for rain container alignment (0 for standard keys) / 雨滴容器的 X 偏移（标准按键为 0）</summary>
         public float rainOffsetX;
-        /// <summary>Rain column width (key width; 50 when redirected to a front column) / 雨滴列宽（按键宽度；重指向前列时为 50）</summary>
+        /// <summary>DEPRECATED — no longer read by anything. Kept only so older saved layouts and
+        /// any external code that writes it still compile.
+        ///
+        /// It used to be the key's own WIDTH (see SetupRainContainer), which is a different
+        /// quantity from the drop's width, and rain alignment was computed against it. Because it
+        /// is written in exactly ONE place — the FIXED-layout key factory — every FreeMake key
+        /// kept the 50f default forever, so a node with Left/Right rain alignment had its drops
+        /// offset by (50 - realWidth)/2 and hang outside the node box. The row defaults alone are
+        /// 50/40/30, so row 2/3 nodes were visibly off with no user config at all. Alignment now
+        /// uses the drop's own resolved width. Do not reintroduce a read of this field.
+        /// 已废弃——**不再有任何读取点**。保留仅为让旧配置与外部写入代码仍能编译。
+        ///
+        /// 它过去存的是按键**自身宽度**（见 SetupRainContainer），与雨滴宽度是两个量，而雨滴
+        /// 对齐正是拿它算的。由于它只有**固定布局**的按键工厂写过一次，每个 FreeMake 按键永远
+        /// 保留 50f 默认值，于是左/右对齐的节点雨滴会按 (50 - 真实宽度)/2 偏移、挂在框外。
+        /// 仅按排默认值本就是 50/40/30，故第 2/3 排节点在没任何配置时就已肉眼可见地偏。
+        /// 对齐现已改用雨滴自身解析出的宽度。**不要**重新引入对本字段的读取。
+        /// </summary>
         public float rainWidth = 50f;
         /// <summary>Backing node when this key belongs to a Custom layout / 自定义布局时对应的节点</summary>
         public FmNode CustomNode;
