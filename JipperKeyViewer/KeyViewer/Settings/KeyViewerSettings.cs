@@ -426,11 +426,13 @@ namespace JipperKeyViewer.KeyViewer.Settings
 
         /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
         /// legacy node object, leaving newly added non-zero defaults (notably TextOpacity and
-        /// LabelScale) at 0. A zero label scale is an invalid runtime value, so it is a reliable
+        /// LabelScale) at 0. A zero label scale — or the exact 0.5/0.5 + double-zero-alpha shape
+        /// left after the broken build already clamped and re-saved the profile — is a reliable
         /// marker for a pre-transform node; restore every non-zero default introduced since the
-        /// old schema while leaving a deliberately configured node (LabelScale &gt; 0) untouched.
-        /// Newtonsoft 的字段模式会绕过字段初始化，旧节点缺失的新字段会变成 0；LabelScale=0 是
-        /// 运行时不合法值，可作为旧节点标记，恢复新增字段的非零默认值。</summary>
+        /// old schema while leaving other deliberately configured nodes untouched.
+        /// Newtonsoft 的字段模式会绕过字段初始化，旧节点缺失的新字段会变成 0；LabelScale=0，
+        /// 或被错误构建钳制并再次保存后的 0.5/0.5 + 双 0 不透明度组合，均视为旧节点标记并恢复
+        /// 新增字段默认值；其他已配置节点不受影响。</summary>
         internal static void ApplyLegacyFmNodeDefaults(List<FmNode> nodes)
         {
             if (nodes == null) return;
@@ -441,7 +443,13 @@ namespace JipperKeyViewer.KeyViewer.Settings
         internal static void ApplyLegacyFmNodeDefaults(FmNode node)
         {
             if (node == null) return;
-            if (node.LabelScale > 0f && node.CountScale > 0f) return;
+            // A profile already re-saved by the broken build went through EnsureCustomNodes first:
+            // LabelScale 0 was clamped to 0.5, so the old "<=0" marker is gone while both text
+            // opacities remain 0. Treat that exact pair of clamped minima as the same legacy case.
+            bool invalidScale = node.LabelScale <= 0f || node.CountScale <= 0f;
+            bool savedPoison = node.TextOpacity <= 0f && node.CountTextOpacity <= 0f
+                && node.LabelScale <= 0.5f && node.CountScale <= 0.5f;
+            if (!invalidScale && !savedPoison) return;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
             node.LabelScale = 1f;

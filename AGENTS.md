@@ -72,15 +72,15 @@
 
 - 修复旧配置文字消失：Newtonsoft 字段模式反序列化缺失的新增 FmNode 字段时会绕过字段初始化，
   导致 `TextOpacity=0`、`LabelScale=0`，旧节点加载后文字透明/缩成 0。`ProfileData.SyncArraysFromLists`
-  现在按非法 `LabelScale<=0` 标记恢复新增字段默认值（不透明度、缩放、雨对齐、按压/计数动画等），
-  并加入旧配置回归测试。
+  现在按非法 `LabelScale<=0`（以及被错误构建钳制重存后的 0.5/0.5 + 双 0 不透明度）标记恢复新增
+  字段默认值（不透明度、缩放、雨对齐、按压/计数动画等），并加入旧配置与已损坏配置回归测试。
 - 修复 DmNote 数字键名与更多字段映射：数字虚拟键、常用别名、Numpad、计数、计数动画/贝塞尔、
   `quartzPressScale`、根级 `noteEffect`/`noteSettings.speed` 均已接入。
 - 新增第一阶段 DmNote JSON 预设导入（`Core/KeyViewerDmNoteImport.cs`）：读取 `keyPositions` / 旧版
   `positions` / `statPositions`，支持按键绑定、几何、颜色/透明度、渐变、边框圆角、雨滴参数与
   字体样式映射；始终创建新 FreeMake Profile，不覆盖当前配置。`graphPositions`、`knobPositions`
   与嵌入图片暂跳过并提示。设置页新增 DmNotePresets 文件夹列表和打开文件夹按钮；Harness 增加
-  解析/拒绝非法 JSON 与旧配置默认字段回归（86 项测试）。
+  解析/拒绝非法 JSON、旧配置与已损坏配置默认字段回归（88 项测试）。
 
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
