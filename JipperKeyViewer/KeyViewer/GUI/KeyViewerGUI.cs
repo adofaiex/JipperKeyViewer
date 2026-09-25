@@ -38,6 +38,7 @@ namespace JipperKeyViewer.KeyViewer
             BeginTextInputPass();
             GUILayout.BeginVertical();
             DrawHeaderBar();
+            DrawSaveFailureBanner();
             DrawTabBar();
             switch (settingsGuiTab)
             {
@@ -70,6 +71,23 @@ namespace JipperKeyViewer.KeyViewer
             }
             GUILayout.EndVertical();
             EndTextInputPass();
+        }
+
+        /// <summary>Persistent red banner while the last settings write failed. Without it a full
+        /// disk, a read-only profile folder or a file locked by a sync client silently discarded
+        /// every change since the last successful save — the GUI looked completely normal. Stays up
+        /// until a save succeeds. / 最近一次写盘失败时持续显示红色横幅。没有它，磁盘写满、目录
+        /// 只读或被同步软件占用时，自上次成功保存以来的所有改动静默丢失，而界面看起来完全正常。
+        /// 直到某次保存成功才消失。</summary>
+        private static GUIStyle saveErrorStyle;
+
+        private void DrawSaveFailureBanner()
+        {
+            string error = LastSaveError;
+            if (string.IsNullOrEmpty(error)) return;
+            if (saveErrorStyle == null)
+                saveErrorStyle = new GUIStyle(GUI.skin.box) { normal = { textColor = new Color(1f, 0.45f, 0.45f) } };
+            GUILayout.Label(I18n.Tr("save_failed") + " " + error, saveErrorStyle);
         }
 
         /// <summary>

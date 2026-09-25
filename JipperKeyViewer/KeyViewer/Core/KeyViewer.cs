@@ -843,6 +843,90 @@ namespace JipperKeyViewer.KeyViewer
             Loader.Log("Migration v5→v6 complete");
         }
 
+        /// <summary>Apply the v3→v4 foot-slot shift to one ProfileData in place. Foot keys used to
+        /// start at slot 20 and moved to FootKeyBase(24); a profile written before that keeps its
+        /// foot counters and per-key colors on the OLD slots, so after loading they read as zero /
+        /// wrong. The transformation is idempotent (guarded by DataVersion) and is shared by the
+        /// one-time version bump and by LoadProfile — a profile file that arrives AFTER the meta was
+        /// already upgraded (copied in by hand, or imported from an older .jkv) is never seen by the
+        /// version-bump pass, so without this it loaded with permanently zeroed foot counters. /
+        /// 就地把 v3→v4 的脚键槽位平移应用到一份 ProfileData。脚键过去从槽位 20 起，后移至
+        /// FootKeyBase(24)；此前写出的配置把脚键计数与每键颜色留在旧槽位上，加载后读出来就是 0/
+        /// 错值。该变换幂等（由 DataVersion 守卫），并由一次性版本升级与 LoadProfile 共用——meta
+        /// 升级之后才出现的配置文件（手动拷入，或从旧版 .jkv 导入）不会被升级流程看到，没有这里
+        /// 就会带着永久为零的脚键计数加载。</summary>
+        private static void MigrateFootSlots(ProfileData pd)
+        {
+            if (pd == null || pd.DataVersion >= 4) return;
+            int footSize = pd.FootKeyViewerStyle switch
+            {
+                FootKeyviewerStyle.Key2 => 2,
+                FootKeyviewerStyle.Key4 => 4,
+                FootKeyviewerStyle.Key6 => 6,
+                FootKeyviewerStyle.Key8 => 8,
+                FootKeyviewerStyle.Key10 => 10,
+                FootKeyviewerStyle.Key12 => 12,
+                FootKeyviewerStyle.Key14 => 14,
+                FootKeyviewerStyle.Key16 => 16,
+                _ => 0
+            };
+            if (pd.KeyViewerStyle == KeyviewerStyle.Key24 || footSize == 0)
+            {
+                pd.DataVersion = 4;
+                return;
+            }
+            const int oldBase = 20;
+            // Old builds wrote Count[36]; the copy below would run past its end and throw. Resize
+            // first, the same way EnsureSettingsArrays handles the live settings.
+            // 旧版本写入的是 Count[36]；下面的复制会越界并抛异常。先按 EnsureSettingsArrays
+            // 处理在线设置的同样方式重定长度。
+            if (pd.Count == null || pd.Count.Length != MaxKeySlots)
+            {
+                int[] c = new int[MaxKeySlots];
+                if (pd.Count != null) Array.Copy(pd.Count, c, Math.Min(pd.Count.Length, MaxKeySlots));
+                pd.Count = c;
+            }
+            // 36-era files also carried shorter PerKey color arrays (38 = 36+2): the shifts below
+            // only write inside the old length, so a dormant profile with footSize 16 silently
+            // dropped the tail slots. Resize first — the tail fills from the profile's own global
+            // colors, the same fill EnsureSettingsArrays applies for a newer build.
+            // 36-era 文件的 PerKey 颜色数组同样更短（38 = 36+2）：平移只写入旧长度之内，休眠
+            // Profile 带 16 脚键时会把尾部槽位静默丢掉。先重定长度，尾部用该 Profile 自己的
+            // 全局色填充。
+            pd.PerKeyBackground = EnsureColorArray(pd.PerKeyBackground, MaxKeySlots + 2, pd.Background);
+            pd.PerKeyBackgroundClicked = EnsureColorArray(pd.PerKeyBackgroundClicked, MaxKeySlots + 2, pd.BackgroundClicked);
+            pd.PerKeyOutline = EnsureColorArray(pd.PerKeyOutline, MaxKeySlots + 2, pd.Outline);
+            pd.PerKeyOutlineClicked = EnsureColorArray(pd.PerKeyOutlineClicked, MaxKeySlots + 2, pd.OutlineClicked);
+            pd.PerKeyText = EnsureColorArray(pd.PerKeyText, MaxKeySlots + 2, pd.Text);
+            pd.PerKeyTextClicked = EnsureColorArray(pd.PerKeyTextClicked, MaxKeySlots + 2, pd.TextClicked);
+            pd.PerKeyRainColor = EnsureColorArray(pd.PerKeyRainColor, MaxKeySlots + 2, pd.RainColor);
+            Array.Copy(pd.Count, oldBase, pd.Count, FootKeyBase, footSize);
+            // Gap-only clear — the full-range clear overlapped the just-copied entries
+            // when footSize > (FootKeyBase - oldBase).
+            // 仅清间隙——footSize > (FootKeyBase - oldBase) 时全区间清除会重叠刚复制的条目。
+            Array.Clear(pd.Count, oldBase, Math.Min(footSize, FootKeyBase - oldBase));
+            static void Shift(Color[] a, int from, int to, int n)
+            {
+                if (a == null) return;
+                for (int i = n - 1; i >= 0; i--)
+                {
+                    if (to + i < a.Length)
+                        a[to + i] = from + i < a.Length ? a[from + i] : default;
+                }
+                int clearLen = Math.Min(n, to - from);
+                for (int i = 0; i < clearLen && from + i < a.Length; i++)
+                    a[from + i] = default;
+            }
+            Shift(pd.PerKeyBackground, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyBackgroundClicked, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyOutline, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyOutlineClicked, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyText, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyTextClicked, oldBase, FootKeyBase, footSize);
+            Shift(pd.PerKeyRainColor, oldBase, FootKeyBase, footSize);
+            pd.DataVersion = 4;
+        }
+
         private bool MigrateAllProfileFiles()
         {
             if (Settings.ProfileNames == null) return true;
@@ -860,88 +944,9 @@ namespace JipperKeyViewer.KeyViewer
                     JsonConvert.PopulateObject(json, pd, ProfileData.ProfileSerializer);
                     pd.SyncArraysFromLists();
                     if (pd.DataVersion >= 4) continue;
-                    if (pd.KeyViewerStyle == KeyviewerStyle.Key24)
-                    {
-                        pd.DataVersion = 4;
-                        pd.SyncListsToArrays();
-                        WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
-                        continue;
-                    }
-                    int fs = pd.FootKeyViewerStyle switch
-                    {
-                        FootKeyviewerStyle.Key2 => 2,
-                        FootKeyviewerStyle.Key4 => 4,
-                        FootKeyviewerStyle.Key6 => 6,
-                        FootKeyviewerStyle.Key8 => 8,
-                        FootKeyviewerStyle.Key10 => 10,
-                        FootKeyviewerStyle.Key12 => 12,
-                        FootKeyviewerStyle.Key14 => 14,
-                        FootKeyviewerStyle.Key16 => 16,
-                        _ => 0
-                    };
-                    if (fs == 0)
-                    {
-                        pd.DataVersion = 4;
-                        pd.SyncListsToArrays();
-                        WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
-                        continue;
-                    }
-                    const int oldBase = 20;
-                    // Old builds wrote Count[36]; FromJsonOverwrite restores that shorter array and the
-                    // copy below would run past its end (throwing, and the profile would then be
-                    // skipped forever because the meta Version already advanced). Resize first, the
-                    // same way EnsureSettingsArrays handles the live settings.
-                    // 旧版本写入的是 Count[36]；FromJsonOverwrite 会还原成短数组，下面的复制会越界
-                    //（抛异常后该 Profile 被永久跳过——meta 的 Version 已经先升上去了）。先按
-                    // EnsureSettingsArrays 处理在线设置的同样方式重定长度。
-                    if (pd.Count == null || pd.Count.Length != MaxKeySlots)
-                    {
-                        int[] c = new int[MaxKeySlots];
-                        if (pd.Count != null) Array.Copy(pd.Count, c, Math.Min(pd.Count.Length, MaxKeySlots));
-                        pd.Count = c;
-                    }
-                    // 36-era files also carried shorter PerKey color arrays (38 = 36+2): the shifts
-                    // below only write inside the old length, so migrating a dormant profile with
-                    // footSize 16 silently dropped the tail slots (foot keys 14/15). Resize first —
-                    // the tail fills from the profile's own global colors, the same fill
-                    // EnsureSettingsArrays applies when a newer build loads a short array.
-                    // 36-era 文件的 PerKey 颜色数组同样更短（38 = 36+2）：下方的平移只写入旧长度
-                    // 之内，休眠 Profile 带 16K 脚键时会把尾部槽位静默丢掉（脚键 14/15）。先重定
-                    // 长度——尾部用该 Profile 自己的全局色填充，与新版加载短数组时
-                    // EnsureSettingsArrays 的填充语义一致。
-                    pd.PerKeyBackground = EnsureColorArray(pd.PerKeyBackground, MaxKeySlots + 2, pd.Background);
-                    pd.PerKeyBackgroundClicked = EnsureColorArray(pd.PerKeyBackgroundClicked, MaxKeySlots + 2, pd.BackgroundClicked);
-                    pd.PerKeyOutline = EnsureColorArray(pd.PerKeyOutline, MaxKeySlots + 2, pd.Outline);
-                    pd.PerKeyOutlineClicked = EnsureColorArray(pd.PerKeyOutlineClicked, MaxKeySlots + 2, pd.OutlineClicked);
-                    pd.PerKeyText = EnsureColorArray(pd.PerKeyText, MaxKeySlots + 2, pd.Text);
-                    pd.PerKeyTextClicked = EnsureColorArray(pd.PerKeyTextClicked, MaxKeySlots + 2, pd.TextClicked);
-                    pd.PerKeyRainColor = EnsureColorArray(pd.PerKeyRainColor, MaxKeySlots + 2, pd.RainColor);
-                    Array.Copy(pd.Count, oldBase, pd.Count, FootKeyBase, fs);
-                    // Gap-only clear — the full-range clear overlapped the just-copied entries
-                    // when fs > (FootKeyBase - oldBase). Mirror of the live-migration fix above.
-                    // 仅清间隙——fs > (FootKeyBase - oldBase) 时全区间清除会重叠刚复制的条目。
-                    // 与上方在线迁移的修复互为镜像。
-                    Array.Clear(pd.Count, oldBase, Math.Min(fs, FootKeyBase - oldBase));
-                    static void Shift(Color[] a, int from, int to, int n)
-                    {
-                        if (a == null) return;
-                        for (int i = n - 1; i >= 0; i--)
-                        {
-                            if (to + i < a.Length)
-                                a[to + i] = from + i < a.Length ? a[from + i] : default;
-                        }
-                        int clearLen = Math.Min(n, to - from);
-                        for (int i = 0; i < clearLen && from + i < a.Length; i++)
-                            a[from + i] = default;
-                    }
-                    Shift(pd.PerKeyBackground, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyBackgroundClicked, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyOutline, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyOutlineClicked, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyText, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyTextClicked, oldBase, FootKeyBase, fs);
-                    Shift(pd.PerKeyRainColor, oldBase, FootKeyBase, fs);
-                    pd.DataVersion = 4;
+                    // Shared with LoadProfile so there is exactly one implementation of the foot-slot
+                    // shift. / 与 LoadProfile 共用，确保脚键槽位平移只有一份实现。
+                    MigrateFootSlots(pd);
                     pd.SyncListsToArrays();
                     WriteAllTextSafe(path, JsonConvert.SerializeObject(pd, Formatting.Indented, ProfileData.ProfileSerializer));
                 }
@@ -1184,12 +1189,28 @@ namespace JipperKeyViewer.KeyViewer
                 Settings.UiTab = settingsGuiTab;
                 SaveCurrentProfile();
                 SaveMetaOnly();
+                lastSaveError = null;
             }
             catch (Exception e)
             {
+                // A failed write used to be a single log line: the user kept editing, the GUI showed
+                // no sign anything was wrong, and every change since the last successful save was
+                // silently lost on the next launch (read-only profile dir, full disk, file locked by
+                // a sync client). Keep the message and surface it in the settings window until a
+                // save succeeds.
+                // 写盘失败此前只是一行日志：用户继续编辑、界面毫无提示，下次启动时自上次成功保存
+                // 以来的所有改动静默丢失（目录只读、磁盘满、被同步软件占用）。现保留消息并在
+                // 设置窗口持续提示，直到某次保存成功。
+                lastSaveError = e.Message;
                 Loader.Error($"Failed to save settings: {e.Message}");
             }
         }
+
+        /// <summary>Message from the most recent failed save, or null once a save has succeeded.
+        /// Rendered as a persistent warning in the settings window. / 最近一次保存失败的消息；
+        /// 保存成功后清空。在设置窗口作为持续警告显示。</summary>
+        internal string LastSaveError => lastSaveError;
+        private string lastSaveError;
 
         // ---- Debounced saving for high-frequency GUI changes / 高频 GUI 变更的去抖保存 ----
         // Dragging a slider or a color channel fired SaveSettings on every IMGUI change event
@@ -1360,6 +1381,15 @@ namespace JipperKeyViewer.KeyViewer
                     pd.Count = c;
                 }
                 Settings.Data = pd;
+                // A profile file that predates this build's schema can still arrive here even though
+                // the META was long ago upgraded: copied in by hand, restored from a backup, or
+                // unpacked from a .jkv produced on an older version. The version-bump pass only runs
+                // once per meta version, so such a profile would otherwise load with its foot-key
+                // counts and per-key colors still on the pre-v4 slots (counters read as zero).
+                // 即使 meta 早已升级，仍可能有旧版 schema 的 Profile 到达这里：手动拷入、从备份
+                // 恢复，或由旧版本打出的 .jkv 解包而来。版本升级流程每个 meta 版本只跑一次，
+                // 否则这类配置会带着 v4 之前的脚键计数与每键颜色加载（计数读出来是 0）。
+                MigrateFootSlots(pd);
                 // Record field presence ONLY on the fully-successful path — the v5→v6 flip may
                 // touch stored values, never rebuild/ctor defaults. / 仅在完全成功路径记录字段
                 // 存在性——v5→v6 翻转只可作用于存储值,绝不可作用于重建/构造默认值。
