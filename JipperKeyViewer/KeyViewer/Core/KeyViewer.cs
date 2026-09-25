@@ -901,18 +901,12 @@ namespace JipperKeyViewer.KeyViewer
                 return;
             }
 
-            int footSize = d.FootKeyViewerStyle switch
-            {
-                FootKeyviewerStyle.Key2 => 2,
-                FootKeyviewerStyle.Key4 => 4,
-                FootKeyviewerStyle.Key6 => 6,
-                FootKeyviewerStyle.Key8 => 8,
-                FootKeyviewerStyle.Key10 => 10,
-                FootKeyviewerStyle.Key12 => 12,
-                FootKeyviewerStyle.Key14 => 14,
-                FootKeyviewerStyle.Key16 => 16,
-                _ => 0
-            };
+            // FootKeySize, not a third inline copy of the same mapping — see the note in
+            // MigrateFootSlots. Both migration copies answering 0 for a style the layout already
+            // supports is how the foot-slot shift would silently stop happening.
+            // 用 FootKeySize，而非同一映射的第三份内联拷贝——见 MigrateFootSlots 处的说明。
+            // 两份迁移拷贝对布局早已支持的样式都答 0，脚键槽位平移就会那样静默地不再发生。
+            int footSize = FootKeySize(d.FootKeyViewerStyle);
             if (footSize == 0)
             {
                 if (d.DataVersion < 4) d.DataVersion = 4;
@@ -1141,18 +1135,33 @@ namespace JipperKeyViewer.KeyViewer
         private static void MigrateFootSlots(ProfileData pd)
         {
             if (pd == null || pd.DataVersion >= 4) return;
-            int footSize = pd.FootKeyViewerStyle switch
+            // An enum value this build does not recognise (a profile written by a NEWER build, or a
+            // hand-edited one). Falling through to footSize == 0 below would stamp DataVersion = 4
+            // and RETURN — consuming the idempotence gate without performing the shift, so the
+            // v3-era foot counters stay on slots 20.. and read back as permanently 0. That is
+            // exactly the round-38 bug, re-armed, and it would be permanent because the gate can
+            // never re-open once written. Leave the profile at its old version so a build that
+            // does know the style still shifts it. / 本构建无法识别的枚举值（来自更新构建写出的
+            // 配置，或手改的配置）。落入下方 footSize == 0 分支会盖上 DataVersion = 4 并**返回**——
+            // 消耗掉幂等闸门却不执行平移，于是 v3 时代的脚键计数留在 20.. 槽位上、读回来永久为 0。
+            // 那正是第 38 轮那个 bug 被重新武装，且因为闸门一旦写入就永不再打开，所以是永久性的。
+            // 保持该配置的旧版本，好让认识该样式的构建仍能平移它。
+            if (!System.Enum.IsDefined(typeof(FootKeyviewerStyle), pd.FootKeyViewerStyle))
             {
-                FootKeyviewerStyle.Key2 => 2,
-                FootKeyviewerStyle.Key4 => 4,
-                FootKeyviewerStyle.Key6 => 6,
-                FootKeyviewerStyle.Key8 => 8,
-                FootKeyviewerStyle.Key10 => 10,
-                FootKeyviewerStyle.Key12 => 12,
-                FootKeyviewerStyle.Key14 => 14,
-                FootKeyviewerStyle.Key16 => 16,
-                _ => 0
-            };
+                Loader.Warning($"KeyViewer: profile '{pd.GetType().Name}' has an unrecognised "
+                    + $"FootKeyViewerStyle ({(int)pd.FootKeyViewerStyle}); skipping the foot-slot "
+                    + "migration so a build that knows the style can still apply it");
+                return;
+            }
+            // FootKeySize, not an inline switch. This mapping is written in six places (here, the
+            // other migration, the array-sizing lines, the ctor fallbacks, the label table, and an
+            // inline copy in the editor); they all agree today only because nobody has added a
+            // style. Sharing the canonical one means a new style cannot be taught to the layout
+            // while the migrations still answer 0 for it.
+            // 用 FootKeySize 而非内联 switch。该映射写了六处（本处、另一处迁移、数组定长各行、
+            // 构造函数回退、标签表，以及编辑器里的一份内联拷贝）；它们今天一致只因为还没人新增过
+            // 样式。共用正典那一份，意味着新增样式不可能「布局学会了、迁移仍答 0」。
+            int footSize = FootKeySize(pd.FootKeyViewerStyle);
             if (pd.KeyViewerStyle == KeyviewerStyle.Key24 || footSize == 0)
             {
                 pd.DataVersion = 4;

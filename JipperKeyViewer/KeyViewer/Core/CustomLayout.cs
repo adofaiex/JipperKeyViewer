@@ -139,7 +139,19 @@ namespace JipperKeyViewer.KeyViewer
                 for (int i = 0; i < nodes.Count; i++)
                 {
                     FmNode n = nodes[i];
-                    if (n == null || !n.CountInTotal || (n.NodeType != 0 && n.NodeType != 3)) continue;
+                    // CustomNodeHasKey, not the inline "key or image" test. An unbound image node
+                    // (NodeType 3 with an empty KeyBind) never receives a runtime Key, so it can
+                    // never be pressed and its Count is frozen at whatever it was — yet this test
+                    // summed it in. The editor's count panel gates on the *bound*-image spelling, so
+                    // for such a node the whole panel (including "reset count") is never drawn: the
+                    // number sits in the Total and no UI can ever zero it. Reachable from the Clear
+                    // binding button, which empties KeyBind on a node that already has a count.
+                    // 用 CustomNodeHasKey，而非内联的「按键或图片」判定。未绑定按键的图片节点
+                    // （NodeType 3 且 KeyBind 为空）永远拿不到运行时 Key，故永远不会被按下，其
+                    // Count 就冻结在原值——而该判定却把它算了进去。编辑器的计数面板按「**已绑定**
+                    // 图片」的写法门控，故这类节点的整个面板（含「重置计数」）根本不绘制：那个数字
+                    // 待在 Total 里，而界面上再也无法归零它。从「清除按键绑定」按钮即可到达。
+                    if (n == null || !n.CountInTotal || !CustomNodeHasKey(n)) continue;
                     string g = n.GroupId ?? "";
                     long current = groupTotals.TryGetValue(g, out long v) ? v : 0L;
                     current += Math.Max(0, n.Count);
@@ -160,7 +172,10 @@ namespace JipperKeyViewer.KeyViewer
             long total = 0;
             foreach (FmNode n in Settings.Data.CustomNodes)
             {
-                if (n == null || !n.CountInTotal || (n.NodeType != 0 && n.NodeType != 3)) continue;
+                // Same predicate as RebuildGroupTotals — see the note there for why an unbound
+                // image node must not contribute.
+                // 与 RebuildGroupTotals 同一谓词——为何未绑定的图片节点不得计入，见那里的说明。
+                if (n == null || !n.CountInTotal || !CustomNodeHasKey(n)) continue;
                 total += Math.Max(0, n.Count);
                 if (total >= int.MaxValue) { total = int.MaxValue; break; }
             }
