@@ -568,6 +568,16 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>How many texts may be stamped onto a destroyed component before the dead-key
+        /// sweep runs. Bounds both the leak and the sweep cost: the sweep walks the whole
+        /// dictionary, so running it on every stamp would be O(n²) per overlay build
+        /// (≈215 texts → ≈46k comparisons). / 允许被「钉」在已销毁组件上的文本数量，超过即触发
+        /// 死键清扫。同时约束泄漏与清扫开销：清扫要遍历整个字典，每次盖章都跑会让每次覆盖层构建
+        /// 变成 O(n²)（约 215 个文本 → 约 4.6 万次比较）。</summary>
+        private const int MaxDeadTextMaterials = 256;
+
+        private int textStampsSinceDeadSweep;
+
         /// <summary>Point a TMP text at a text-style material, keeping the reference count in step.
         /// Every `text.fontMaterial = ...` for a CACHED material must go through here — a direct
         /// assignment would leave the count stale and the material un-evictable (or, worse, evictable
@@ -582,6 +592,34 @@ namespace JipperKeyViewer.KeyViewer
             {
                 if (oldId == newId) return;
                 ReleaseTextMaterialUse(text);
+            }
+            // This dictionary is keyed by the COMPONENT and holds a strong reference, so an entry
+            // pins a destroyed TMP_Text (and its glyph/characterInfo arrays) until it is removed.
+            // ResetKeyViewer — the per-edit rebuild that a slider drag drives 60-120×/s — destroys
+            // every text but does NOT call ReleaseTextStyleMaterials (that runs on DisableKeyViewer
+            // and OnDestroy only), so each rebuild used to leave ~215 pinned dead components behind.
+            // The only pruning code used to sit behind `textStyleMaterials.Count > 48` inside
+            // EvictUnusedTextStyleMaterials, which itself only runs when a NEW material is minted —
+            // and the stock configuration (shadow on, outline off) mints exactly ONE material, so
+            // 1 <= 48 and the sweep never ran, ever. A normal FreeMake tuning session accumulated
+            // hundreds of thousands of pinned components. Sweep on the dictionary's own size instead.
+            // 该字典以**组件**为键并持有强引用，故一个条目会把已销毁的 TMP_Text（及其字形/
+            // characterInfo 数组）一直钉住。ResetKeyViewer（滑杆拖动每秒触发 60-120 次的逐次编辑
+            // 重建）销毁所有文本却**不**调 ReleaseTextStyleMaterials（那只在 DisableKeyViewer 与
+            // OnDestroy 里跑），故每次重建都会留下约 215 个被钉住的死组件。唯一的清理代码此前位于
+            // EvictUnusedTextStyleMaterials 内的 `textStyleMaterials.Count > 48` 之后，而该方法本身
+            // 只在**铸出**新材质时运行——而出厂配置（开阴影、关描边）只铸**一个**材质，故
+            // 1 <= 48，清扫**从未**运行。一次正常的 FreeMake 调参会累积数十万被钉住的组件。
+            // 改为按该字典自身的大小清扫。
+            if (++textStampsSinceDeadSweep >= MaxDeadTextMaterials
+                && textStyleMaterialUse.Count > MaxDeadTextMaterials)
+            {
+                textStampsSinceDeadSweep = 0;
+                textStyleEvictScratch.Clear();
+                foreach (KeyValuePair<TMP_Text, int> pair in textStyleMaterialUse)
+                    if (pair.Key == null) textStyleEvictScratch.Add(pair.Key);
+                for (int i = 0; i < textStyleEvictScratch.Count; i++)
+                    ReleaseTextMaterialUse(textStyleEvictScratch[i]);
             }
             textStyleMaterialUse[text] = newId;
             textStyleMaterialRefs[newId] = GetRefCount(newId) + 1;

@@ -39,6 +39,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             public int Height;
             public int LastGeneration;
             public bool Failed;
+            /// <summary>Has this entry's budget slice already been handed back by OnVideoError?
+            /// Without it, destroying the tombstone later (a path change, node deletion, teardown)
+            /// would decrement `liveTextureBytes` a second time, and the floor-at-0 clamp would then
+            /// silently widen the budget guard. / 该条目的预算份额是否已由 OnVideoError 归还？
+            /// 没有它，之后销毁这枚墓碑时（路径改变、节点删除、拆解）会**第二次**减计数，而
+            /// 下限 0 的钳制会随即悄悄放宽预算守卫。
+            /// </summary>
+            public bool BudgetReturned;
         }
 
         private static readonly Dictionary<int, Entry> entries = new Dictionary<int, Entry>();
@@ -77,7 +85,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             foreach (KeyValuePair<int, Entry> pair in entries)
             {
                 Entry e = pair.Value;
-                if (e == null || e.Player == null || e.Texture == null || e.LastGeneration != generation)
+                // A null entry is dead weight with nothing to release — reclaim it, as before.
+                if (e == null) { staleBuffer.Add(pair.Key); continue; }
+                // A Failed entry is a tombstone, not a live node: OnVideoError already released its
+                // RenderTexture and returned its budget share, and GetOrCreate's reuse short-circuit
+                // re-stamps LastGeneration so it is never retried. Reclaiming it here would undo both
+                // things it is there to prevent — the next build would go straight back into the
+                // allocate -> fail -> release -> reallocate loop. Only the deliberate release paths
+                // (node deleted / path changed / teardown, all of which call DestroyEntry directly,
+                // and which now see BudgetReturned and skip the second decrement) may take one out.
+                // null 条目是无需释放的空壳——照旧回收。
+                if (e.Failed) continue;
+                if (e.Player == null || e.Texture == null || e.LastGeneration != generation)
                     staleBuffer.Add(pair.Key);
             }
             for (int i = 0; i < staleBuffer.Count; i++)
@@ -388,6 +407,36 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     source.targetTexture = null;
                 }
                 catch (Exception) { /* a player destroyed mid-callback needs no cleanup */ }
+                // ...and give the GPU memory and its budget share back NOW. A failed entry stays in
+                // `entries` as a never-retry tombstone (see the reuse short-circuit in GetOrCreate,
+                // which re-stamps LastGeneration and therefore makes EndBuild's staleness test
+                // false for it) — so DestroyEntry, the only other place that returns the budget,
+                // will never run for it. Without this the entry pinned a 2048x2048 ARGB32 RT
+                // (16 MB of VRAM, rendering nothing) AND its share of the 256 MB global budget for
+                // the rest of the session. Sixteen unplayable files — an .avi or .wmv the platform
+                // decoder cannot open, a truncated download, a shared .jkv pointing at paths that
+                // exist but do not decode — and then every subsequent video node in every profile
+                // is refused at the budget check with a bare Loader.Warning. The entry must stay
+                // (that is what stops the retry loop) but it must not COST anything.
+                // 立刻把显存与预算份额还回去。失败条目会以「不再重试的墓碑」形式留在 `entries` 里
+                // （见 GetOrCreate 的复用短路，它会重新盖上 LastGeneration，于是对 EndBuild 的
+                // 陈旧判定而言该条目**永远不算陈旧**）——故唯一另一条归还预算的路径 DestroyEntry
+                // 永远等不到它。不归还的话，该条目会在本次会话余下时间里**同时**钉住一块
+                // 2048x2048 ARGB32 RT（16 MB 显存，且什么都不渲染）与 256 MB 全局预算中的一份。
+                // 十六个放不了的文件——平台解码器打不开的 .avi/.wmv、下载截断的文件、指向「存在
+                // 但解不出」的路径的分享 .jkv——之后**所有配置**里的每个新视频节点都会在预算检查
+                // 处被拒绝，只留一行 Loader.Warning。条目必须留下（那正是阻止重试循环的东西），
+                // 但它必须**不花任何代价**。
+                if (pair.Value.Texture != null)
+                {
+                    RenderTexture deadTexture = pair.Value.Texture;
+                    pair.Value.Texture = null;
+                    try { deadTexture.Release(); UnityEngine.Object.Destroy(deadTexture); }
+                    catch (Exception) { /* already released by a concurrent teardown */ }
+                    liveTextureBytes -= (long)pair.Value.Width * pair.Value.Height * 4L;
+                    if (liveTextureBytes < 0) liveTextureBytes = 0;
+                    pair.Value.BudgetReturned = true;
+                }
                 Loader.Warning($"KeyViewer: video decode failed for node {pair.Key}: {message}");
                 // Tell the custom layout that THIS node still owes a static fallback. The scan
                 // that applies it is per-frame, so without this signal it would have to walk every
@@ -449,10 +498,19 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // Give the budget back, or a document that once had many video nodes could never
             // create another one for the rest of the session. Floor at zero so a double-destroy
             // (destroyed-object null checks can race a deferred Destroy) cannot make it negative.
+            // A Failed tombstone already returned its share when OnVideoError fired; decrementing
+            // again here would be a double-release that the floor would convert into a silently
+            // over-wide budget.
             // 把预算还回去，否则曾经有很多视频节点的文档此后永远创建不出新的。把下限设为 0，
             // 避免（延迟 Destroy 与已销毁判定竞态导致的）二次销毁把它变成负数。
-            liveTextureBytes -= (long)e.Width * e.Height * 4L;
-            if (liveTextureBytes < 0) liveTextureBytes = 0;
+            // Failed 墓碑的份额在 OnVideoError 触发时**已经**归还；此处再减一次即是重复归还，
+            // 会被下限转成悄悄放宽的预算。
+            if (!e.BudgetReturned)
+            {
+                liveTextureBytes -= (long)e.Width * e.Height * 4L;
+                if (liveTextureBytes < 0) liveTextureBytes = 0;
+                e.BudgetReturned = true;
+            }
             if (e.GameObject != null) UnityEngine.Object.Destroy(e.GameObject);
         }
 

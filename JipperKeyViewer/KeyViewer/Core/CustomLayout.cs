@@ -1655,7 +1655,25 @@ namespace JipperKeyViewer.KeyViewer
             // away) — keeping it would make this scan run forever on a document that has no video
             // failures at all. / 仍待处理的项属于已不存在的节点（被删除或重建掉）——留着会让这次
             // 扫描在一个根本没有视频失败的文档上永远运行。
-            if (pendingVideoFallbacks.Count > 0 && customVideoFallbackApplied.Count > 0)
+            //
+            // The extra `customVideoFallbackApplied.Count > 0` guard this used to carry defeated the
+            // prune in exactly the case it exists for. A pending id that never got applied — because
+            // the node was deleted, or because it has no RawImage — is NOT in the applied set, and
+            // the applied set is cleared on every build, so at the moment the id went stale the
+            // guard read false and the id survived forever. Concretely: node 7's decoder errors, the
+            // user deletes node 7 (or switches profile) before the next tick, the scan finds
+            // nothing to apply, the prune is skipped, and UpdateCustomVideoFallbacks then walks
+            // every CustomNodes entry — with an IsNullOrWhiteSpace plus three hash probes each —
+            // on every frame for the rest of the session. That is precisely the per-frame
+            // full-document scan this whole pending-set design was built to avoid.
+            // 此前这里多带的一个 `customVideoFallbackApplied.Count > 0` 判据，恰好在剪枝唯一存在的
+            // 场景里废掉了剪枝。一个**从未被施加**的待处理 id（节点被删、或没有 RawImage）不在
+            // 已施加集合里；而已施加集合每次构建都会清空，于是该 id 变陈旧的瞬间判据读到 false，
+            // 该 id 永久存活。具体表现：节点 7 的解码器报错，用户在下一 tick 之前删掉节点 7（或
+            // 切换配置），扫描没有可施加的项，剪枝被跳过，此后 UpdateCustomVideoFallbacks 每帧
+            // 遍历全部 CustomNodes（每节点一次 IsNullOrWhiteSpace 加三次哈希探测），直到会话结束。
+            // 这**正是**整个待处理集合设计要避免的逐帧全文档扫描。
+            if (pendingVideoFallbacks.Count > 0)
             {
                 customFallbackPruneBuffer.Clear();
                 foreach (int id in pendingVideoFallbacks)
