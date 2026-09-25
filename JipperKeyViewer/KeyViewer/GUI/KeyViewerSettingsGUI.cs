@@ -230,6 +230,21 @@ namespace JipperKeyViewer.KeyViewer
                 // 磁盘上已存在时同样拒绝：ProfileNames 只在展开列表时同步，手动拷入（或孤儿）的
                 // Profiles\*.json 在此不可见，另存为会直接用当前配置覆盖它。
                 if (exists) return;
+                // Snapshot before committing, and roll back on failure. Every other lifecycle entry
+                // point already does this — DeleteProfile captures previousNames, RenameProfile
+                // captures both previousNames and previousCurrent, and both importers capture
+                // previousData too. Save-As was the only one that mutated the identity first and had
+                // no way back, so with a read-only / full profile folder the session was left
+                // editing a profile that had no file, the old profile silently reverted to whatever
+                // it last held on disk, and the UI reported success (the buffer cleared and the
+                // foldout closed regardless of whether the write happened).
+                // 提交前先快照，失败时回滚。生命周期上其它每个入口都已这样做——DeleteProfile 快照
+                // previousNames，RenameProfile 快照 previousNames 与 previousCurrent，两个导入器还
+                // 快照 previousData。唯独另存为先改身份且无路可退，故目录只读/磁盘满时会话会停在
+                // 「正在编辑一个并不存在的文件」的状态，旧配置静默回退到磁盘上最后的内容，而界面
+                // 报告成功（缓冲区照清、折叠照关，完全不管写盘是否发生）。
+                string[] previousNames = Settings.ProfileNames;
+                string previousCurrent = Settings.CurrentProfile;
                 var list = new List<string>(Settings.ProfileNames ?? new string[0]) { name };
                 Settings.ProfileNames = list.ToArray();
                 Settings.CurrentProfile = name;
@@ -238,7 +253,17 @@ namespace JipperKeyViewer.KeyViewer
                 // layout. GuardedSave also shows the red banner the plain calls never reached.
                 // 加保护：下面两次写盘在磁盘满/目录只读时会抛，而从 GUILayout 回调抛出会**永久**
                 // 破坏窗口布局；GuardedSave 还会显示此前根本到不了的红色横幅。
-                GuardedSave("the new profile", () => { SaveCurrentProfile(); SaveMetaOnly(); });
+                bool wroteNewProfile = false;
+                GuardedSave("the new profile",
+                    () => { SaveCurrentProfile(); SaveMetaOnly(); wroteNewProfile = true; },
+                    () =>
+                    {
+                        Settings.ProfileNames = previousNames;
+                        Settings.CurrentProfile = previousCurrent;
+                    });
+                // Only report the new profile as created when it actually reached the disk.
+                // 只有真的落到磁盘上才把新配置当作已创建。
+                if (!wroteNewProfile) return;
                 profileSaveAsBuffer = "";
                 profileExpanded = false;
             }
@@ -261,8 +286,17 @@ namespace JipperKeyViewer.KeyViewer
                 string newName = SanitizeFileName(profileRenameBuffer.Trim());
                 if (!string.IsNullOrEmpty(newName) && newName != SanitizeFileName(Settings.CurrentProfile))
                 {
+                    // OrdinalIgnoreCase, matching RenameProfile's own duplicate check. With the
+                    // ordinal form here, "Boss" → "boss" passed this test and was then refused
+                    // inside RenameProfile, which returns silently — so the foldout closed and the
+                    // name was unchanged, making the button look broken. Two spellings of one
+                    // question in the same operation.
+                    // 用 OrdinalIgnoreCase，与 RenameProfile 自己的重名检查一致。这里用 ordinal 时，
+                    // 「Boss」→「boss」能通过本检查、随后却被 RenameProfile 拒绝，而后者是静默
+                    // return——于是折叠关闭、名字不变，按钮看起来就是坏的。同一操作里同一问题的两种
+                    // 写法。
                     bool dup = Settings.ProfileNames != null
-                        && Settings.ProfileNames.Any(p => SanitizeFileName(p) == newName);
+                        && Settings.ProfileNames.Any(p => string.Equals(SanitizeFileName(p), newName, System.StringComparison.OrdinalIgnoreCase));
                     if (!dup)
                         RenameProfile(Settings.CurrentProfile, newName);
                 }

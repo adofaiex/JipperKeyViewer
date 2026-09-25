@@ -1532,7 +1532,15 @@ namespace JipperKeyViewer.KeyViewer
         /// 响应，直到重启游戏——而红色横幅永远不会出现，因为 lastSaveError 从未被设置。标签栏
         /// 触发面最广：磁盘一满，点任意一次标签页就触发一次。
         /// </summary>
-        internal void GuardedSave(string what, Action write)
+        /// <param name="onFailure">Optional rollback for callers that mutated in-memory state
+        /// BEFORE calling. Without it a failed write leaves that state committed while the disk
+        /// still holds the old one — "Save As" was exactly that: it appended the new name and
+        /// repointed CurrentProfile first, so a read-only profile folder left the session editing a
+        /// profile that had no file, and the old one silently reverted. / 可选回滚钩子，供那些
+        /// **先**改动内存状态再调用的调用方。没有它时，写盘失败会让内存状态保持已提交、而磁盘仍是
+        /// 旧的——「另存为」正是这种情况：它先追加新名字并改写 CurrentProfile，故目录只读时会留下
+        /// 一个「正在编辑一个并不存在的文件」的会话，而旧配置静默回退。</param>
+        internal void GuardedSave(string what, Action write, Action onFailure = null)
         {
             if (write == null) return;
             try
@@ -1544,6 +1552,17 @@ namespace JipperKeyViewer.KeyViewer
             {
                 lastSaveError = e.Message;
                 Loader.Error($"Failed to save {what}: {e.Message}");
+                // Undo the pre-commit, but keep the banner: the write still failed and the user
+                // needs to know, even though the state is now back where it was.
+                // 撤销预先提交的状态，但保留横幅：写盘确实失败了，用户仍需知道，尽管状态已回到原处。
+                if (onFailure != null)
+                {
+                    try { onFailure(); }
+                    catch (Exception rollbackError)
+                    {
+                        Loader.Error($"KeyViewer: rollback after the failed '{what}' also threw: {rollbackError.Message}");
+                    }
+                }
             }
         }
 
@@ -1981,6 +2000,17 @@ namespace JipperKeyViewer.KeyViewer
             catch (Exception e)
             {
                 Settings.ProfileNames = previousNames;
+                // Set the banner, like the identical write ~30 lines below (the unlink-failure
+                // rollback) does. State is consistent here either way — the in-memory list is
+                // restored and, in the wasCurrent case, SwitchProfile already wrote a matching meta
+                // — so this is purely a missing-signal bug: the user clicks Delete, nothing happens,
+                // nothing is displayed, and only a Unity log line exists. A comment a few lines below
+                // argues the banner is the ONLY signal the user gets; this path contradicted it.
+                // 置横幅，与下方约 30 行处**完全相同**的那次写盘（unlink 失败的回滚）一致。此处状态
+                // 本就一致——内存列表已还原，且在 wasCurrent 情形下 SwitchProfile 已写过匹配的 meta
+                // ——故这纯粹是「缺信号」：用户点删除、什么都没发生、界面上毫无显示，只有一行 Unity
+                // 日志。下方几行处的注释正是论证横幅是用户能拿到的**唯一**信号；这条路径与之矛盾。
+                lastSaveError = e.Message;
                 Loader.Error($"Failed to update the profile list after deleting '{name}': {e.Message}");
                 return;
             }

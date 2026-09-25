@@ -503,12 +503,27 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 {
                     RawRain rain = key.rainList[d];
                     if (rain == null || rain.removed) continue;
+                    // The NULL test was missing here: the bounds check dereferenced
+                    // PerKeyGhostRainColor.Length with only `EnablePerKeyColors` and the index in
+                    // front of it. This is reached from the Colors page's RefreshRainDropColors,
+                    // i.e. straight out of a GUILayout callback, so a profile whose
+                    // PerKeyGhostRainColor is null took the whole settings window down until restart
+                    // — and lastSaveError is never set on that path, so no banner either.
+                    // CreateRainDropForKey got the same guard in an earlier pass; two copies of one
+                    // predicate must agree, and the bound alone was never the point.
+                    // 此处**缺判空**：边界检查只隔着 EnablePerKeyColors 与下标就去解引用
+                    // PerKeyGhostRainColor.Length。该路径由颜色页的 RefreshRainDropColors 抵达——即
+                    // 直接出自 GUILayout 回调——故 PerKeyGhostRainColor 为 null 的配置会让整个设置
+                    // 窗口直到重启前失效，而该路径从不设置 lastSaveError，连横幅都没有。
+                    // CreateRainDropForKey 在早前一轮补了同样的守卫；同一谓词的两份拷贝必须一致，
+                    // 而光有边界检查从来就不是重点。
+                    Color[] perKeyGhost = settings.Data.PerKeyGhostRainColor;
                     Color resolved = rain.isGhost
                         ? (key.CustomNode != null
                             ? GetGhostRainColor(key.color)
                             : (settings.Data.EnablePerKeyColors
-                                && i >= 0 && i < settings.Data.PerKeyGhostRainColor.Length
-                                ? settings.Data.PerKeyGhostRainColor[i]
+                                && perKeyGhost != null && i >= 0 && i < perKeyGhost.Length
+                                ? perKeyGhost[i]
                                 : GetGhostRainColor(key.color)))
                         : key.rainColor;
                     // The per-node two-colour body gradient is resolved against the colour the drop

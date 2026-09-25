@@ -635,6 +635,19 @@ namespace JipperKeyViewer.KeyViewer
             string[] previousNames = Settings.ProfileNames == null
                 ? Array.Empty<string>() : (string[])Settings.ProfileNames.Clone();
             string previousCurrent = Settings.CurrentProfile;
+            // The third snapshot the DmNote importer already takes (KeyViewerDmNoteImport.cs:192).
+            // Without it, a compound storage fault can leave the NEW profile's ProfileData in memory
+            // under the OLD profile's name: SwitchProfile's own rollback restores the name and then
+            // re-loads the old profile, but if THAT load fails (the same unwritable-folder fault
+            // surfacing a second time) Settings.Data keeps the import's layout. This rollback then
+            // restores the names and deletes the imported .json — and the next SaveSettings, which
+            // runs on every scene load, writes that layout into the user's real profile.
+            // 第三个快照，DmNote 导入器早已具备（KeyViewerDmNoteImport.cs:192）。缺了它，一次复合
+            // 存储故障会让**新**配置的 ProfileData 留在内存里、顶着**旧**配置的名字：SwitchProfile
+            // 自身的回滚先还原名字再重新加载旧配置，但若那次加载也失败（同一个目录不可写的故障
+            // 第二次现身），Settings.Data 就仍是导入包里的布局。随后本回滚还原名字并删除导入的
+            // .json——而每次场景加载都会跑的 SaveSettings，会把那份布局写进用户真正的配置里。
+            ProfileData previousData = Settings.Data;
             bool metadataChanged = false;
             bool success = false;
             PackageImportTransaction transaction = null;
@@ -760,6 +773,22 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         Settings.ProfileNames = previousNames;
                         Settings.CurrentProfile = previousCurrent;
+                        // See the snapshot's note: restoring the names without the data would leave
+                        // the deleted import's layout in memory under the user's real profile name,
+                        // ready for the next SaveSettings to persist. Guarded because this runs in
+                        // a finally block — an exception here would mask the original failure.
+                        // 见快照处的说明：只还原名字而不还原数据，会让**已被删除**的导入包布局留在
+                        // 内存里、顶着用户真实配置的名字，等着下一次 SaveSettings 落盘。放在 try
+                        // 里是因为这里位于 finally 块——此处抛出只会掩盖原始异常。
+                        if (!ReferenceEquals(Settings.Data, previousData))
+                        {
+                            try { Settings.Data = previousData; }
+                            catch (Exception dataError)
+                            {
+                                Loader.Error($"KeyViewer: could not restore the previous profile "
+                                    + $"data after a failed import: {dataError.Message}");
+                            }
+                        }
                         // Swallowing this hid a real broken state: the rollback deletes the imported
                         // profile, so a failed meta write leaves settings.json naming a file that no
                         // longer exists — and the next launch takes the "Profile not found" path.
