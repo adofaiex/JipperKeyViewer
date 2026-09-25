@@ -1067,6 +1067,25 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   断言」的测试时，务必先确认被测函数真的按参数分派。
 - Harness 增至 **148** 项。
 
+### 删除 Profile 回滚的静默 meta 写（2026-09-26，第 67 轮）
+- **最后一处吞掉 meta 写异常的保存路径**：`DeleteProfile` 的回滚分支（文件删除失败 → 把名字加回
+  `ProfileNames` → `try { SaveMetaOnly(); } catch { }`）。DmNote 导入回滚与 `.jkv` 导入回滚对**完全
+  相同**的操作早已改为上报并置横幅（那是第 47 轮定的规矩），唯独这里还在吞。
+  此处的分歧确实可恢复——孤儿 `<name>.json` 仍在磁盘上，下一次 `SyncProfilesWithDisk` 会把名字
+  加回来——但在那之前磁盘上的 meta 少了一个用户仍然拥有的配置，而 `lastSaveError` 是用户能拿到的
+  **唯一**失败信号。吞掉它意味着磁盘将满时「删除一个配置」会静默地变成别的事。现与另两处一致。
+
+核对结论（记录以免重复审计）：
+- `SaveSettings()` **自身**有 try/catch + 横幅（第 38 轮），故所有裸调 `SaveSettings()` 的调用点
+  （含 `RestoreFontOnce` / `OnApplicationQuit` / `OnDestroy`）都**不能**把异常抛出去，是安全的。
+  风险只在裸调 `SaveCurrentProfile` / `SaveMetaOnly` / `SyncProfilesWithDisk`——这些没有内部守卫。
+  现已逐个核对，全部有 try/catch。
+- 余下的 `catch { }` 全部是**失败清理**（删临时文件、销毁 Unity 对象、轮转 `.corrupt` 备份），
+  吞掉是正确的，不改。
+- 固定布局「槽位 → 雨排」的 4 种写法（`RainSystem.cs` 的 0 基、1 基、带脚键守卫、`row*8`）经核对
+  **今天确实一致**：自定义节点走 `CustomNode.RainRow`，固定布局的槽位路径被 `IsRainEnabledForKey`
+  的脚键守卫限制在 0..23，两者恰好落在同一分区。为「收敛」而改动正确的代码只会引入风险，不动。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

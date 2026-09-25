@@ -1966,7 +1966,29 @@ namespace JipperKeyViewer.KeyViewer
                 var restored = new List<string>(Settings.ProfileNames);
                 restored.Add(name);
                 Settings.ProfileNames = restored.ToArray();
-                try { SaveMetaOnly(); } catch { }
+                // Report the meta write instead of swallowing it, like the DmNote import rollback and
+                // the .jkv import rollback do for the identical operation. This swallow was the only
+                // remaining one of its kind.
+                //
+                // The divergence here is recoverable — the orphan <name>.json is still on disk, so the
+                // next SyncProfilesWithDisk adds the name back — but until that happens the meta on
+                // disk omits a profile the user still has, and lastSaveError is the ONLY signal the
+                // user gets that anything failed. Swallowing it means a disk that is nearly full
+                // silently makes "delete a profile" do something else.
+                // 上报而非静默吞掉，与 DmNote 导入回滚、`.jkv` 导入回滚对完全相同操作的处理一致——
+                // 这是同类吞异常中最后一处。
+                //
+                // 此处的分歧是可恢复的——孤儿 `<name>.json` 仍在磁盘上，下一次 SyncProfilesWithDisk
+                // 会把名字加回来——但在那之前磁盘上的 meta 少了一个用户仍然拥有的配置，而
+                // lastSaveError 是用户能拿到的**唯一**失败信号。吞掉它意味着磁盘将满时「删除一个
+                // 配置」会静默地变成别的事。
+                try { SaveMetaOnly(); }
+                catch (Exception metaError)
+                {
+                    lastSaveError = metaError.Message;
+                    Loader.Error($"KeyViewer: could not restore the profile list after a failed "
+                        + $"delete of '{name}': {metaError.Message}");
+                }
                 return;
             }
         }
