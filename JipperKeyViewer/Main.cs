@@ -103,9 +103,36 @@ namespace JipperKeyViewer
         internal static void EnableKeyViewer()
         {
             if (KeyViewerGO != null) return;
-            KeyViewerGO = new GameObject("JipperKeyViewer");
-            GameObject.DontDestroyOnLoad(KeyViewerGO);
-            KeyViewerGO.AddComponent<KeyViewer.KeyViewer>();
+            GameObject created = null;
+            try
+            {
+                created = new GameObject("JipperKeyViewer");
+                KeyViewerGO = created;
+                GameObject.DontDestroyOnLoad(created);
+                // AddComponent runs Awake and OnEnable synchronously, INSIDE this call. Any throw
+                // from either escapes through here — and because KeyViewerGO was already assigned,
+                // the field stayed pointing at a GameObject carrying a half-built component: the
+                // settings panel found no instance and drew nothing, the overlay never appeared,
+                // and every later enable attempt returned early on the `KeyViewerGO != null` check.
+                // The user could not recover without restarting the game.
+                // AddComponent 会同步执行 Awake 与 OnEnable，就在这次调用**内部**。其中任何抛出都会
+                // 从这里逃出——而 KeyViewerGO 已被赋值，故该字段一直指着一个挂着半成品组件的
+                // GameObject：设置面板找不到实例、画不出任何内容，覆盖层也从不出现，而之后每次
+                // 启用都被开头的 `KeyViewerGO != null` 早退挡掉。用户不重启游戏就无法恢复。
+                created.AddComponent<KeyViewer.KeyViewer>();
+            }
+            catch (System.Exception e)
+            {
+                // Leave nothing half-built behind, so the next toggle can retry from scratch.
+                // 不留下任何半成品，使下一次开关能从零重试。
+                KeyViewerGO = null;
+                if (created != null)
+                {
+                    try { UnityEngine.Object.Destroy(created); }
+                    catch (System.Exception) { /* the GameObject itself failed to come up; nothing to undo */ }
+                }
+                global::JipperKeyViewer.Loader.Error("JipperKeyViewer: could not start the overlay: " + e.Message);
+            }
         }
 
         internal static void DisableKeyViewer()

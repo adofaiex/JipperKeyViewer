@@ -886,6 +886,21 @@
 - 顺带核实（无问题）：`SaveSettingsFromGui` / `FlushGuiSaveIfNeeded` 虽直接调 `SaveSettings`，但
   `SaveSettings` **自身**已包 try/catch + 横幅，故这两条路径本就安全，不需要再套一层。
 
+### 启动路径：`AddComponent` 里的抛出（2026-09-26，第 61 轮）
+- **`Main.EnableKeyViewer` 会在 `AddComponent` 里跑 `Awake` + `OnEnable`**，二者都是同步的、
+  就在这次调用内部。其中任何抛出都会从 `Main.EnableKeyViewer` 逃进加载器的事件调用；而
+  `KeyViewerGO` 在此**之前**就已赋值，故字段一直指着一个挂着半成品组件的 GameObject：
+  设置面板找不到 `instance`、画不出任何内容，覆盖层也从不出现，且之后每次启用都被开头
+  `KeyViewerGO != null` 的早退挡掉——**用户不重启游戏就无法恢复**。
+  这与第 57 轮 `EnableKeyViewer` 的异常屏障是同一条链的另一半（那一轮挡住了「对象活着但
+  `Stopwatch` 为 null」，这一轮挡住「GameObject 活着但组件没建起来」）。
+  现把整个建 GameObject + `AddComponent` 包进 try/catch：失败即清空字段、销毁半成品并报错，
+  使下一次开关能从零重试。
+- 顺带核实（无问题）：`OnDestroy` 已对称退订 `SceneManager.sceneLoaded`、清 `instance`、摘
+  `KvTextStyle.KeyViewerApplier` 静态桥接；`Awake` 的订阅在最后一行，故它中途抛出不产生泄漏。
+  `LoadSettings` 的每条分支（含建目录失败的 catch）都会给 `Settings` 赋值，故 `Awake` 之后的
+  `Settings.Data` 不会 NRE。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
