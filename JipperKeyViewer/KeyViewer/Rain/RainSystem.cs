@@ -654,10 +654,27 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
             if (isGhost)
             {
+                // Length- and null-guard the per-key ghost rain colour like every other per-key
+                // reader does. This one had NO validation at all, while its near-twin
+                // RefreshDropColors guards the same array — the exact "two copies of one predicate
+                // that can drift" shape. A hand-edited or Newtonsoft-populated profile whose
+                // PerKeyGhostRainColor is null or short made this throw inside Update, which
+                // cancels the rest of that frame's input processing, KPS, rain and gradients on
+                // every frame. Fall back to the ghost colour derived from the key's own row byte,
+                // which is what the per-key setting is overriding anyway.
+                // 与其它每个每键读取点一样，对每键鬼雨颜色做长度与判空守卫。本处此前**完全没有**
+                // 任何校验，而它的近孪生 `RefreshDropColors` 却守卫了同一个数组——正是「同一个
+                // 谓词的两份拷贝会漂移」那种形状。手改或由 Newtonsoft 填充的配置若让
+                // PerKeyGhostRainColor 为 null 或过短，此处会在 Update 内部抛出，而那会取消该帧
+                // 剩余的输入处理、KPS、雨滴与渐变，且每帧如此。回落到由该键自身排色字节推导的鬼
+                // 雨颜色——那本来就是每键设置要覆盖的东西。
+                Color[] perKeyGhost = settings.Data.PerKeyGhostRainColor;
                 rawRain.mainColor = key.CustomNode != null
                     ? GetGhostRainColor(key.color)
                     : settings.Data.EnablePerKeyColors
-                        ? settings.Data.PerKeyGhostRainColor[keyIndex]
+                        ? (perKeyGhost != null && keyIndex >= 0 && keyIndex < perKeyGhost.Length
+                            ? perKeyGhost[keyIndex]
+                            : GetGhostRainColor(key.color))
                         : GetGhostRainColor(key.color);
 
                 rawRain.shadowEnabled = row == 1 ? settings.Data.EnableGhostRainShadowRow1

@@ -1606,11 +1606,28 @@ namespace JipperKeyViewer.KeyViewer
         private void ApplyColorToKey(Key k, int pi)
         {
             if (k == null) return;
-            // Per-key arrays are sized MaxKeySlots+2; on the full keyboard the KPS/Total slots (105/106)
-            // are out of range, so fall through to the dedicated KPS/Total colors instead of crashing.
-            // PerKey 数组长度为 MaxKeySlots+2；全键盘的 KPS/Total 槽位（105/106）越界，
-            // 应落入下方 KPS/Total 专属颜色分支而不是崩溃。
-            if (Settings.Data.EnablePerKeyColors && pi >= 0 && pi < Settings.Data.PerKeyBackground.Length)
+            // Use the shared predicate rather than an inline length test. The inline version guarded
+            // on PerKeyBackground.Length ALONE — with no null test — and then read PerKeyOutline[pi]
+            // and PerKeyText[pi] unconditionally, so a profile whose PerKeyBackground is 42 long
+            // while the other two are shorter (or where PerKeyBackground is null) threw out of here.
+            // ApplyKpsTotalColors is reached from UpdateAllKeyColors, which the Colors page calls
+            // straight out of its GUILayout callbacks: an IndexOutOfRange / NullReference there
+            // leaves the Begin/End group stack unbalanced and breaks the WHOLE settings window until
+            // the game restarts — and lastSaveError is never set, so no banner appears either.
+            //
+            // The fallthrough below is the safe no-op for a slot the arrays do not cover (including
+            // the full keyboard's 105/106, which exceed the 42 per-key slots), so falling through is
+            // exactly right — the previous code just reached that fallthrough by throwing.
+            // 用共用谓词，而非内联的长度测试。内联版本**只**判 `PerKeyBackground.Length`——且连判空
+            // 都没有——随后无条件读取 `PerKeyOutline[pi]` 与 `PerKeyText[pi]`，故若某 Profile 的
+            // PerKeyBackground 长 42 而另两个更短（或 PerKeyBackground 为 null）就会从这里抛出。
+            // ApplyKpsTotalColors 由 UpdateAllKeyColors 抵达，而后者被颜色页的 GUILayout 回调
+            // 直接调用：那里抛出的 IndexOutOfRange / NullReference 会让 Begin/End 组栈失衡，
+            // **整个**设置窗口直到重启前都失效——且 lastSaveError 从未被设置，连横幅都不会出现。
+            //
+            // 数组未覆盖该槽位时（含全键盘超出 42 的 105/106）落入下方分支才是安全空操作；
+            // 旧代码是靠抛异常才走到那里的。
+            if (Settings.Data.EnablePerKeyColors && pi >= 0 && PerKeyColorsCoverSlot(pi))
             {
                 SetShapeColors(k, Settings.Data.PerKeyBackground[pi], Settings.Data.PerKeyOutline[pi]);
                 k.text.color = Settings.Data.PerKeyText[pi];

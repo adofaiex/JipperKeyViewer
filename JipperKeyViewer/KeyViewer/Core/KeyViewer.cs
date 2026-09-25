@@ -70,19 +70,37 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Length of every per-key settings array: the 40 key slots plus the two stat
         /// panel slots (KPS at MaxKeySlots, Total at MaxKeySlots+1).
         ///
-        /// This was the literal `MaxKeySlots + 2` written out at eight separate sites — seven in
-        /// the migration block and one in EnsureSettingsArrays. They agree today, but a layout that
-        /// ever grew a third stat panel, or a change to MaxKeySlots applied to some copies and not
-        /// others, would silently size the per-key arrays differently from each other. The indices
-        /// are also produced separately (KeyIndex(-1) / KeyIndex(-2) in KeyViewerLayout.cs), so
-        /// the constant and the index derivation have to move together.
+        /// This was the literal `MaxKeySlots + 2`, which was written out at every place that sizes
+        /// or clamps a per-key array: the migration block, EnsureSettingsArrays, the ProfileData
+        /// ctor and InitPerKeyColors, and the per-key font-size / colour panels in
+        /// KeyViewerSettingsGUI.cs and KeyViewerColorGUI.cs. The ProfileData-side copies now share
+        /// this constant; the GUI-side ones still spell out the expression against
+        /// `KeyViewer.MaxKeySlots + 2` because those live in other partial-class files and use the
+        /// bare constant. They all agree today, but a layout that grew a third stat panel, or a
+        /// change to MaxKeySlots applied to some copies and not others, would silently size the
+        /// per-key arrays differently from each other.
+        ///
+        /// The indices are ALSO produced two ways: `KeyIndex(-1)/(-2)` (Keys.Length-relative, in
+        /// KeyViewerLayout.cs) and a hard-coded MaxKeySlots/MaxKeySlots+1 in CreateKeyText. They
+        /// agree for every normal layout, but on Full108 they differ (KeyIndex(-1) == 105 while the
+        /// other is 40) — harmless today only because nothing on that path is user-editable. The
+        /// constant, both index derivations, and the seven guard predicates that answer "may I read
+        /// per-key array i?" all have to move together.
         /// 每个每键设置数组的长度：40 个按键槽位加两个统计面板槽位（KPS 在 MaxKeySlots，Total 在
         /// MaxKeySlots+1）。
         ///
-        /// 此前是字面量 `MaxKeySlots + 2` 写在**八处**——迁移块里七处、`EnsureSettingsArrays`
-        /// 一处。今天它们一致，但只要将来多出第三个统计面板、或对 MaxKeySlots 的改动只落到部分
-        /// 副本，每键数组之间就会**静默地**长度不一。相关下标也由另一处单独产生
-        /// （KeyViewerLayout.cs 的 KeyIndex(-1) / KeyIndex(-2)），故常量与下标推导必须同步演进。
+        /// 此前是字面量 `MaxKeySlots + 2`，写在**所有**给每键数组定长或钳制的地方：迁移块、
+        /// EnsureSettingsArrays、ProfileData 构造函数与 InitPerKeyColors，以及
+        /// KeyViewerSettingsGUI.cs / KeyViewerColorGUI.cs 里的每键字号与颜色面板。ProfileData 一侧
+        /// 现已共用此常量；GUI 一侧仍写成 `KeyViewer.MaxKeySlots + 2` 的表达式，因为那些代码位于
+        /// 其它分部类文件并使用裸常量。今天全部一致，但只要将来多出第三个统计面板、或对
+        /// MaxKeySlots 的改动只落到部分副本，每键数组之间就会**静默地**长度不一。
+        ///
+        /// 相关下标也由**两种**方式产生：`KeyIndex(-1)/(-2)`（相对 Keys.Length，在
+        /// KeyViewerLayout.cs）与 CreateKeyText 里写死的 MaxKeySlots/MaxKeySlots+1。它们对每个常规
+        /// 布局都一致，但在 Full108 上不同（KeyIndex(-1) == 105 而另一个是 40）——今天无害，仅因为
+        /// 那条路径上没有用户可编辑的项。常量、两种下标推导、以及回答「我可以读每键数组 i 吗？」
+        /// 的七个守卫谓词，必须同步演进。
         /// </summary>
         internal const int PerKeySlotCount = MaxKeySlots + 2;
         /// <summary>Whether the current layout is the full 108-key keyboard / 当前布局是否为全键盘</summary>

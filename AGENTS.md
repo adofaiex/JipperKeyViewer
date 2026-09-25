@@ -994,6 +994,42 @@ Keys.Length` 而 `rainLayer.Init(Keys.Length)`——被 `RainLayer` 自己的守
   谓词的两份拷贝，实则**各自只守护自己真正读取的数组**——收敛它们反而会写错。今天二者都依赖
   `EnsureSettingsArrays` 把全部八个数组强制为同一长度，该不变量成立，无分叉风险。
 
+### 「我���以读每键数组 i 吗？」有 7 份实现（2026-09-26，第 64 轮下半）
+换方法论的子代理审计（找「同一逻辑写了多份、可静默分叉」）产出 6 条；本轮修掉其中可达的两条，
+并**修正了第 63 轮我自己刚写下的注释里的一个错误断言**。
+
+- **【可达】`ApplyColorToKey` 只判了 7 个数组中的一个**：`KeyViewerLayout.cs` 里
+  `if (... pi < Settings.Data.PerKeyBackground.Length)`——**连判空都没有**——随后无条件读取
+  `PerKeyOutline[pi]` 与 `PerKeyText[pi]`。故 `PerKeyBackground` 长 42 而另两个更短（或前者为 null）
+  时会抛 IndexOutOfRange / NullReference。
+  而 `ApplyKpsTotalColors` 由 `UpdateAllKeyColors` 抵达，后者被**颜色页的 GUILayout 回调直接
+  调用**——那里抛出会让 Begin/End 组栈失衡、**整个**设置窗口直到重启前失效，且 `lastSaveError`
+  从未被设置、连横幅都不出现。
+  现改用共有的 `PerKeyColorsCoverSlot`（判 4 个数组 + 判空）。数组未覆盖该槽位时落入下方分支
+  本就是安全空操作——旧代码是靠**抛异常**才走到那里的。
+- **【可达】`RainSystem.CreateRainDropForKey` 对 `PerKeyGhostRainColor[keyIndex]` 零校验**，
+  而它的近孪生 `RefreshDropColors` 却守卫了同一个数组。该抛出发生在 `Update` **内部**，会取消
+  该帧剩余的输入处理、KPS、雨滴与渐变，且每帧如此。现加判空 + 长度守卫，不覆盖时回落到由该键
+  自身排色字节推导的鬼雨颜色（那本就是每键设置要覆盖的东西）。
+- **我自己的注释写错了**：第 63 轮 `PerKeySlotCount` 的注释声称 `MaxKeySlots + 2` 此前「写在八处」
+  且已全部收敛。子代理核对后发现 GUI 侧仍有 6-7 处（`KeyViewerSettingsGUI.cs` 的每键字号面板、
+  `KeyViewerColorGUI.cs` 的每键颜色面板、`KeyViewerSettings.cs` 的构造函数与 `InitPerKeyColors`）
+  写成 `KeyViewer.MaxKeySlots + 2` 表达式；我那轮**只**收敛了 `Core\KeyViewer.cs` 一侧。
+  注释还漏了下标有两种产生方式（`KeyIndex` 相对 `Keys.Length`，`CreateKeyText` 写死
+  `MaxKeySlots`——在 Full108 上本就不一致）。现把注释改写为**准确**的描述。
+  这正是本项目自己记录的那一类：「注释承诺的��变量代码已不再维护」——这次是我自己刚写的注释。
+
+否证/待办（记录以免重复审计）：
+- `RowFromRainByte` / `CustomRainRowByte` / `RainColor` 的「颜色字节 ↔ 排」三处确实是**正确的逆
+  对**，值得记为正面结论。真正重复的是「槽位 → 排」的 4 种写法（`RainSystem` 的 :123/:645/:913/
+  :958），今天只因脚键在上游被 `IsRainEnabledForKey` 拦掉才一致。
+- `FootKeyviewerStyle → 键数` 写了 6 份，两份迁移 switch 的 `_ => 0` 分支在 `MigrateFootSlots`
+  里会**盖掉 `DataVersion = 4` 却不做平移**，等于重新武装第 38 轮那个「脚键计数恒为 0」的老 bug。
+  今天不可达（`Key18` 不存在），但新增布局时就会变成活 bug。
+- 「这个节点算不算按键」有 5 种写法；`RecalculateCustomTotalCount` 用「按键**或图片**」，编辑器
+  的计数面板用「按键**或已绑定图片**」。从「清除按键绑定」按钮可达：已清空但仍有计数的节点会继续
+  被 Total 计入，而 UI 上再也无法归零它。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。
