@@ -3,6 +3,7 @@
 // 将 Mod 核心与 UnityModManager / MelonLoader 等解耦
 
 using System;
+using System.IO;
 using UnityEngine;
 
 namespace JipperKeyViewer
@@ -67,10 +68,99 @@ namespace JipperKeyViewer
     /// </summary>
     public static class Loader
     {
-        public static IModLoader Instance { get; internal set; }
+        private static IModLoader instance;
+        private static string warnedMissingPath;
+        private static string resolvedPath;
+
+        public static IModLoader Instance
+        {
+            get => instance;
+            internal set
+            {
+                instance = value;
+                // configPath / profileDir / packagesDir / resolvedPath are lazily-cached strings.
+                // If the loader is ever swapped (a reload, a second loader in the same process)
+                // they would keep pointing at the OLD mod directory, splitting reads and writes
+                // across two folders. Clearing them here makes every cache follow the active
+                // loader. / 这些都是惰性缓存的字符串。若加载器被换掉（重载、同进程内第二个加载
+                // 器），它们仍会指向**旧**模组目录，读写分裂到两个文件夹。在此清空让所有缓存跟随
+                // 当前加载器。
+                if (value != null)
+                {
+                    global::JipperKeyViewer.KeyViewer.KeyViewer.ResetCachedPaths();
+                    resolvedPath = null;
+                    warnedMissingPath = null;
+                }
+            }
+        }
 
         /// <summary>Mod installation path (shorthand) / Mod 安装路径（简写）</summary>
-        public static string ModPath => Instance?.ModPath ?? ".";
+        public static string ModPath => Instance?.ModPath;
+
+        /// <summary>Mod path that is ALWAYS usable, for anything that writes to disk. A null
+        /// Instance is reachable in practice: MelonLoader's preferences creation can throw before
+        /// Main.Init runs, and any third-party loader that forgets Init does the same. The old
+        /// `?? "."` fallback made ModPath non-null ALWAYS, so every writer — config/, assets/,
+        /// CustomFont/, CustomImages/, Packages/, .jkv-staging/ — resolved against the process
+        /// working directory, i.e. the GAME INSTALL FOLDER. On a read-only install that is a wall
+        /// of UnauthorizedAccessException; on a writable one it litters the game directory and the
+        // settings vanish with the next game update.
+        /// 恒可用的 Mod 路径，供一切需要写盘的地方使用。Instance 为 null 在实践中可达：
+        /// MelonLoader 的偏好创建可能在 Main.Init 之前抛异常，任何忘记 Init 的第三方加载器同样。
+        /// 旧的 `?? "."` 兜底让 ModPath **永远非 null**，于是所有写入方（config/、assets/、
+        /// CustomFont/、CustomImages/、Packages/、.jkv-staging/）都相对进程工作目录解析，也就是
+        /// **游戏安装目录**。只读安装下是一连串 UnauthorizedAccessException；可写时则把配置散落
+        /// 在游戏目录里，并随游戏更新一起消失。
+        public static string ResolveModPath()
+        {
+            // Cached: this runs per node while a custom layout resolves its image paths, and the
+            // Directory.Exists probe is a filesystem hit. / 缓存：解析自定义布局的图片路径时按节点
+            // 调用，而 Directory.Exists 是一次文件系统访问。
+            if (resolvedPath != null) return resolvedPath;
+            string path = ModPath;
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                try
+                {
+                    if (Directory.Exists(path)) { resolvedPath = path; return resolvedPath; }
+                }
+                catch (Exception) { /* fall through to the fallback / 落到兜底 */ }
+            }
+            if (warnedMissingPath == null)
+            {
+                warnedMissingPath = path ?? "(null)";
+                // Application.persistentDataPath is a Unity native call; on some hosts (and in
+                // offline test runners) it throws. This method must NEVER throw — it is the
+                // foundation every path is built on, so an exception here would take down the mod
+                // at Awake. Last resort: the temp directory.
+                // Application.persistentDataPath 是 Unity 原生调用，在某些宿主（以及离线测试
+                // 运行器）里会抛异常。本方法**绝不能**抛——它是所有路径的根基，此处异常会在
+                // Awake 就带走整个 Mod。最后手段：临时目录。
+                string fallback;
+                try { fallback = Application.persistentDataPath; }
+                catch (Exception e)
+                {
+                    fallback = null;
+                    Error($"KeyViewer: could not resolve the persistent data path: {e.Message}");
+                }
+                if (string.IsNullOrWhiteSpace(fallback))
+                {
+                    try { fallback = Path.GetTempPath(); }
+                    catch (Exception) { fallback = "."; }
+                }
+                Error($"KeyViewer: no usable mod folder ('{warnedMissingPath}'); falling back to {fallback}. The mod's settings, images, videos and packages will live there instead of next to the game.");
+                warnedMissingPath = warnedMissingPath + "->" + fallback;
+            }
+            resolvedPath = CurrentFallback();
+            return resolvedPath;
+        }
+
+        private static string CurrentFallback()
+        {
+            try { string p = Application.persistentDataPath; if (!string.IsNullOrWhiteSpace(p)) return p; }
+            catch (Exception) { }
+            try { return Path.GetTempPath(); } catch (Exception) { return "."; }
+        }
 
         public static void Log(string msg)   { Instance?.Log(msg); }
         public static void Warning(string msg) { Instance?.Warning(msg); }

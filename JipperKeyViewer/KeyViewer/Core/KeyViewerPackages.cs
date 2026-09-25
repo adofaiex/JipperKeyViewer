@@ -68,6 +68,10 @@ namespace JipperKeyViewer.KeyViewer
         private const long MaxPackageEntryBytes = 512L * 1024L * 1024L;
         private const long MaxPackageSettingsBytes = 32L * 1024L * 1024L;
         private const int MaxPackageEntries = 4096;
+        /// <summary>Node / layer-group caps for an imported document. Aligned with the DmNote
+        /// importer's 4096. / 导入文档的节点/图层组上限，与 DmNote 导入器的 4096 对齐。</summary>
+        private const int MaxPackageNodes = 4096;
+        private const int MaxPackageGroups = 64;
 
         private sealed class PackageImportTransaction
         {
@@ -87,7 +91,7 @@ namespace JipperKeyViewer.KeyViewer
 
             public PackageImportTransaction()
             {
-                string modPath = Loader.ModPath;
+                string modPath = Loader.ResolveModPath();
                 if (string.IsNullOrEmpty(modPath)) throw new InvalidOperationException("Mod path is unavailable");
                 stagingRoot = Path.Combine(modPath, ".jkv-staging", Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(stagingRoot);
@@ -121,6 +125,15 @@ namespace JipperKeyViewer.KeyViewer
                 profilePath = Path.GetFullPath(path);
             }
 
+            /// <summary>Targets that already existed locally and were therefore NOT overwritten.
+            /// "Local file wins" is the right call, but it used to be completely silent: importing a
+            /// shared layout whose key.png differs from the receiver's produced a profile pointing at
+            /// the OLD image, with a clean log and a clean message — the single most common real
+            /// .jkv failure. / 本地已存在、因而**未被覆盖**的目标。"本地优先"是对的，但此前完全
+            /// 静默：导入的共享布局与接收方同名图片内容不同时，新配置会指向**旧图**，日志与提示都
+            /// 干净——这是 .jkv 最常见的实际故障。</summary>
+            public readonly List<string> SkippedLocalFiles = new List<string>();
+
             public void CommitFiles()
             {
                 for (int i = 0; i < stagedFiles.Count; i++)
@@ -129,7 +142,11 @@ namespace JipperKeyViewer.KeyViewer
                     // Local files win. Stage every entry anyway, so a local file that disappears
                     // before commit still has a valid staged fallback. / 本地同名文件优先；仍然先
                     // 暂存每个条目，若本地文件在提交前消失仍有有效备份。
-                    if (File.Exists(file.FinalPath)) continue;
+                    if (File.Exists(file.FinalPath))
+                    {
+                        SkippedLocalFiles.Add(file.FinalPath);
+                        continue;
+                    }
                     EnsureDirectory(file.FinalDirectory);
                     File.Move(file.StagedPath, file.FinalPath);
                     committedFiles.Add(file.FinalPath);
@@ -205,12 +222,40 @@ namespace JipperKeyViewer.KeyViewer
             // profile whose last edit is still in the debounced save buffer would ship a stale
             // layout. / 归档前先确保磁盘文件与内存一致——若最后一次编辑还在去抖保存缓冲里，
             // 导出出去的会是过期布局。
-            if (string.Equals(profileName, Settings.CurrentProfile, StringComparison.Ordinal))
-                SaveCurrentProfile();
+            // OrdinalIgnoreCase: every other profile comparison is case-insensitive, and with a
+            // plain Ordinal a differently-cased current profile skipped the flush and exported a
+            // stale layout.
+            // OrdinalIgnoreCase：其它所有配置名比较都不区分大小写，而用 Ordinal 时大小写不同的
+            // 当前配置会跳过这次落盘、导出过期布局。
+            try
+            {
+                if (string.Equals(profileName, Settings.CurrentProfile, StringComparison.OrdinalIgnoreCase))
+                    SaveCurrentProfile();
+            }
+            catch (Exception e)
+            {
+                // A full disk / read-only folder here means the archive would ship a STALE layout —
+                // worse than refusing. Previously the exception escaped into the IMGUI caller and
+                // broke that frame's GUILayout stack with nothing visible on screen.
+                // 此处磁盘满/只读意味着归档会导出**过期**布局——比拒绝更糟。此前异常逃逸进
+                // IMGUI 调用方，打断该帧 GUILayout 栈且界面上毫无提示。
+                Loader.Error($"KeyViewer: cannot save profile '{profileName}' before export: {e.Message}");
+                lastSaveError = e.Message;
+                return null;
+            }
             string sourcePath = GetProfilePath(profileName);
             if (!File.Exists(sourcePath)) return null;
 
-            string json = File.ReadAllText(sourcePath);
+            string json;
+            try
+            {
+                json = File.ReadAllText(sourcePath);
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: cannot read profile '{profileName}' for export: {e.Message}");
+                return null;
+            }
             ProfileData data;
             try
             {
@@ -348,10 +393,32 @@ namespace JipperKeyViewer.KeyViewer
         private static string CollectAsset(string path, Dictionary<string, string> assets)
         {
             if (string.IsNullOrWhiteSpace(path)) return path ?? "";
+            // An ABSOLUTE path means the user pointed the node at a file somewhere on their
+            // machine. Keeping the path STRING was intentional (so the export still round-trips),
+            // but bundling the file's CONTENT is not: exporting would quietly copy e.g.
+            // C:\Users\<user>\Desktop\private.png into a shareable .jkv. Leave the reference as-is
+            // and bundle nothing.
+            // 绝对路径意味着用户把节点指向了机器上某个文件。保留路径**字符串**是有意的（导出仍可
+            // 往返），但打包文件**内容**不是：导出会把 C:\Users\<用户>\Desktop\private.png 悄悄
+            // 复制进可分享的 .jkv。保留引用原样，不打包任何内容。
+            if (Path.IsPathRooted(path))
+            {
+                Loader.Warning($"KeyViewer: export skipped '{path}' — absolute paths outside the mod folder are not bundled");
+                return path;
+            }
             string resolved = ResolveCustomImagePath(path);
-            if (resolved == null) return path;
+            // An unresolvable relative path is written back VERBATIM into the package's
+            // settings.json, leaking the local directory layout. Blank it instead; the receiving
+            // side then shows the documented "image not found" placeholder.
+            // 解析不到的相对路径会被**原样**写进包内 settings.json，泄露本机目录结构。改为置空，
+            // 接收方会显示有文档说明的"图片未找到"占位。
+            if (resolved == null)
+            {
+                Loader.Warning($"KeyViewer: export could not resolve '{path}' — the reference is kept but no file is bundled");
+                return "";
+            }
             string fileName = Path.GetFileName(resolved);
-            if (string.IsNullOrEmpty(fileName)) return path;
+            if (string.IsNullOrEmpty(fileName)) return "";
             // The same file may be referenced through different relative paths; that is safe to
             // de-duplicate. Two DIFFERENT files with the same basename are not: exporting both
             // under one entry would make the imported profile point at the wrong resource.
@@ -379,9 +446,22 @@ namespace JipperKeyViewer.KeyViewer
             if (!fontSelection.StartsWith(customPrefix, StringComparison.Ordinal)) return null;
             string name = fontSelection.Substring(customPrefix.Length).Trim();
             if (string.IsNullOrEmpty(name)) return null;
+            // FontName is a plain JSON string inside the profile, and a profile can arrive from a
+            // .jkv — so it is attacker-controlled. It is concatenated straight into a path here, so
+            // "Custom: ..\..\..\Users\<user>\Documents\secret" would have made the EXPORT read that
+            // file and copy it into the package. Keep the name to a bare file name.
+            // FontName 是配置里的普通 JSON 字符串，而配置可以来自 .jkv——即攻击者可控。此处直接
+            // 拼进路径，"Custom: ..\..\..\Users\<用户>\Documents\secret" 会让**导出**读出该文件
+            // 并打进包里。限定为纯文件名。
+            if (name.IndexOfAny(new[] { '/', '\\', ':', '*', '?', '"', '<', '>', '|' }) >= 0
+                || name.Contains(".."))
+            {
+                Loader.Warning($"KeyViewer: export skipped the font '{fontSelection}' — the name is not a plain file name");
+                return null;
+            }
             try
             {
-                string dir = Path.Combine(Loader.ModPath, "CustomFont");
+                string dir = Path.Combine(Loader.ResolveModPath(), "CustomFont");
                 string ttf = Path.Combine(dir, name + ".ttf");
                 if (File.Exists(ttf)) return ttf;
                 string otf = Path.Combine(dir, name + ".otf");
@@ -470,7 +550,16 @@ namespace JipperKeyViewer.KeyViewer
                         string.Equals((e.FullName ?? "").Replace('\\', '/'), PackageSettingsEntry, StringComparison.OrdinalIgnoreCase));
                     if (settingsEntry == null) throw new InvalidDataException("Package settings.json is missing");
                     string json = ReadPackageEntryText(settingsEntry, MaxPackageSettingsBytes);
-                    if (json.IndexOf("\"Count\"", StringComparison.OrdinalIgnoreCase) < 0)
+                    // Root-object property, not a substring: a truncated settings.json that merely
+                    // contains the literal "Count" somewhere (a node label, a path) passed this gate,
+                    // and PopulateObject then left the CONSTRUCTOR defaults in place — a silently
+                    // empty profile reported as a successful import. KeyViewer already has the
+                    // correct helper, written for exactly this class of bug.
+                    // 必须按根对象属性判定而非子串：被截断的 settings.json 只要某处（节点文字、
+                    // 路径）含字面量 "Count" 就能通过该闸门，而 PopulateObject 随后留下**构造默认值**
+                    // ——静默产出一份空白配置并报告"导入成功"。KeyViewer 已有为这类问题写的
+                    // 正确实现。
+                    if (!HasRootProperty(json, "Count"))
                         throw new InvalidDataException("Package settings has no Count field");
 
                     imported = new ProfileData();
@@ -484,6 +573,20 @@ namespace JipperKeyViewer.KeyViewer
                         Array.Copy(imported.Count, c, Math.Min(imported.Count.Length, MaxKeySlots));
                         imported.Count = c;
                     }
+                    // Element caps, matching the DmNote importer. EnsureCustomNodes' limits are
+                    // PER GROUP, so a package that simply declares hundreds of distinct GroupIds
+                    // walked straight past them: the group lookup is a full list scan, giving
+                    // O(nodes × groups) — billions of comparisons that hang the process — and the
+                    // unbound-decoration loop has no cap at all, so it could create tens of
+                    // thousands of GameObjects and textures.
+                    // 元素数量上限，与 DmNote 导入器一致。EnsureCustomNodes 的限制是**按组**计数，
+                    // 声明数百个不同 GroupId 的包可以完全绕过：组查找是全表扫描，构成
+                    // O(节点 × 组)——十亿级比较足以卡死进程；而未绑定装饰节点循环根本没有上限，
+                    // 可以创建数万个 GameObject 与贴图。
+                    if (imported.CustomNodes != null && imported.CustomNodes.Count > MaxPackageNodes)
+                        throw new InvalidDataException($"Package has {imported.CustomNodes.Count} nodes (limit {MaxPackageNodes})");
+                    if (imported.LayerGroups != null && imported.LayerGroups.Count > MaxPackageGroups)
+                        throw new InvalidDataException($"Package has {imported.LayerGroups.Count} layer groups (limit {MaxPackageGroups})");
 
                     info = ReadPackageInfo(archive);
                     transaction = new PackageImportTransaction();
@@ -503,7 +606,19 @@ namespace JipperKeyViewer.KeyViewer
                 if (newName == null) throw new IOException("Could not allocate a unique profile name");
 
                 imported.SyncListsToArrays();
-                if (imported.DataVersion < Settings.Version) imported.DataVersion = Settings.Version;
+                // Do NOT pre-stamp DataVersion. A package exported from a DORMANT v3 profile still
+                // carries DataVersion=3 (ExportProfilePackage copies the file verbatim, unlike
+                // SaveCurrentProfile which bumps it), and stamping it here made LoadProfile's
+                // MigrateFootSlots / v5→v6 flip skip it — reintroducing the very bugs those
+                // load-time repairs exist for: foot-key counters stuck on the old 20-base slots
+                // (reading as zero) and a v5 profile's KPS/Total Y convention locked in wrong. The
+                // bump belongs to SaveCurrentProfile, after the lazy repairs have run.
+                // **不要**预先盖 DataVersion。从**休眠** v3 配置导出的包里仍是 DataVersion=3
+                // （ExportProfilePackage 原样复制文件，不像 SaveCurrentProfile 会提升），
+                // 在这里盖戳会让 LoadProfile 的 MigrateFootSlots / v5→v6 翻转跳过它——正好
+                // 重新引入这些加载时修复要解决的 bug：脚键计数卡在旧的 20 基线槽位（读出来是 0）、
+                // v5 配置的 KPS/Total Y 约定被锁死为错误值。提升属于 SaveCurrentProfile，
+                // 且必须在惰性修复之后。
                 Directory.CreateDirectory(ProfileDir);
                 string profilePath = GetProfilePath(newName);
                 transaction.TrackProfile(profilePath);
@@ -517,6 +632,14 @@ namespace JipperKeyViewer.KeyViewer
 
                 success = true;
                 message = string.Format(I18n.Tr("pkg_imported"), newName);
+                if (transaction != null && transaction.SkippedLocalFiles.Count > 0)
+                {
+                    // Surface what "local file wins" cost the user, in the dialog itself.
+                    foreach (string skipped in transaction.SkippedLocalFiles)
+                        Loader.Warning($"KeyViewer: import kept the local '{skipped}' instead of the packaged one");
+                    message += " " + string.Format(I18n.Tr("pkg_imported_skipped_local"),
+                        transaction.SkippedLocalFiles.Count);
+                }
                 return true;
             }
             catch (Exception e)
@@ -533,7 +656,19 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         Settings.ProfileNames = previousNames;
                         Settings.CurrentProfile = previousCurrent;
-                        try { SaveMetaOnly(); } catch { }
+                        // Swallowing this hid a real broken state: the rollback deletes the imported
+                        // profile, so a failed meta write leaves settings.json naming a file that no
+                        // longer exists — and the next launch takes the "Profile not found" path.
+                        // Report it and raise the banner rather than leaving the chain silent.
+                        // 吞掉它会掩盖一种真实的损坏状态：回滚删除了导入的配置，而 meta 写失败会让
+                        // settings.json 指着一个已不存在的文件——下次启动就走「Profile not found」
+                        // 分支。现上报并显示横幅，不再让这条链静默。
+                        try { SaveMetaOnly(); }
+                        catch (Exception metaError)
+                        {
+                            Loader.Error($"KeyViewer: could not restore the profile list after a failed import: {metaError.Message}");
+                            lastSaveError = metaError.Message;
+                        }
                     }
                     transaction?.Rollback();
                 }
@@ -647,7 +782,7 @@ namespace JipperKeyViewer.KeyViewer
 
         private static void StagePackageAssets(ZipArchive archive, PackageImportTransaction transaction)
         {
-            string assetsDir = Path.Combine(Loader.ModPath, "CustomImages");
+            string assetsDir = Path.Combine(Loader.ResolveModPath(), "CustomImages");
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue;
@@ -659,7 +794,7 @@ namespace JipperKeyViewer.KeyViewer
 
         private static void StagePackageFonts(ZipArchive archive, PackageImportTransaction transaction)
         {
-            string fontsDir = Path.Combine(Loader.ModPath, "CustomFont");
+            string fontsDir = Path.Combine(Loader.ResolveModPath(), "CustomFont");
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue;
@@ -720,8 +855,7 @@ namespace JipperKeyViewer.KeyViewer
             {
                 if (packagesDir == null)
                 {
-                    string modPath = Loader.ModPath;
-                    packagesDir = Path.Combine(modPath ?? Application.persistentDataPath, "Packages");
+                    packagesDir = Path.Combine(Loader.ResolveModPath(), "Packages");
                 }
                 return packagesDir;
             }

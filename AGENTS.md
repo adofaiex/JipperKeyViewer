@@ -291,6 +291,67 @@
   之后每次 `Settings.Data` 都 NRE。现捕获、用默认值继续并显示失败。
 - **`SyncProfilesWithDisk` 把损坏 meta 里的 null/空白条目原样写回**：现过滤。
 
+### 资源预算与包导入/加载器加固（2026-09-26，第 40 轮）
+显存与字体预算：
+- **游戏字体无上限全量烘焙**：`Resources.FindObjectsOfTypeAll<Font>()` 返回游戏中加载的**每一个**
+  字体，每个都要烘焙一张 1024×1024（有时更大）字形图集加材质——标题画面有几百个字体时会静默
+  吃掉用户从未申请、也无法关闭的数百 MB 显存。现限 32 个并明确提示。
+- **自定义字体同样无上限**：`CustomFont` 目录由用户控制，往里丢上百个文件会在启动时烘焙上百
+  张图集。现限 24 个并提示；顺带修 `CreateFontAsset` 失败时源 `Font` 泄漏。
+- **视频节点无显存预算**：`MaxDimension=2048` + ARGB32 → 单个满尺寸节点已是 16 MB，而一份
+  FreeMake 文档最多可含 2048 个视频节点（32 GB 显存）。现设 256 MB 总预算，超出的节点回退
+  到静态图片；条目销毁时归还预算，`ReleaseAll` 直接归零。
+- **`BucketSize` 未挡 NaN/Inf**：`CeilToInt(NaN)` 为 0、`CeilToInt(Infinity)` 未定义——手改的
+  配置能直接决定渲染纹理尺寸。现与本代码库其它位置一致显式净化。
+
+`.jkv` 包（子代理审查）：
+- **【回归，上一轮引入】导入预盖 `DataVersion` 架空两条惰性迁移**：`imported.DataVersion =
+  Settings.Version` 让 `LoadProfile` 的 `MigrateFootSlots` / v5→v6 翻转直接跳过——从**休眠** v3
+  配置导出的包（`ExportProfilePackage` 原样复制文件，不像 `SaveCurrentProfile` 会提升）导入后，
+  脚键计数卡在旧的 20 基线槽位（读出来恒为 0）、v5 配置的 Y 约定被锁死为错误值。**用户无需任何
+  操作即可复现**。现删除该行，提升交给 `SaveCurrentProfile` 在惰性修复之后进行。
+- **导入对节点/组数量零上限（DoS）**：`EnsureCustomNodes` 的限制是**按组**计数，声明数百个不同
+  `GroupId` 的包可以完全绕过；组查找是全表扫描，构成 O(节点×组) 十亿级比较足以卡死进程。
+  现按 DmNote 导入器的同一量级加 4096 节点 / 64 组上限。
+- **未绑定装饰节点循环没有上限**：与按键槽位循环的 2048 上限**不冗余**（一个节点要么是按键
+  槽位、要么是装饰），满是装饰节点的文档会为每个节点创建一个 GameObject + 一张贴图。现补上限。
+- **`Count` 字段用子串 `IndexOf("\"Count\"")` 判定**：被截断的 settings.json 只要某处（节点文字、
+  路径）含该字面量就能通过，`PopulateObject` 随后留下**构造默认值**——静默产出空白配置并报告
+  "导入成功"。现改用已存在的 `HasRootProperty`。
+- **导出会把绝对路径指向的文件内容打包带走**：保留路径*字符串*是有意的，但打包*内容*不是——
+  `C:\Users\<用户>\Desktop\private.png` 会被复制进可分享的 `.jkv`。现绝对路径只保留引用、
+  不打包内容并警告；无法解析的相对路径改为置空，不再把本机目录结构原样写进包。
+- **字体名未净化 → 路径穿越**：`FontName` 是可被 `.jkv` 控制的 JSON 字段，此处直接拼进路径，
+  `Custom: ..\..\..\Users\<用户>\Documents\secret` 会让**导出**读出该文件并打进包里。现限定纯文件名。
+- **导出前半段在 try 之外**：`SaveCurrentProfile` 遇磁盘满/只读时抛异常逃进 IMGUI 调用方，且
+  若继续会导出**过期**布局。现捕获、设置错误横幅并放弃导出；配置名比较改 `OrdinalIgnoreCase`。
+- **「本地同名文件优先」完全静默**：接收方看到错图是 `.jkv` 最常见的实际故障，却日志与提示都
+  干净。现收集被跳过的目标，在导入消息与警告里说明（三语）。
+- **回滚路径的 `SaveMetaOnly` 静默吞异常**：回滚删除了导入的配置，meta 写失败会让 settings.json
+  指着一个已不存在的文件。现上报并显示横幅。
+
+加载器（子代理审查）：
+- **【高危】`Loader.ModPath` 静默回退 `"."` → 配置写进游戏安装目录**：`?? "."` 让 `ModPath`
+  **永远非 null**，于是 `config/`、`assets/`、`CustomFont/`、`CustomImages/`、`Packages/`、
+  `.jkv-staging/` 全部相对进程工作目录解析。只读安装下是一连串异常；可写时则把配置散落在游戏
+  目录并随游戏更新一起消失。现改为 `ResolveModPath()`：无效时一次性报错并落到
+  `Application.persistentDataPath`（该调用本身也包 try，可能抛异常，最后退到临时目录）；
+  `KeyViewer.cs`/`KeyViewerPackages.cs` 里本就存在但因 `"."` 而**不可达**的三处
+  `?? Application.persistentDataPath` 死代码由此真正生效。
+- **三个路径缓存永不失效**：`configPath`/`profileDir`/`packagesDir` 是静态惰性缓存，
+  `Loader.Instance` 一旦被换（重载、同进程第二个加载器）仍指向旧目录，读写分裂。现由
+  `Instance` 的 setter 统一清空。
+- **MelonLoader 偏好创建抛异常 → 永久半初始化**：`OnInitializeMelon` 中途抛错会跳过
+  `Main.Init`，而 `OnSceneWasInitialized` 仍调 `Main.EnableNow()`，此时 `Loader.Instance` 为
+  null——正是会把文件写进游戏安装目录的状态。现包 try/catch、明确报错并保持关闭。
+- **`Main.Init` 的 `initialized` 在做任何事之前置位**：上面任何一处抛错都会让门永久锁死，
+  Mod 再也无法初始化。现移到全部订阅完成之后。
+
+编辑器：
+- **`fm_unselectable` 也触发全量重建**：这是纯编辑器语义（运行中的游戏根本没有"不可选中"
+  概念），却在 `EditorMutated` 里销毁重建所有按键 GameObject。现改走 `EditorOnlyChanged`
+  （只压历史 + 落盘，不重建）。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

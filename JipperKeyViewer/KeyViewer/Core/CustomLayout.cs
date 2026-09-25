@@ -614,12 +614,20 @@ namespace JipperKeyViewer.KeyViewer
             Kps = slotNodes.FirstOrDefault(n => n.NodeType == 1)?.RuntimeKey;
             Total = slotNodes.FirstOrDefault(n => n.NodeType == 2)?.RuntimeKey;
             // Unbound image nodes are pure decoration. / 未绑定按键的图片节点为纯装饰。
+            // The Take(2048) matches the key-slot loop above and is NOT redundant with it: a node is
+            // EITHER a key slot OR a decoration, so the cap there never bounded this loop. Without
+            // one, a document full of unbound image nodes created one GameObject + one texture each.
+            // 此处的 Take(2048) 与上方按键槽位循环一致，且**不**冗余：一个节点要么是按键槽位、
+            // 要么是装饰，上限管不到这个循环。没有它，满是未绑定图片节点的文档会为每个节点创建
+            // 一个 GameObject + 一张贴图。
+            int decorationCount = 0;
             foreach (FmNode node in nodes)
-                if (node != null && node.NodeType == 3 && !CustomNodeHasKey(node) && CustomNodeVisible(node))
-                {
-                    CreateCustomImageObject(node);
-                    ApplyCustomGlow(node, false);
-                }
+            {
+                if (node == null || node.NodeType != 3 || CustomNodeHasKey(node) || !CustomNodeVisible(node)) continue;
+                if (decorationCount++ >= 2048) break;
+                CreateCustomImageObject(node);
+                ApplyCustomGlow(node, false);
+            }
             OrderCustomImageRects();
             }
             finally
@@ -1240,7 +1248,7 @@ namespace JipperKeyViewer.KeyViewer
             try
             {
                 if (Path.IsPathRooted(path)) return File.Exists(path) ? path : null;
-                string rel = Path.Combine(Loader.ModPath, "CustomImages", path);
+                string rel = Path.Combine(Loader.ResolveModPath(), "CustomImages", path);
                 if (File.Exists(rel)) return rel;
                 return File.Exists(path) ? path : null;
             }

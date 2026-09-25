@@ -54,6 +54,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private const int MinDimension = 64;
         private const int MaxDimension = 2048;
 
+        /// <summary>Total render-texture budget across all live video nodes. Generous for any real
+        /// layout (a handful of 1080p clips) and small enough that a pathological document cannot
+        /// ask the GPU for tens of gigabytes. / 所有存活视频节点渲染纹理的总预算。对任何真实布局
+        /// 都够用（几个 1080p 片段），又足够小，使病态文档无法向显卡索要数十 GB。</summary>
+        private const long MaxTotalTextureBytes = 256L * 1024 * 1024;
+        private static long liveTextureBytes;
+
         private static readonly string[] SupportedExtensions = { ".mp4", ".mov", ".webm", ".avi", ".wmv", ".m4v" };
 
         /// <summary>Open a build pass. Every GetOrCreate during it is stamped with the new
@@ -101,6 +108,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             foreach (KeyValuePair<int, Entry> pair in entries) DestroyEntry(pair.Value);
             entries.Clear();
             staleBuffer.Clear();
+            // DestroyEntry already returns each entry's budget, but reset outright: entries that
+            // were destroyed by something other than this manager (a domain reload leaving a stale
+            // counter) must not permanently shrink the budget.
+            // DestroyEntry 已归还每个条目的预算，但仍直接归零：被本管理器之外的东西销毁的条目
+            // （域重载留下陈旧计数）不得永久缩小预算。
+            liveTextureBytes = 0;
             if (root != null)
             {
                 UnityEngine.Object.Destroy(root);
@@ -258,6 +271,28 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     Width = width,
                     Height = height,
                 };
+                // Budget check, made BEFORE the texture is allocated so an over-budget request
+                // costs nothing. MaxDimension is 2048 and the format is ARGB32, so ONE node at
+                // full size is already 16 MB; a FreeMake document can hold 2048 video nodes, which
+                // would be 32 GB of VRAM. Refuse the extra ones so they fall back to the static
+                // image (the caller already handles a null texture) instead of exhausting the GPU.
+                // 预算检查放在**分配纹理之前**，超预算的请求零成本。MaxDimension 为 2048 且格式
+                // 为 ARGB32，单个满尺寸节点已是 16 MB；一份 FreeMake 文档最多可含 2048 个视频节点，
+                // 即 32 GB 显存。拒绝多余的那些，让它们回退到静态图片（调用方已处理 null 纹理），
+                // 而不是把显卡吃干。
+                long wanted = (long)width * height * 4L;
+                if (liveTextureBytes + wanted > MaxTotalTextureBytes)
+                {
+                    Loader.Warning($"KeyViewer: video node {nodeId} skipped — the video render-texture budget ({MaxTotalTextureBytes / (1024 * 1024)} MB) is already committed");
+                    player.prepareCompleted -= OnVideoPrepared;
+                    player.errorReceived -= OnVideoError;
+                    player.targetTexture = null;
+                    UnityEngine.Object.Destroy(go);
+                    texture.Release();
+                    UnityEngine.Object.Destroy(texture);
+                    return null;
+                }
+                liveTextureBytes += wanted;
                 // Register before Prepare so an immediate decoder error can be associated with
                 // this entry; the error callback marks it failed and the runtime swaps to the
                 // static image on the next frame. / Prepare 前登记，错误回调即可标记条目失败，
@@ -377,6 +412,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 e.Texture.Release();
                 UnityEngine.Object.Destroy(e.Texture);
             }
+            // Give the budget back, or a document that once had many video nodes could never
+            // create another one for the rest of the session. Floor at zero so a double-destroy
+            // (destroyed-object null checks can race a deferred Destroy) cannot make it negative.
+            // 把预算还回去，否则曾经有很多视频节点的文档此后永远创建不出新的。把下限设为 0，
+            // 避免（延迟 Destroy 与已销毁判定竞态导致的）二次销毁把它变成负数。
+            liveTextureBytes -= (long)e.Width * e.Height * 4L;
+            if (liveTextureBytes < 0) liveTextureBytes = 0;
             if (e.GameObject != null) UnityEngine.Object.Destroy(e.GameObject);
         }
 
@@ -390,6 +432,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
 
         private static int BucketSize(float size)
         {
+            // NaN/Infinity survive every comparison, and CeilToInt(NaN) is 0 while
+            // CeilToInt(Infinity) is undefined — the rest of this codebase sanitizes explicitly
+            // (EnsureCustomNodes, the rain start-Y), so do the same here rather than letting a
+            // hand-edited profile pick the render-texture size.
+            // NaN/Inf 能通过所有比较：CeilToInt(NaN) 为 0，而 CeilToInt(Infinity) 未定义——本
+            // 代码库其它地方都显式净化（EnsureCustomNodes、雨滴起始 Y），此处同样处理，不让手改
+            // 的配置决定渲染纹理尺寸。
+            if (float.IsNaN(size) || float.IsInfinity(size)) size = MinDimension;
             int s = Mathf.CeilToInt(Mathf.Max(1f, size) / SizeBucket) * SizeBucket;
             return Mathf.Clamp(s, MinDimension, MaxDimension);
         }
@@ -404,7 +454,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             try
             {
                 if (Path.IsPathRooted(path)) return path;
-                string rel = Path.Combine(Loader.ModPath, "CustomImages", path);
+                string rel = Path.Combine(Loader.ResolveModPath(), "CustomImages", path);
                 if (File.Exists(rel)) return rel;
                 return path;
             }

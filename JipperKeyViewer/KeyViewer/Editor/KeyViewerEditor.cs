@@ -974,6 +974,18 @@ namespace JipperKeyViewer.KeyViewer
             if (KeyViewerObject != null && IsCustomLayout) ResetKeyViewer();
         }
 
+        /// <summary>Toggle that only affects EDITOR behaviour (no runtime visual, no geometry, no
+        /// node identity). EditorMutated would push history and request a full overlay rebuild —
+        /// destroying and recreating every key GameObject — for a flag the running game cannot
+        /// even see. / 只影响**编辑器**行为的开关（不改变运行时视觉、几何或节点身份）。
+        /// EditorMutated 会压历史并请求整层重建——销毁重建所有按键 GameObject——而运行中的游戏
+        /// 根本看不到这个标志。</summary>
+        private void EditorOnlyChanged()
+        {
+            PushEditorHistoryNudge();
+            SaveSettings();
+        }
+
         private void RequestEditorRebuild()
         {
             if (KeyViewerObject != null && IsCustomLayout) ResetKeyViewer();
@@ -3391,7 +3403,15 @@ namespace JipperKeyViewer.KeyViewer
                     }, "fm_help_counter_anim");
                 }
             }
-            DrawEditorToggle(I18n.Tr("fm_unselectable"), first.Unselectable, v => { foreach (FmNode n in editorSelection) n.Unselectable = v; });
+            // Editor-only: the running game has no concept of "this node cannot be selected in the
+            // editor", so this must not tear the overlay down and rebuild it.
+            // 纯编辑器语义：运行中的游戏没有"此节点在编辑器里不可选中"的概念，不应为此拆掉
+            // 重建整层覆盖层。
+            DrawEditorToggle(I18n.Tr("fm_unselectable"), first.Unselectable, v =>
+            {
+                foreach (FmNode n in editorSelection) n.Unselectable = v;
+                EditorOnlyChanged();
+            });
             DrawEditorToggle(I18n.Tr("fm_hidden"), first.Hidden, v => { foreach (FmNode n in editorSelection) n.Hidden = v; });
             DrawEditorFontSize(first);
             DrawEditorToggle(I18n.Tr("fm_hide_label"), first.HideLabel, v => { foreach (FmNode n in editorSelection) n.HideLabel = v; });
@@ -4616,9 +4636,9 @@ namespace JipperKeyViewer.KeyViewer
                 if (string.IsNullOrWhiteSpace(p)) continue;
                 try
                 {
-                    string abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(Loader.ModPath, p));
+                    string abs = Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(Loader.ResolveModPath(), p));
                     if (!File.Exists(abs)) continue;
-                    string dir = Path.Combine(Loader.ModPath, "CustomImages");
+                    string dir = Path.Combine(Loader.ResolveModPath(), "CustomImages");
                     if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                     string dest = Path.Combine(dir, Path.GetFileName(abs));
                     if (!string.Equals(Path.GetFullPath(abs), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
@@ -4652,7 +4672,7 @@ namespace JipperKeyViewer.KeyViewer
         {
             try
             {
-                string dir = Path.Combine(Loader.ModPath, "CustomImages");
+                string dir = Path.Combine(Loader.ResolveModPath(), "CustomImages");
                 if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 System.Diagnostics.Process.Start("explorer.exe", dir);
             }

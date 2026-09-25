@@ -101,13 +101,31 @@ namespace JipperKeyViewer.KeyViewer
             if (allFonts == null || allFonts.Length == 0)
                 return;
 
+            // FindObjectsOfTypeAll returns EVERY font loaded anywhere in the game. Each conversion
+            // bakes a 1024x1024 (sometimes larger) glyph atlas plus its material, so a title with a
+            // few hundred fonts would silently cost hundreds of MB of VRAM the user never asked
+            // for and cannot turn off. Cap the list and say so — the bundled fonts and the user's
+            // own CustomFont files are unaffected.
+            // FindObjectsOfTypeAll 返回游戏中任何位置加载的**所有**字体。每次转换都会烘焙一张
+            // 1024×1024（有时更大）的字形图集加材质——标题画面有几百个字体时会静默吃掉用户从未
+            // 申请、也无法关闭的数百 MB 显存。现加上限并明确提示；内置字体与用户自己的
+            // CustomFont 文件不受影响。
+            const int MaxGameFonts = 32;
             int added = 0;
+            int skipped = 0;
             foreach (var font in allFonts)
             {
+                if (font == null) continue;
                 bool exists = false;
                 foreach (var e in fontList)
                     if (e.sourceFontName == font.name) { exists = true; break; }
                 if (exists) continue;
+
+                if (fontList.Count >= MaxGameFonts)
+                {
+                    skipped++;
+                    continue;
+                }
 
                 var tmpFont = TMP_FontAsset.CreateFontAsset(font);
                 if (tmpFont != null)
@@ -121,6 +139,8 @@ namespace JipperKeyViewer.KeyViewer
 
             if (added > 0)
                 Loader.Log($"KeyViewer: Converted {added} traditional font(s) to TMP_FontAsset");
+            if (skipped > 0)
+                Loader.Warning($"KeyViewer: {skipped} game font(s) were not added — the list is capped at {MaxGameFonts} entries to bound the glyph atlas VRAM");
         }
 
         /// <summary>
@@ -143,7 +163,7 @@ namespace JipperKeyViewer.KeyViewer
             // 在下次字体加载构建新材质前先丢弃。
             ReleaseTextStyleMaterials();
 
-            string modPath = Loader.ModPath;
+            string modPath = Loader.ResolveModPath();
             string assetsDir = Path.Combine(modPath, "assets");
 
             // Self-install: fresh installs get the embedded defaults on disk; existing files
@@ -658,8 +678,9 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         void ScanCustomFonts()
         {
-            string modPath = Loader.ModPath;
+            string modPath = Loader.ResolveModPath();
             string customFontDir = Path.Combine(modPath, "CustomFont");
+            int customFontCount = 0;
             string[] fontFiles;
             // Every directory operation is guarded: this method runs inside the overlay build
             // (TryLoadResources → EnableKeyViewer → OnEnable), so an UnauthorizedAccessException or
@@ -697,6 +718,13 @@ namespace JipperKeyViewer.KeyViewer
                 return;
             }
 
+            // Same reasoning as ScanGameFonts: every custom font bakes a full glyph atlas, and the
+            // directory is user-controlled with no upper bound. Dropping a custom font folder with
+            // hundreds of files in it used to bake hundreds of atlases at startup.
+            // 与 ScanGameFonts 同理：每个自定义字体都会烘焙完整字形图集，而该目录由用户控制、
+            // 没有上限。往里丢一个上百文件的目录，过去会在启动时烘焙上百张图集。
+            const int MaxCustomFonts = 24;
+            int skipped = 0;
             foreach (string fontPath in fontFiles)
             {
                 try
@@ -719,12 +747,29 @@ namespace JipperKeyViewer.KeyViewer
                         Loader.Log($"KeyViewer: Custom font '{fileName}' already loaded, skipping");
                         continue;
                     }
+                    if (customFontCount >= MaxCustomFonts)
+                    {
+                        skipped++;
+                        continue;
+                    }
 
                     Font font = new Font(fontPath);
-                    TMP_FontAsset tmpFont = TMP_FontAsset.CreateFontAsset(font);
+                    if (font == null) { Loader.Error($"KeyViewer: could not create font from '{fontPath}'"); continue; }
+                    TMP_FontAsset tmpFont;
+                    try
+                    {
+                        tmpFont = TMP_FontAsset.CreateFontAsset(font);
+                    }
+                    finally
+                    {
+                        // The atlas is baked by now and does not reference the source Font. / 图集
+                        // 此时已烘焙完成，不再引用源 Font。
+                        UnityEngine.Object.Destroy(font);
+                    }
                     if (tmpFont != null)
                     {
                         fontList.Add(new FontEntry(entryName, tmpFont));
+                        customFontCount++;
                     }
                     else
                     {
@@ -736,6 +781,8 @@ namespace JipperKeyViewer.KeyViewer
                     Loader.Error($"KeyViewer: Failed to load custom font '{fontPath}': {e.Message}");
                 }
             }
+            if (skipped > 0)
+                Loader.Warning($"KeyViewer: {skipped} custom font file(s) were not loaded — the list is capped at {MaxCustomFonts} to bound the glyph atlas VRAM");
         }
     }
 }

@@ -96,7 +96,7 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        internal string DmNotePresetDirectory => Path.Combine(Loader.ModPath, DmNotePresetDirectoryName);
+        internal string DmNotePresetDirectory => Path.Combine(Loader.ResolveModPath(), DmNotePresetDirectoryName);
 
         /// <summary>Import one DmNote JSON file as a new FreeMake profile. The current profile is
         /// saved first and is never overwritten. / 将一个 DmNote JSON 导入为新的 FreeMake Profile，

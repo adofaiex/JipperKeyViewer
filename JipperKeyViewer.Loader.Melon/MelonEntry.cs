@@ -30,9 +30,28 @@ namespace JipperKeyViewer.LoaderMelon
 
         public override void OnInitializeMelon()
         {
-            _prefs = MelonPreferences.CreateCategory("JipperKeyViewer", "Jipper Key Viewer");
-            _hotkeyEntry = _prefs.CreateEntry("Hotkey", "F1",
-                "Settings Hotkey", "Key to open/close settings window");
+            // Preference creation can throw (a locked/corrupt MelonPreferences.cfg, a read-only
+            // UserData folder). Previously the exception aborted OnInitializeMelon, so _handler was
+            // never built and Main.Init never ran — yet OnSceneWasInitialized still called
+            // Main.EnableNow(), which then operated with Loader.Instance == null. That is exactly
+            // the state that used to resolve every path against the GAME INSTALL FOLDER. Fail
+            // loudly and stay OFF instead; the user can see why and fix the prefs file.
+            // 偏好创建可能抛异常（MelonPreferences.cfg 被锁/损坏、UserData 目录只读）。此前异常会
+            // 中断 OnInitializeMelon，_handler 未建、Main.Init 未跑——而 OnSceneWasInitialized
+            // 仍会调 Main.EnableNow()，此时 Loader.Instance 为 null，正是过去会把所有路径解析到
+            // **游戏安装目录**的状态。改为明确报错并保持关闭，让用户看得见原因并修好偏好文件。
+            try
+            {
+                _prefs = MelonPreferences.CreateCategory("JipperKeyViewer", "Jipper Key Viewer");
+                _hotkeyEntry = _prefs.CreateEntry("Hotkey", "F1",
+                    "Settings Hotkey", "Key to open/close settings window");
+            }
+            catch (System.Exception e)
+            {
+                LoggerInstance.Error($"[JipperKeyViewer] could not read/create MelonPreferences — the mod stays disabled: {e}");
+                _hotkeyEntry = null;
+                return;
+            }
 
             _handler = new MelonHandler(this);
             Main.Init(_handler);
@@ -43,6 +62,12 @@ namespace JipperKeyViewer.LoaderMelon
             if (!_initialized)
             {
                 _initialized = true;
+                // Only enable when Init actually ran. If preference creation failed, EnableNow()
+                // would bring the mod up with no loader — the state that used to write the mod's
+                // files into the game install folder.
+                // 仅在 Init 确实跑过时才启用。偏好创建失败时 EnableNow() 会在没有加载器的情况下
+                // 启动 Mod——正是过去会把 Mod 文件写进游戏安装目录的状态。
+                if (_handler == null) return;
                 Main.EnableNow();
             }
         }

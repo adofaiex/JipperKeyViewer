@@ -267,8 +267,13 @@ namespace JipperKeyViewer.KeyViewer
             {
                 if (configPath == null)
                 {
-                    string modPath = Loader.ModPath;
-                    configPath = Path.Combine(modPath ?? Application.persistentDataPath, "config", "settings.json");
+                    // ResolveModPath, not ModPath: the old `?? "."` made ModPath non-null always, so
+                    // the persistentDataPath fallback below was unreachable dead code and a missing
+                    // loader wrote config into the GAME INSTALL FOLDER.
+                    // 用 ResolveModPath 而非 ModPath：旧的 `?? "."` 让 ModPath 永远非 null，下面的
+                    // persistentDataPath 兜底是不可达的死代码，缺加载器时会把配置写进**游戏安装
+                    // 目录**。
+                    configPath = Path.Combine(Loader.ResolveModPath(), "config", "settings.json");
                 }
                 return configPath;
             }
@@ -282,13 +287,23 @@ namespace JipperKeyViewer.KeyViewer
             {
                 if (profileDir == null)
                 {
-                    string modPath = Loader.ModPath;
-                    profileDir = Path.Combine(modPath ?? Application.persistentDataPath, "config", "profiles");
+                    profileDir = Path.Combine(Loader.ResolveModPath(), "config", "profiles");
                 }
                 return profileDir;
             }
         }
         static string profileDir;
+
+        /// <summary>Drop the cached mod-folder-derived paths so they follow the active loader /
+        /// 丢弃由 Mod 目录派生出的缓存路径，使其跟随当前加载器</summary>
+        internal static void ResetCachedPaths()
+        {
+            configPath = null;
+            profileDir = null;
+            // packagesDir lives in the KeyViewerPackages part of this same partial class.
+            // packagesDir 定义在本 partial 类的 KeyViewerPackages 部分。
+            packagesDir = null;
+        }
 
         /// <summary>Sanitize a profile name for use as a filename / 将配置名称净化用于文件名</summary>
         static string SanitizeFileName(string name)

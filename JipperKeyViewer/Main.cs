@@ -29,7 +29,6 @@ namespace JipperKeyViewer
             // 防御性:两个加载器都只调一次 Init,但重复调用会双重订阅 OnToggle/OnGUI/OnSaveGUI
             //(覆盖层重复开关、双重保存)。
             if (initialized) return;
-            initialized = true;
 
             // Load the embedded TGT compat shim BEFORE anything else: the replay bootstrap
             // scans loaded assemblies during startup, so the "KeyViewer" assembly must be in
@@ -51,6 +50,15 @@ namespace JipperKeyViewer
             // Unity 感知的空检查（?. 会绕过 UnityEngine.Object 的已销毁判断）
             loader.OnGUI += () => { var kv = KeyViewer.KeyViewer.instance; if (kv != null) kv.DrawSettingsWindow(); };
             loader.OnSaveGUI += () => { var kv = KeyViewer.KeyViewer.instance; if (kv != null) kv.SaveSettings(); };
+
+            // Set LAST. It used to be set first, so a throw anywhere above (a loader whose
+            // OnToggle += rejects duplicate handlers, a shim load that fails on a stripped
+            // install) left Instance already written but the guard permanently latched: the mod
+            // could never initialise again, and without a loader every path resolved against the
+            // game install folder. / 最后才置位。此前置位在前，于是上面任何一处抛错都会让
+            // Instance 已写入而门永久锁死：Mod 再也无法初始化，且缺少加载器时所有路径都解析到
+            // 游戏安装目录。
+            initialized = true;
         }
 
         /// <summary>
