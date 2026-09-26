@@ -1754,7 +1754,30 @@ namespace JipperKeyViewer.KeyViewer
             {
                 customFallbackPruneBuffer.Clear();
                 foreach (int id in pendingVideoFallbacks)
+                {
+                    // Drop an id whose fallback is ALREADY applied. The scan above skips those
+                    // (customVideoFallbackApplied.Contains -> continue), so they can never be
+                    // consumed, which makes them permanently inert — and this prune used to test
+                    // the exact opposite (`if (!Applied.Contains(id))`), i.e. it kept precisely the
+                    // ids that could never drain. An id could get in that state whenever a player
+                    // raised errorReceived twice, and the consequence was not cosmetic: the set
+                    // never emptied, its Count == 0 fast path stopped firing, and this method went
+                    // back to walking every node every frame.
+                    // OnVideoError now refuses to re-add an already-Failed entry, which stops that
+                    // at the source. Pruning this case as well is the point: the set then recovers
+                    // on its own no matter which caller put an id in it, instead of depending on
+                    // every future call site being careful. That is the same self-healing rule the
+                    // group-total cache was given.
+                    // 丢弃「回退**已**施加」的 id。上面的扫描会跳过它们（customVideoFallbackApplied
+                    // .Contains -> continue），故它们永远无法被消费，也就**永久失效**——而此前这个剪枝
+                    // 判的恰好**相反**（`if (!Applied.Contains(id))`），即它**保留**的正是永远排不空的
+                    // 那些 id。只要某个播放器两次触发 errorReceived，id 就会进入这个状态；后果并非外观
+                    // 问题：集合永不为空，`Count == 0` 快路径不再触发，本方法退回逐帧遍历每个节点。
+                    // OnVideoError 现已拒绝对已 Failed 的条目重新添加，从源头堵住；而这里同时剪掉该
+                    // 情况，正是要点所在：集合此后能**自愈**，无论将来是哪个调用方把 id 塞进来，
+                    // 而不必依赖每一个新调用点都足够小心——与组总数缓存采用的自愈规则相同。
                     if (!customVideoFallbackApplied.Contains(id)) customFallbackPruneBuffer.Add(id);
+                }
                 for (int i = 0; i < customFallbackPruneBuffer.Count; i++)
                     pendingVideoFallbacks.Remove(customFallbackPruneBuffer[i]);
             }
