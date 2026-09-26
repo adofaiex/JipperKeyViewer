@@ -329,7 +329,19 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     if (node.UseCustomColor && node.TextColor != null)
                         fallback = NodeColor(node.TextColor, fallback);
-                    if (key.isPressed && node.TextColorPressed != null)
+                    // The pressed colour must sit INSIDE the UseCustomColor gate, exactly like the idle
+                    // one above it and like both count-colour reads in the branch above. It did not:
+                    // unticking "custom colours" hides the whole panel but never clears the stored
+                    // arrays, so a node still holding a stale TextColorPressed painted its held state
+                    // in that stale node colour instead of the global TextClicked — a control taking
+                    // effect precisely when the user turned it off. Undo back to a snapshot taken
+                    // before the tick reaches the same state.
+                    // 按下色必须放在 UseCustomColor 门**内**，与上面的常态色、以及上面那个分支里的两处
+                    // 计数色读取完全一致。此前不在：取消勾选「自定义颜色」会隐藏整块面板，却**不会**
+                    // 清掉已存的数组，故仍持有旧 TextColorPressed 的节点在按住时会用那个旧节点色而
+                    // 非全局 TextClicked 上色——恰好在用户把它关掉的时候生效。撤销回到勾选前的快照
+                    // 也会落到同一状态。
+                    if (node.UseCustomColor && key.isPressed && node.TextColorPressed != null)
                         fallback = NodeColor(node.TextColorPressed, fallback);
                 }
                 return fallback;

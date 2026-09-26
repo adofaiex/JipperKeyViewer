@@ -520,6 +520,96 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 : main;
         }
 
+        /// <summary>Apply the per-node rain shadow/outline overrides on top of whatever the row
+        /// supplied, and report whether any field actually changed (the live-repaint path uses that
+        /// to decide whether the shared layer needs redrawing). Returns false for a null key/node so
+        /// callers can invoke it unconditionally.
+        ///
+        /// This block used to live only inside CreateRainDropForKey, which made the two write paths
+        /// disagree: RefreshDropColors repainted the drop BODY from the node, but the shadow and
+        /// outline kept the values they were born with. A node's rain shadow/outline colour picker
+        /// therefore affected only drops created after the edit — one per keypress — so with a tall
+        /// track and a slow speed the control looked completely dead. The global Rain tab papers over
+        /// this by CLEARING the in-flight drops instead; the editor never did, and clearing would
+        /// resurrect the trail-popping that the in-place repaint was written to remove. One helper,
+        /// two callers, so they cannot drift apart again.
+        /// / 把按节点雨滴阴影/描边覆盖应用到排所提供之上，并报告是否真的有字段变了（就地重绘路径
+        /// 据此决定共享层是否需要重绘）。key/node 为 null 时返回 false，故调用方可无条件调用。
+        ///
+        /// 这段此前只存在于 CreateRainDropForKey 内部，于是两条写入路径彼此不一致：
+        /// RefreshDropColors 会按节点重绘雨滴**本体**，而阴影与描边却保留出生时的值。故节点的雨滴
+        /// 阴影/描边颜色控件只对**编辑之后**新生的雨滴生效——每次按压一滴——于是高轨道配慢速度时
+        /// 该控件看起来完全失效。全局雨滴页是用「**清空**在飞雨滴」绕过这点的，编辑器从未如此，
+        /// 而清空会把就地重绘本就要消除的「轨迹反复弹出」问题带回来。一个辅助方法、两个调用点，
+        /// 二者从此无法再漂移。
+        ///
+        /// Known residual, deliberately left: turning an override flag OFF does not restore the
+        /// row's colour on drops that were already born under it — that would need the row defaults
+        /// re-derived here, and the drops expire on their own within a second or two anyway. Turning
+        /// a flag ON, or changing a colour, both take effect immediately.
+        /// **已知残留、有意不处理**：把覆盖开关**关掉**不会让已在其下出生的雨滴恢复排色——那需要在此
+        /// 重新推导排默认值，而这些雨滴本就会在一两秒内自行过期。打开开关或改颜色则立即生效。
+        /// </summary>
+        private static bool ApplyNodeRainOverrides(RawRain rawRain, Key key, bool isGhost)
+        {
+            FmNode cn = key?.CustomNode;
+            if (rawRain == null || cn == null) return false;
+            bool changed = false;
+            if (!isGhost)
+            {
+                if (cn.UseCustomRainShadow)
+                {
+                    changed |= rawRain.shadowEnabled != cn.RainShadowEnabled;
+                    rawRain.shadowEnabled = cn.RainShadowEnabled;
+                    Color sc = KeyViewer.NodeColor(cn.RainShadowColor, rawRain.shadowColor);
+                    changed |= rawRain.shadowColor != sc;
+                    rawRain.shadowColor = sc;
+                    changed |= rawRain.shadowOffsetX != cn.RainShadowOffsetX;
+                    rawRain.shadowOffsetX = cn.RainShadowOffsetX;
+                    changed |= rawRain.shadowOffsetY != cn.RainShadowOffsetY;
+                    rawRain.shadowOffsetY = cn.RainShadowOffsetY;
+                }
+                if (cn.UseCustomRainOutline)
+                {
+                    changed |= rawRain.outlineEnabled != cn.RainOutlineEnabled;
+                    rawRain.outlineEnabled = cn.RainOutlineEnabled;
+                    Color oc = KeyViewer.NodeColor(cn.RainOutlineColor, rawRain.outlineColor);
+                    changed |= rawRain.outlineColor != oc;
+                    rawRain.outlineColor = oc;
+                    float ow = Mathf.Max(0f, cn.RainOutlineWidth);
+                    changed |= rawRain.outlineWidth != ow;
+                    rawRain.outlineWidth = ow;
+                }
+            }
+            else
+            {
+                if (cn.UseCustomGhostRainShadow)
+                {
+                    changed |= rawRain.shadowEnabled != cn.GhostRainShadowEnabled;
+                    rawRain.shadowEnabled = cn.GhostRainShadowEnabled;
+                    Color sc = KeyViewer.NodeColor(cn.GhostRainShadowColor, rawRain.shadowColor);
+                    changed |= rawRain.shadowColor != sc;
+                    rawRain.shadowColor = sc;
+                    changed |= rawRain.shadowOffsetX != cn.GhostRainShadowOffsetX;
+                    rawRain.shadowOffsetX = cn.GhostRainShadowOffsetX;
+                    changed |= rawRain.shadowOffsetY != cn.GhostRainShadowOffsetY;
+                    rawRain.shadowOffsetY = cn.GhostRainShadowOffsetY;
+                }
+                if (cn.UseCustomGhostRainOutline)
+                {
+                    changed |= rawRain.outlineEnabled != cn.GhostRainOutlineEnabled;
+                    rawRain.outlineEnabled = cn.GhostRainOutlineEnabled;
+                    Color oc = KeyViewer.NodeColor(cn.GhostRainOutlineColor, rawRain.outlineColor);
+                    changed |= rawRain.outlineColor != oc;
+                    rawRain.outlineColor = oc;
+                    float ow = Mathf.Max(0f, cn.GhostRainOutlineWidth);
+                    changed |= rawRain.outlineWidth != ow;
+                    rawRain.outlineWidth = ow;
+                }
+            }
+            return changed;
+        }
+
         public Color GetRainColor(byte color) => RainColor(color, false);
 
         public Color GetGhostRainColor(byte color) => RainColor(color, true);
@@ -593,6 +683,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     if (!rain.isGhost && key.CustomNode != null
                         && key.CustomNode.UseCustomRainColor && key.CustomNode.RainColorTop != null)
                         top = KeyViewer.NodeColor(key.CustomNode.RainColorTop, resolved);
+                    // The per-node shadow/outline overrides used to be baked at creation only, so this
+                    // repaint fixed the drop body while the trail's shadow and outline kept their
+                    // birth colours — a node's rain shadow/outline colour picker then affected only
+                    // drops created after the edit, one per keypress. Same helper as creation, so the
+                    // two write paths can no longer disagree. Clear drops would have worked too and is
+                    // what the global Rain tab does, but it resurrects the trail popping this in-place
+                    // repaint exists to avoid.
+                    // 按节点阴影/描边覆盖此前只在创建时烘焙，故本次重绘只修好了雨滴本体，而轨迹的阴影
+                    // 与描边仍保留出生色——节点的雨滴阴影/描边颜色控件于是只对编辑之后新生的雨滴生效，
+                    // 每次按压一滴。与创建共用同一辅助方法，两条写入路径从此无法再不一致。改用清空
+                    // 雨滴同样有效（全局雨滴页就是这么做的），但会把本次就地重绘本就要避免的「轨迹反复
+                    // 弹出」带回来。
+                    if (ApplyNodeRainOverrides(rain, key, rain.isGhost)) touched = true;
                     if (rain.mainColor == resolved && rain.ColorTop == top) continue;
                     rain.mainColor = resolved;
                     rain.ColorTop = top;
@@ -802,42 +905,10 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // color keeps the row's. Normal rain and ghost rain each have their own override pair
             // (ghost rows stay the ghost fallback). / 节点级阴影/描边覆盖——在排赋值之后应用，
             // 节点颜色为空时保留排颜色。普通雨与鬼雨各有独立的覆盖组（鬼雨排仍是鬼雨的回退）。
-            if (key.CustomNode != null)
-            {
-                FmNode cn = key.CustomNode;
-                if (!isGhost)
-                {
-                    if (cn.UseCustomRainShadow)
-                    {
-                        rawRain.shadowEnabled = cn.RainShadowEnabled;
-                        rawRain.shadowColor = KeyViewer.NodeColor(cn.RainShadowColor, rawRain.shadowColor);
-                        rawRain.shadowOffsetX = cn.RainShadowOffsetX;
-                        rawRain.shadowOffsetY = cn.RainShadowOffsetY;
-                    }
-                    if (cn.UseCustomRainOutline)
-                    {
-                        rawRain.outlineEnabled = cn.RainOutlineEnabled;
-                        rawRain.outlineColor = KeyViewer.NodeColor(cn.RainOutlineColor, rawRain.outlineColor);
-                        rawRain.outlineWidth = Mathf.Max(0f, cn.RainOutlineWidth);
-                    }
-                }
-                else
-                {
-                    if (cn.UseCustomGhostRainShadow)
-                    {
-                        rawRain.shadowEnabled = cn.GhostRainShadowEnabled;
-                        rawRain.shadowColor = KeyViewer.NodeColor(cn.GhostRainShadowColor, rawRain.shadowColor);
-                        rawRain.shadowOffsetX = cn.GhostRainShadowOffsetX;
-                        rawRain.shadowOffsetY = cn.GhostRainShadowOffsetY;
-                    }
-                    if (cn.UseCustomGhostRainOutline)
-                    {
-                        rawRain.outlineEnabled = cn.GhostRainOutlineEnabled;
-                        rawRain.outlineColor = KeyViewer.NodeColor(cn.GhostRainOutlineColor, rawRain.outlineColor);
-                        rawRain.outlineWidth = Mathf.Max(0f, cn.GhostRainOutlineWidth);
-                    }
-                }
-            }
+            // Shared with RefreshDropColors: these used to exist only here, so editing a node's
+            // rain shadow/outline colour repainted the drop BODY (the subagent's finding) but left
+            // the shadow and outline on their creation-time values for the rest of their life.
+            ApplyNodeRainOverrides(rawRain, key, isGhost);
 
             rawRain.outlineCornerRadius = settings.Data.EnableRainRoundedOutline
                 ? Mathf.Clamp(settings.Data.RainOutlineCornerRadius, 0f, 20f)
