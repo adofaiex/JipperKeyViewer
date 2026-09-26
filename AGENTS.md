@@ -2237,6 +2237,42 @@ try/catch，故某个阶段抛异常**不会中断**后面的链——`UpdateCus
 - **仍未做**：`ApplyCustomKeyColors` 等按压路径的 TMP 颜色写入、52 段文字的描边/阴影片元成本，
   均未单独测量过（作为整层测得 ≤0.38ms，故上限已被框住）。
 
+### DmNote 导入漏掉了整个 CSS 主题（2026-09-27，第 112 轮）
+- **用户的反馈**：「DmNote 配置导入有一堆问题，xnoronly.css，DmNote 有 .css」。这是一次**功能缺口**，
+  不是性能问题；此前我从未读过 CSS。
+- **缺口有多大**：真实预设 `dmsnow.json`（146KB）里，**每一个视觉字段都是 `null`**——
+  `backgroundColor` / `activeBackgroundColor` / `borderColor` / `borderWidth` / `borderRadius` /
+  `fontColor` / `activeFontColor` / `fontSize` / `fontWeight` 全空，而整个主题在
+  `customCSS.content`（22KB）或同名兄弟 `.css` 里。导入器只读 JSON，故导入结果是一堆**纯色方块**：
+  颜色错、圆角没了、没有光效、字体错。
+- **最致命的一项**：音符图标（clear / crown / crown_side / fail / white_star 及各自的 `*Black`
+  变体，共 10 个）**只存在于** CSS 的 `::before { mask-image: url(data:image/svg+xml;base64,…) }`
+  里，靠 `className` 选择——而 JSON 的 `className` 正好是 `""`，两个 image 字段也都是 `""`。
+  不解析 CSS 就**一个图标都没有**。
+- **新增** `Core/KeyViewerDmNoteCss.cs`（CSS 子集解析器：规则块、逗号列表、`:where()`/`:is()` 展开、
+  属性/类选择器、自定义属性与 `var()` 后备、`!important`（剥离——无层叠可谈，后出现者胜）、
+  @keyframes/@media 跳过并上报）与 `Core/KeyViewerDmNoteCssMapping.cs`（主题 → `FmNode` 映射）。
+  **JSON 优先**：JSON 真正给出值的地方以 JSON 为准，CSS 只填 null，故映射在 JSON 映射**之后**运行。
+- **解析器自身修掉的两个 bug（都是先写错、再被测试抓出来）**：
+  1. `ExtractAttributes` 吐出的是**整个属性文本**（`data-state="inactive"`），而 `DescribeSelector`
+     拿它与**裸属性名** `data-state` 比较——永远不相等，于是**每一条 `[data-state]` 规则都被静默
+     丢弃**，常态与按下被渲染成完全相同的样子。症状极具迷惑性：解析「成功」，`HasAny` 为真，
+     但两个状态的色都是空的。
+  2. 类选择器规则（`.clear { --logo-color }`）原本被并入**全局**作用域，会让图标专属的
+     `color: transparent` 作用于**每个**按键、抹掉全部文字。已拆出 `ClassIdle`/`ClassActive`，
+     只对带该 `className` 的节点生效。
+  3. `box-shadow` 的长度顺序是 `<x> <y> <blur> <spread>` 四档，我按两档读，把 `0 10px 22px` 的
+     **10px 偏移当成了模糊半径**，使每个导入按键的光效减半。端到端打印 `glowSize` 才发现。
+  4. `transform: scale(1)` 是 CSS 恒等变换而非动画请求，不应打开按压缩放覆盖。
+- **不支持且已上报**：`backdrop-filter: blur()`、`letter-spacing`、CSS/JS 动画、`customJS.plugins[]`
+  （内嵌的 `kps.js` 会构建 DmNote 渲染、本 Mod 无法渲染的图像面板）——三语提示，不静默丢弃。
+- **图标是 SVG，本 Mod 无法渲染**：`ImageConversion.LoadImage` 只解码 PNG/JPEG，没有光栅化器。
+  故解析器把 10 个 SVG 提取到 `CustomImages/dmnote-icons/` 并提示用户转成**同名 PNG**；这比引入
+  一个矢量光栅化器划算。
+- Harness 增至 **172** 项（含 7 条 CSS 契约测试，以及一条**用用户真实 `dmsnow.json` 的端到端**测试：
+  断言主题真的落到 `FmNode` 上，而不只是「解析器能读样式表」）。另加 `css <file>` 调试命令，
+  打印任意样式表的解析结果——用户自己的主题是分辨「主题不支持」与「解析器漏了」的唯一依据。
+
 ### 仍待实机或后续处理
 - Unity 游戏内回归：FreeMake 撤销/切换、视频真实编码回退、UMM 首次显示、TGT 回放。
 - `.jkv` 仍需完整游戏内端到端导入回归（当前已有离线校验/事务原语测试）。

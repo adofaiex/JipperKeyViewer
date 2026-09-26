@@ -54,6 +54,14 @@ namespace JipperKeyViewer.KeyViewer
             public string Tab = "default";
             public bool NoteEnabled = true;
             public float NoteSpeed;
+            /// <summary>Companion stylesheet, already parsed. Null when the preset has none and the
+            /// loader found no sibling .css. / 伴随样式表（已解析）；预设没有且找不到同名 .css 时为 null。</summary>
+            public DmNoteCssTheme CssTheme = new DmNoteCssTheme();
+            public bool UseCustomCss = true;
+            /// <summary>The preset ships DM Note JS plugins. They cannot run here, but the user
+            /// should be told rather than discovering a missing graph panel. / 预设带 JS 插件；无法
+            /// 运行，但应告知用户，而不是让图像面板凭空消失。</summary>
+            public bool HasJsPlugins;
         }
 
         /// <summary>Profile name free in BOTH the profile list and on disk. MakeUniqueProfileName
@@ -119,7 +127,7 @@ namespace JipperKeyViewer.KeyViewer
                 }
 
                 string json = File.ReadAllText(filePath);
-                if (!TryParseDmNoteJson(json, out DmNoteImportDocument document, out string parseError))
+                if (!TryParseDmNoteJson(json, out DmNoteImportDocument document, out string parseError, filePath))
                 {
                     message = I18n.Tr("dmnote_import_invalid") + " " + parseError;
                     return false;
@@ -128,6 +136,26 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     message = I18n.Tr("dmnote_import_empty");
                     return false;
+                }
+
+                // Report what the stylesheet did and did not carry, BEFORE the profile is written:
+                // a theme that looks wrong after the fact is otherwise indistinguishable from the
+                // import having failed. The glyphs are extracted here so the user has something to
+                // convert even if they later decide to delete the profile.
+                // 在写 Profile **之前**说明样式表带了什么、没带什么：事后主题看起来不对时，
+                // 无法与「导入失败」区分。图标在此提取，即使用户随后删掉 Profile 也还有东西可转。
+                if (document.UseCustomCss && document.CssTheme.HasAny)
+                {
+                    document.Warnings.Add(I18n.Tr("dmnote_css_applied"));
+                    document.Warnings.Add(I18n.Tr("dmnote_css_unsupported"));
+                    List<string> iconNotes = DmNoteCssMapping.ExtractIcons(document.CssTheme, filePath,
+                        Path.Combine(Loader.ResolveModPath(), "CustomImages"));
+                    foreach (string note in iconNotes) document.Warnings.Add(I18n.Tr("dmnote_css_icons"));
+                    // The embedded kps.js plugin builds a graph panel DmNote renders and this mod
+                    // cannot; say so rather than letting the panel simply be missing.
+                    // 内嵌的 kps.js 插件会构建 DmNote 渲染、本 Mod 无法渲染的图像面板；
+                    // 明确说明，而不是让面板凭空消失。
+                    if (document.HasJsPlugins) document.Warnings.Add(I18n.Tr("dmnote_js_plugins"));
                 }
 
                 SaveCurrentProfile();
@@ -249,7 +277,8 @@ namespace JipperKeyViewer.KeyViewer
 
         /// <summary>Parse the documented DmNote layout shape. Pure and side-effect free so the
         /// Harness can exercise it without Unity scene state. / 解析 DmNote 布局格式；纯函数便于测试。</summary>
-        internal static bool TryParseDmNoteJson(string json, out DmNoteImportDocument document, out string error)
+        internal static bool TryParseDmNoteJson(string json, out DmNoteImportDocument document, out string error,
+            string presetPath = null)
         {
             document = null;
             error = "";
@@ -269,6 +298,19 @@ namespace JipperKeyViewer.KeyViewer
                     NoteSpeed = root["noteSettings"] is JObject noteSettings
                         ? ReadNumber(noteSettings, noteSettings, "speed", 0f) : 0f
                 };
+                // The companion stylesheet. A shipped preset leaves every visual field null and
+                // carries the whole theme here — including, for the shipped themes, the ONLY copy
+                // of the clear/crown/fail/star glyphs, which live in ::before mask-image rules
+                // selected by the very `className` the JSON leaves empty. Read it before the
+                // elements so node construction can consult it.
+                // 伴随样式表。随包预设把所有视觉字段留空、整个主题都在这里——对现成主题而言，
+                // clear/crown/fail/star 图标的**唯一副本**也在此处，藏在由 JSON 留空的 className
+                // 选中的 ::before mask-image 规则里。必须先于元素读取，供节点构造查阅。
+                result.UseCustomCss = ReadBool(root, "useCustomCSS", true);
+                result.HasJsPlugins = ReadBool(root, "useCustomJS", false);
+                result.CssTheme = DmNoteCss.Parse(DmNoteCss.LoadCompanionCss(presetPath,
+                    root["customCSS"] is JObject customCss ? (string)customCss["content"] : null));
+                foreach (string w in result.CssTheme.Warnings) result.Warnings.Add(w);
                 JArray keyElements = SelectDmNoteTabArray(keyTable, result.Tab);
                 JArray statElements = SelectDmNoteTabArray(statTable, result.Tab);
                 if ((keyElements == null || keyElements.Count == 0)
@@ -345,7 +387,16 @@ namespace JipperKeyViewer.KeyViewer
                 int nodeType = stat ? ResolveDmNoteStatType(raw, name, result.Warnings) : 0;
                 if (stat && nodeType == 0) continue; // unsupported KPS avg/max panels
                 FmNode node = BuildDmNoteNode(raw, name, nodeType, nextId++, result.Warnings);
-                if (node != null) result.Nodes.Add(node);
+                if (node != null)
+                {
+                    // CSS is the FALLBACK source: the JSON wins wherever it actually supplied a
+                    // value, and the stylesheet only fills the nulls. That is why this runs after
+                    // the JSON mapping rather than instead of it. / CSS 是**回退**来源：JSON 真正给出
+                    // 值的地方以 JSON 为准，样式表只填补 null。故此处在 JSON 映射**之后**运行。
+                    DmNoteCssMapping.Apply(node, result.CssTheme, ReadString(raw, raw, "className", ""),
+                        result.UseCustomCss);
+                    result.Nodes.Add(node);
+                }
             }
         }
 
