@@ -1753,6 +1753,31 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   `FAIL … -- shim has no type KeyViewer.Core.Input.KeyInput`（`155 passed, 1 failed`），
   恢复后 156 全绿。
 
+### 【流程】全仓扫描的根路径：`JipperKeyViewer\KeyViewer` **不是**整个源码树（2026-09-26，第 98 轮）
+本轮是**负结果轮**，但暴露了一个会重复制造假阳性的流程错误，必须记下来。
+
+- **又一次靠推断下结论、靠读代码纠正**（第 92、93、94、97、98 轮，连续第五次）。这次的错法是
+  **扫描根选错**：
+  - 我一直用 `Get-ChildItem -Recurse -Filter *.cs JipperKeyViewer\KeyViewer` 当「全仓源码」；
+  - 但 `Main.cs` 在 `JipperKeyViewer\Main.cs`，**不在** `KeyViewer\` 子目录里。实测
+    `JipperKeyViewer` 下共 **32** 个 .cs，`JipperKeyViewer\KeyViewer\` 下只有 **30** 个。
+  - 于是本轮据此断言「`EnsureShimLoaded` 只在懒绑定处被调用，`Main.Init` 里那句
+    ‘Load the embedded TGT compat shim BEFORE anything else’ 是**说谎的注释**，垫片会赶不上
+    回放引导器的启动扫描、TGT 回放静默失效」——**纯属捏造**。`Main.cs:63` 明明写着
+    `KeyViewer.KeySource.EnsureShimLoaded();`，注释准确无误。
+  - 这与第 88 轮（扫 `KeyViewerSettings` 却以为覆盖了 `ProfileData`）是**同一种错误的新形态**。
+- **正确的扫描根**（后续任何全仓扫描都用这个，并排除 `bin`/`obj`）：
+  ```powershell
+  $src = (Get-ChildItem -Recurse -Filter *.cs JipperKeyViewer |
+          Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' }).FullName
+  ```
+  需要覆盖加载器与垫片时，再把 `JipperKeyViewer.Loader.Melon`、`JipperKeyViewer.Loader.UMM`、
+  `TgtCompat` 的 `.FullName` 拼进去。
+- **本轮的实际结论（核实后）**：全仓**字符串反射查找只有 5 处**，且全部已加固或已被上上轮钉住——
+  `KeySource` 的垫片查找（已由反射契约测试覆盖）、`GetFontMaterial` 的 `Font.material`
+  （按类型重解析 + 整体 try/catch + 解析不到即 `Loader.Error`）、`ImageConversion` 的
+  `Type.GetType` + 按名回退扫描。**没有新的未检查耦合。**
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
