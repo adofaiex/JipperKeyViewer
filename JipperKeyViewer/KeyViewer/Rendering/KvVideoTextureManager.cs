@@ -39,6 +39,40 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             public int Height;
             public int LastGeneration;
             public bool Failed;
+        /// <summary>Size and last-write time of the file at the moment it failed. / 该文件失败时的
+        /// 大小与最后写入时间。</summary>
+        /// <summary>How big and how fresh the file was when this entry failed.
+        ///
+        /// This is what makes a failed entry retryable *without* reintroducing the
+        /// allocate→fail→free→allocate cycle. The never-retry rule exists because every rebuild
+        /// used to destroy and re-create a dead player for a file that could never decode. But it
+        /// also made one ordinary situation permanent: a file that is still being copied into
+        /// CustomImages\ passes IsPlayableVideo's File.Exists check while being undecodable, the
+        /// decode fails, and the node then stays blank for the rest of the session — even after the
+        /// copy finishes, because nothing about a completed copy differs from the half-written file
+        /// as far as the path string is concerned. Only a full toggle of the overlay, a switch to
+        /// the fixed layout, or editing the path text recovered it, and none of those explain
+        /// themselves on screen.
+        ///
+        /// Retrying on "the file changed" keeps the protection exactly: a genuinely broken file
+        /// does not change, so it is still retried zero times. A file that does change earns a
+        /// retry, and each retry can only happen after strictly more bytes landed, so the loop
+        /// converges on the copy instead of spinning.
+        /// 该条目失败时文件的大小与新鲜度。
+        ///
+        /// 正是它让失败条目**可以**重试，而**不**重新引入「分配→失败→释放→再分配」循环。
+        /// 「不再重试」这条规则存在，是因为此前每次重建都会为一个永远解不出来的文件销毁并重建死
+        /// 播放器。但它也把一个**日常**情形变成了永久状态：仍在拷入 CustomImages\ 的文件能通过
+        /// IsPlayableVideo 的 File.Exists 检查却解不出来，于是解码失败，节点此后在本次会话余下时间
+        /// 一直空白——**即便拷贝已经完成**，因为在路径字符串看来，写完的文件与写一半的文件毫无区别。
+        /// 只能靠整体开关显示、切换到固定布局、或改一下路径文本来恢复，而这些都没有任何屏幕提示。
+        ///
+        /// 以「文件已变」为重试条件，恰好保住了那道保护：真正损坏的文件不会变化，故仍然**一次都
+        /// 不重试**。而发生变化的文件会赢得一次重试，且每次重试都必须等到「又落了些字节」之后，
+        /// 故该循环是朝拷贝完成**收敛**，而不是空转。
+        /// </summary>
+        public long FailedSize = -1;
+        public long FailedWriteTicks = -1;
             /// <summary>Has this entry's budget slice already been handed back by OnVideoError?
             /// Without it, destroying the tombstone later (a path change, node deletion, teardown)
             /// would decrement `liveTextureBytes` a second time, and the floor-at-0 clamp would then
@@ -234,8 +268,37 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // 滑杆）都会销毁死的播放器与 RT、重新创建、重新解码、再次失败、再次刷日志——形成
             // 永久的"分配→失败→释放→再分配"循环与重复告警。返回 null 让调用方立即走静态图
             // 路径，死条目留到 EndBuild 统一回收。
+            // A file that already failed to decode is not retried — UNLESS the file itself has
+            // changed since it failed. The reuse test above excludes FAILED entries, so without the
+            // tombstone EVERY rebuild (dragging a node, nudging a colour slider) destroyed the dead
+            // player + RT, re-created them, re-ran the decoder, failed again and logged again — a
+            // permanent allocate→fail→free→allocate cycle plus a repeating warning.
+            //
+            // The unconditional version of that rule had its own permanent failure, though: a video
+            // still being copied into CustomImages\ satisfies IsPlayableVideo's File.Exists test
+            // while being undecodable, so the decode failed and the node stayed blank for the rest
+            // of the session — including after the copy finished, because the completed file is
+            // indistinguishable from the half-written one as far as the path goes. Only toggling the
+            // overlay, switching to the fixed layout, or retyping the path brought it back, and
+            // none of them say why. So the tombstone records the file's size and write time at the
+            // moment it failed, and a rebuild re-attempts only when the file has genuinely moved on.
+            // A file that never changes is still retried exactly zero times, which is the whole
+            // point of the tombstone; one that changes has earned it, and each re-attempt requires
+            // strictly more bytes to have landed, so this converges rather than spins.
+            // 已确认解码失败的文件不再重试——**除非该文件自失败以来发生了变化**。复用判定排除
+            // FAILED 条目，故若无墓碑，每次重建（拖节点、调色滑杆）都会销毁死的播放器与 RT、重新
+            // 创建、重新解码、再次失败、再次刷日志——形成永久的「分配→失败→释放→再分配」循环与重复告警。
+            //
+            // 但这条**无条件**规则自身也有一个永久故障：仍在拷入 CustomImages\ 的视频能满足
+            // IsPlayableVideo 的 File.Exists 检查却解不出来，于是解码失败，节点此后在本次会话余下时间
+            // 一直空白——**包括拷贝完成之后**，因为在路径看来写完的文件与写一半的文件毫无区别。
+            // 只能靠整体开关显示、切到固定布局、或重输路径才能恢复，且都没有任何提示。
+            // 故墓碑记录失败那一刻文件的大小与写入时间，重建时**只在文件确实变了**才重试。
+            // 从不变化的文件仍然一次都不重试——这正是墓碑存在的全部意义；变化了的文件则「挣」到了这次
+            // 重试，且每次重试都要求又落下严格更多的字节，故它是收敛而非空转。
             if (existing != null && existing.Failed
-                && string.Equals(existing.ResolvedPath, resolved, StringComparison.OrdinalIgnoreCase))
+                && string.Equals(existing.ResolvedPath, resolved, StringComparison.OrdinalIgnoreCase)
+                && !FileChangedSinceFailure(existing))
             {
                 existing.LastGeneration = generation;
                 return null;
@@ -252,6 +315,68 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             created.LastGeneration = generation;
             entries[nodeId] = created;
             return created.Texture;
+        }
+
+        /// <summary>Has the file this entry failed on been modified since it failed? / 该条目失败后，
+        /// 其文件是否被修改过？</summary>
+        /// <summary>The whole retry decision, in one place, so a missing stamp and a real
+        /// "unchanged" answer cannot be confused. An entry that failed before this stamp existed
+        /// reports "changed", so it gets one clean re-attempt — a good default, since the file may
+        /// well have been fixed in the meantime and a single attempt costs one texture.
+        /// 重试与否的**全部**判断集中在此一处，避免「缺少戳记」与「确实没变」两种情况被混淆。
+        /// 在本戳记存在之前就失败的条目一律报告「已变」，即获得一次干净的重新尝试——这是合适的
+        /// 默认值：文件很可能已经修好，而一次尝试的代价只是一张贴图。
+        /// </summary>
+        /// <summary>The retry decision, as a pure function of two file stamps. / 以两份文件戳记为
+        /// 输入的纯函数形式的重试判定。</summary>
+        /// <summary>True when the file has moved on since the stamp, so a re-attempt is earned.
+        /// False means the file is byte-for-byte and timestamp-for-timestamp what it was when it
+        /// failed — and THAT is the invariant worth a test: a genuinely broken file must be retried
+        /// exactly zero times, because every retry used to cost a player, a RenderTexture, a decode
+        /// and a log line. A negative stamp means "never stamped" (the entry predates stamping, or
+        /// the file could not be stat'ed) and earns one clean attempt.
+        /// 文件自戳记以来已变化、因而「挣」到一次重试时为 true。false 表示文件与失败那一刻在字节与
+        /// 时间戳上完全一致——而这正是值得用测试钉住的**不变量**：真正损坏的文件必须被重试**恰好
+        /// 零次**，因为此前每次重试都要付一个播放器、一张 RenderTexture、一次解码与一行日志。
+        /// 戳记为负表示「从未戳记过」（条目早于该机制，或文件无法取状态），故获得一次干净的尝试。
+        /// </summary>
+        internal static bool VideoFileChangedSince(long failedSize, long failedWriteTicks, long currentSize, long currentWriteTicks)
+            => failedSize < 0 || failedWriteTicks < 0
+               || currentSize != failedSize
+               || currentWriteTicks != failedWriteTicks;
+
+        private static bool FileChangedSinceFailure(Entry e)
+        {
+            if (e == null || e.ResolvedPath == null) return true;
+            try
+            {
+                if (!File.Exists(e.ResolvedPath)) return true;
+                var info = new FileInfo(e.ResolvedPath);
+                return VideoFileChangedSince(e.FailedSize, e.FailedWriteTicks,
+                    info.Length, File.GetLastWriteTimeUtc(e.ResolvedPath).Ticks);
+            }
+            catch (Exception)
+            {
+                // A path we cannot stat is not a reason to declare the file unchanged and freeze
+                // the node forever; let the attempt run and fail the ordinary way.
+                // 拿不到文件信息不构成「文件未变、就此永久冻结该节点」的理由；照常尝试、按常规失败。
+                return true;
+            }
+        }
+
+        private static void StampFileAtFailure(Entry e)
+        {
+            if (e == null || e.ResolvedPath == null) return;
+            e.FailedSize = -1;
+            e.FailedWriteTicks = -1;
+            try
+            {
+                if (!File.Exists(e.ResolvedPath)) return;
+                var info = new FileInfo(e.ResolvedPath);
+                e.FailedSize = info.Length;
+                e.FailedWriteTicks = File.GetLastWriteTimeUtc(e.ResolvedPath).Ticks;
+            }
+            catch (Exception) { /* an unstamped entry retries once; see FileChangedSinceFailure / 未戳记的条目会重试一次，见 FileChangedSinceFailure */ }
         }
 
         private static Entry CreateEntry(int nodeId, string resolvedPath, bool loop, int width, int height)
@@ -446,6 +571,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 // UpdateCustomVideoFallbacks 退回逐帧遍历每个节点——正是引入待回退集合要消除的那种扫描。
                 if (pair.Value.Failed) return;
                 pair.Value.Failed = true;
+                // Remember what the file looked like at the moment it failed, so a later rebuild can
+                // tell "this file was half-written and has since been finished" from "this file is
+                // still just as broken". See FileChangedSinceFailure. Stamp it BEFORE the
+                // Release/Destroy below, which is unrelated to the file.
+                // 记住失败那一刻文件的样子，好让后续重建能分辨「当时只写了一半、现在写完了」与
+                // 「至今一样损坏」。见 FileChangedSinceFailure。戳记写在下面的 Release/Destroy
+                // **之前**——那几步与文件无关。
+                StampFileAtFailure(pair.Value);
                 // Stop the decoder and drop the render texture immediately instead of leaving a
                 // dead player decoding into a RT nobody will ever draw. The objects themselves are
                 // still destroyed by the manager (main thread) — only the work stops now.
