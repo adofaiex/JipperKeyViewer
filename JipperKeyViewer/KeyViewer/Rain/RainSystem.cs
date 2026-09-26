@@ -736,6 +736,37 @@ namespace JipperKeyViewer.KeyViewer.Rain
         private static float SanitizeRowFloat(float value, float fallback)
             => float.IsNaN(value) || float.IsInfinity(value) ? fallback : value;
 
+        /// <summary>SanitizeRowFloat plus a clamp, for the GLOBAL rain geometry that is written
+        /// straight onto a RawRain and then into the SHARED merged rain mesh.
+        ///
+        /// SanitizeRowFloat was applied to exactly twelve values — the per-row speed/height triples.
+        /// Every other global float reaching the renderer was protected only by Mathf.Clamp or
+        /// Mathf.Max(0f, …), and BOTH of those pass NaN straight through (NaN fails both comparisons
+        /// in each). RainOutlineCornerRadius is the sharpest case: it is the parameter of
+        /// DrawRoundedRainOutline, so one non-finite value in a profile writes non-finite vertices
+        /// into the shared mesh and corrupts the whole rain canvas — the same failure the per-node
+        /// rain-geometry fix in round 47 was about, one scope up.
+        ///
+        /// Reachability is narrower than it looks: these are slider fields, so nothing in the GUI
+        /// produces NaN. It comes from a hand-edited profile or a shared `.jkv`, and Newtonsoft does
+        /// parse a bare `NaN` token, so the file really can carry one. Cheap to close, expensive to
+        /// diagnose from a screenshot.
+        /// / SanitizeRowFloat 加上钳制，用于那些被**直接**写进 RawRain、随后进入**共享**合并雨滴
+        /// mesh 的**全局**雨滴几何。
+        ///
+        /// SanitizeRowFloat 只覆盖了十二个值——按排速度/高度三元组。其余每个到达渲染器的全局浮点
+        /// 仅靠 Mathf.Clamp 或 Mathf.Max(0f, …) 保护，而**两者**都让 NaN 原样穿透（NaN 在各自的
+        /// 两个比较里都为假）。`RainOutlineCornerRadius` 最尖锐：它正是 `DrawRoundedRainOutline` 的
+        /// 参数，故配置里一个非有限值就会把非有限顶点写进共享 mesh、毁掉整块雨滴画布——与第 47 轮
+        /// 按节点雨滴几何那条修复是同一个失效，只是范围更大一层。
+        ///
+        /// 可达性比看上去窄：这些是滑杆字段，GUI 产生不出 NaN。它来自手改配置或他人分享的
+        /// `.jkv`，而 Newtonsoft 确实会解析裸写的 `NaN` token，故文件真能带上一个。补上很便宜，
+        /// 而从截图里诊断它很贵。
+        /// </summary>
+        private static float SanitizeRainGeometry(float value, float fallback, float lo, float hi)
+            => float.IsNaN(value) || float.IsInfinity(value) ? fallback : Mathf.Clamp(value, lo, hi);
+
         /// <summary>Do the cached settings still match? Compare with "same or both NaN" so a
         /// NaN value cannot make the cache permanently miss and re-run this every frame. / 缓存是否
         /// 仍然有效？按“相同或同为 NaN”比较，避免 NaN 让缓存永久不命中而每帧重算。</summary>
@@ -858,21 +889,21 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rawRain.shadowColor = row == 1 ? settings.Data.GhostRainShadowColorRow1
                     : row == 2 ? settings.Data.GhostRainShadowColorRow2
                     : settings.Data.GhostRainShadowColorRow3;
-                rawRain.shadowOffsetX = row == 1 ? settings.Data.GhostRainShadowOffsetXRow1
+                rawRain.shadowOffsetX = SanitizeRainGeometry(row == 1 ? settings.Data.GhostRainShadowOffsetXRow1
                     : row == 2 ? settings.Data.GhostRainShadowOffsetXRow2
-                    : settings.Data.GhostRainShadowOffsetXRow3;
-                rawRain.shadowOffsetY = row == 1 ? settings.Data.GhostRainShadowOffsetYRow1
+                    : settings.Data.GhostRainShadowOffsetXRow3, 0f, -50f, 50f);
+                rawRain.shadowOffsetY = SanitizeRainGeometry(row == 1 ? settings.Data.GhostRainShadowOffsetYRow1
                     : row == 2 ? settings.Data.GhostRainShadowOffsetYRow2
-                    : settings.Data.GhostRainShadowOffsetYRow3;
+                    : settings.Data.GhostRainShadowOffsetYRow3, 0f, -50f, 50f);
                 rawRain.outlineEnabled = row == 1 ? settings.Data.EnableGhostRainOutlineRow1
                     : row == 2 ? settings.Data.EnableGhostRainOutlineRow2
                     : settings.Data.EnableGhostRainOutlineRow3;
                 rawRain.outlineColor = row == 1 ? settings.Data.GhostRainOutlineColorRow1
                     : row == 2 ? settings.Data.GhostRainOutlineColorRow2
                     : settings.Data.GhostRainOutlineColorRow3;
-                rawRain.outlineWidth = Mathf.Max(0f, row == 1 ? settings.Data.GhostRainOutlineWidthRow1
+                rawRain.outlineWidth = SanitizeRainGeometry(row == 1 ? settings.Data.GhostRainOutlineWidthRow1
                     : row == 2 ? settings.Data.GhostRainOutlineWidthRow2
-                    : settings.Data.GhostRainOutlineWidthRow3);
+                    : settings.Data.GhostRainOutlineWidthRow3, 2f, 0f, 50f);
             }
             else
             {
@@ -884,21 +915,21 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 rawRain.shadowColor = row == 1 ? settings.Data.RainShadowColorRow1
                     : row == 2 ? settings.Data.RainShadowColorRow2
                     : settings.Data.RainShadowColorRow3;
-                rawRain.shadowOffsetX = row == 1 ? settings.Data.RainShadowOffsetXRow1
+                rawRain.shadowOffsetX = SanitizeRainGeometry(row == 1 ? settings.Data.RainShadowOffsetXRow1
                     : row == 2 ? settings.Data.RainShadowOffsetXRow2
-                    : settings.Data.RainShadowOffsetXRow3;
-                rawRain.shadowOffsetY = row == 1 ? settings.Data.RainShadowOffsetYRow1
+                    : settings.Data.RainShadowOffsetXRow3, 0f, -50f, 50f);
+                rawRain.shadowOffsetY = SanitizeRainGeometry(row == 1 ? settings.Data.RainShadowOffsetYRow1
                     : row == 2 ? settings.Data.RainShadowOffsetYRow2
-                    : settings.Data.RainShadowOffsetYRow3;
+                    : settings.Data.RainShadowOffsetYRow3, 0f, -50f, 50f);
                 rawRain.outlineEnabled = row == 1 ? settings.Data.EnableRainOutlineRow1
                     : row == 2 ? settings.Data.EnableRainOutlineRow2
                     : settings.Data.EnableRainOutlineRow3;
                 rawRain.outlineColor = row == 1 ? settings.Data.RainOutlineColorRow1
                     : row == 2 ? settings.Data.RainOutlineColorRow2
                     : settings.Data.RainOutlineColorRow3;
-                rawRain.outlineWidth = Mathf.Max(0f, row == 1 ? settings.Data.RainOutlineWidthRow1
+                rawRain.outlineWidth = SanitizeRainGeometry(row == 1 ? settings.Data.RainOutlineWidthRow1
                     : row == 2 ? settings.Data.RainOutlineWidthRow2
-                    : settings.Data.RainOutlineWidthRow3);
+                    : settings.Data.RainOutlineWidthRow3, 2f, 0f, 50f);
             }
 
             // Per-node shadow/outline overrides — applied AFTER the row assignment so a null node
@@ -911,12 +942,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
             ApplyNodeRainOverrides(rawRain, key, isGhost);
 
             rawRain.outlineCornerRadius = settings.Data.EnableRainRoundedOutline
-                ? Mathf.Clamp(settings.Data.RainOutlineCornerRadius, 0f, 20f)
+                ? SanitizeRainGeometry(settings.Data.RainOutlineCornerRadius, 0f, 0f, 20f)
                 : 0f;
             rawRain.outlineSides = Mathf.Clamp(settings.Data.RainOutlineSides, 0, 2);
             rawRain.dotted = settings.Data.EnableRainDotted;
-            rawRain.dotLength = settings.Data.EnableRainDotted ? Mathf.Clamp(settings.Data.RainDotLength, 1f, 100f) : 0f;
-            rawRain.gapLength = settings.Data.EnableRainDotted ? Mathf.Clamp(settings.Data.RainGapLength, 0f, 100f) : 0f;
+            rawRain.dotLength = settings.Data.EnableRainDotted
+                ? SanitizeRainGeometry(settings.Data.RainDotLength, 12f, 1f, 100f) : 0f;
+            rawRain.gapLength = settings.Data.EnableRainDotted
+                ? SanitizeRainGeometry(settings.Data.RainGapLength, 8f, 0f, 100f) : 0f;
             if (key.CustomNode != null)
             {
                 FmNode node = key.CustomNode;
