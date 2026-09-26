@@ -1850,7 +1850,36 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
 已抽成 `KeyViewer.BuildPresetStripNames()` / `StripCustomFrom(names, customIndex)` 并按取值跳过。
 （顺带核实同类的 `KeyViewerResources.cs:831-833` 是**正确**的：目标数组恰好按 ttf+otf 长度分配。）
 
-### 仍待处理（每帧性能审计的积压，第 100 轮记录，本轮未动）
+### `FloatSliderField` 的缓存是**一份共享槽**，基本永远不命中（2026-09-26，第 101 轮）
+子代理的每帧审计指出第 43 轮的 `FloatSliderField` 优化「只做了一半」。**核实后属实，而且比
+「做了一半」更糟**——那份缓存**结构上就永远打不中**。
+
+- `lastFloatModelValue` / `lastFloatModelFormat` / `sliderModelText` 是**全页共享的一个槽**，
+  而一页最多画 38 个这种控件（雨滴页）。相邻字段几乎总是带着不同的值与格式，于是
+  「只在值或格式变化时重建」这个检查**每次都不命中**，每事件每字段照样格式化两次。
+  注释宣称的「避免对同一个未变化值在 Layout 与 Repaint 各格式化一次」**从未真正发生过**。
+- 这与当初让 `groupTotals` 出错的**完全是同一个形状**：「一个槽位、N 个消费者」。已改为
+  **按字段自身序号（`seq`，与控件名表同一序号）分槽缓存**。共用一条仍是安全的：回显是
+  (值, 格式) 的**纯函数**，两者都参与比较，故另一个字段带着相同值与格式时拿到的是同一个
+  正确字符串。序号超出表长则直接跳过缓存，与控件名表既有做法一致。
+- 顺带修 `FloatFieldWidth(string)`：**每字段每事件一次 `GUILayout.Width` 分配**
+  （`GUILayoutOption` 是 class，雨滴页即每事件约 38 个），改为按文本长度返回**缓存实例**。
+- **本轮我自己差点引入一个静默视觉回归**：最直觉的写法是「把长度钳进表里」，但那会让**很长
+  的回显比以前更窄**——而本控件**明确允许**键入超出滑块两端的值，float 以 `F2` 回显可达
+  **42 字符**（`float.MaxValue` 有 39 位整数），该区间确实可达。改为：缓存表只做**缓存**，
+  超表长走溢出路径，而**两条路径都经过同一个纯函数** `FloatFieldWidthPixels(len) =>
+  max(30, len*9)`，故表「够大就够快、不够大也不会错」。
+- **可测性**：Harness **没有 `UnityEngine.IMGUIModule`**（既有约束），凡是返回
+  `GUILayoutOption` 的东西在那里**根本跑不起来**（与 `RainLayer : MaskableGraphic` 同一限制）。
+  故按本代码库既有套路（`EditorGroupExists` 纯函数形式、`SanitizeRainGeometry`）把宽度规则
+  拆成 `internal static int FloatFieldWidthPixels(int)`，测试直接打它，并断言「缓存表必须覆盖
+  最长可达回显」。**有效性已验证**：把表长从 64 改成 20 后立刻
+  `FAIL … -- the longest reachable echo is 42 chars but the cache table is only 20`
+  （`158 passed, 1 failed`），恢复后 159 全绿。
+- 未动的剩余分配：`TextInputField(ctrl, modelText, option)` 的 `params GUILayoutOption[]`
+  数组，以及 `slid.ToString(format)` 在值真变时的那一次（这个无法避免）。
+
+### 仍待处理（每帧性能审计的积压，第 100 轮记录）
 子代理逐条量化了每帧/每事件分配，按收益排序。**均未修**，留待后续逐项处理：
 1. **编辑器属性面板每个字段每 IMGUI 事件约 10 次分配**（捕获 lambda + 控件名拼接 + 2 个
    `GUILayoutOption` + 未缓存的 `ToString("R")` + params 数组）。属性面板 55 个浮点字段 + 55 个

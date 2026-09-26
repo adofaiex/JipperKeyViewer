@@ -258,7 +258,52 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Calculate IMGUI text field width based on content length / 根据内容长度计算 IMGUI 文本框宽度</summary>
-        private static GUILayoutOption FloatFieldWidth(string text) => GUILayout.Width(Mathf.Max(30, text.Length * 9));
+        /// <summary>The width of a numeric text field, derived only from the text's length.
+        ///
+        /// GUILayoutOption is a CLASS, so calling GUILayout.Width here allocated one per field per
+        /// IMGUI event — on the rain page that is ~38 per event, every event, for a value that only
+        /// ever takes as many distinct shapes as there are plausible digit counts. Cache one option
+        /// per length and hand the same instance out repeatedly. Lengths past the table fall back to
+        /// computing the real width rather than clamping to the last entry: this field explicitly
+        /// allows typed values beyond either slider end, and a float echoed with "F2" can reach ~42
+        /// characters, so clamping would have rendered a very long echo NARROWER than before — a
+        /// silent visual regression traded for two saved allocations.
+        /// `GUILayoutOption` 是 **class**，故此处调 `GUILayout.Width` 会**每字段每 IMGUI 事件**分配
+        /// 一个——雨滴页即每事件约 38 个，且每次事件都有，而它实际只会有「可能的位数」那么多种取值。
+        /// 改为每个长度缓存一个 option 并反复交出同一实例。**超出表长的长度仍然按真实长度计算**，
+        /// 而不是钳到表尾：本控件明确允许键入超出滑块两端的值，而 float 以 "F2" 回显可达约 42 个
+        /// 字符，钳制会让很长的回显比以前**更窄**——那是拿两次分配换来的静默视觉回归。
+        /// </summary>
+        private static GUILayoutOption FloatFieldWidth(int textLength)
+        {
+            if (textLength < 0) textLength = 0;
+            if (textLength >= FloatFieldWidthTableSize)
+                return GUILayout.Width(FloatFieldWidthPixels(textLength));
+            if (floatFieldWidths == null) floatFieldWidths = new GUILayoutOption[FloatFieldWidthTableSize];
+            GUILayoutOption opt = floatFieldWidths[textLength];
+            if (opt == null)
+            {
+                opt = GUILayout.Width(FloatFieldWidthPixels(textLength));
+                floatFieldWidths[textLength] = opt;
+            }
+            return opt;
+        }
+
+        /// <summary>The width rule, with no GUILayout involved so it can be checked offline — the
+        /// Harness has no UnityEngine.IMGUIModule, so anything returning a GUILayoutOption cannot be
+        /// exercised there (same limitation as RainLayer). Both the cached and the overflow path above
+        /// route through this, which is what makes "the table is a cache, not a clamp" checkable.
+        /// 宽度规则本身不含任何 GUILayout，故可离线验证——Harness 没有 UnityEngine.IMGUIModule，
+        /// 凡是返回 `GUILayoutOption` 的东西都无法在那里跑（与 `RainLayer` 同一限制）。上面缓存路径与
+        /// 溢出路径**都**经过它，这正是「表是缓存、不是钳制」这件事可被检查的原因。</summary>
+        internal static int FloatFieldWidthPixels(int textLength)
+        {
+            if (textLength < 0) textLength = 0;
+            return Mathf.Max(30, textLength * 9);
+        }
+
+        private const int FloatFieldWidthTableSize = 64;
+        private static GUILayoutOption[] floatFieldWidths;
 
         // ======================== Input Processing (hot path) / 输入处理（热路径） ========================
 

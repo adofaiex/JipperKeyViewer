@@ -95,21 +95,33 @@ namespace JipperKeyViewer.KeyViewer
             // Layout and Repaint carry the same value, and formatting it twice per event per field
             // allocated a string for each. / 格式化回显只在值或格式**真的**变化时重建——Layout 与
             // Repaint 带着同一个值，每事件每字段格式化两次各自都要分配一个字符串。
-            sliderModelText.Clear();
-            bool sameAsModel = lastFloatModelValue == slid
-                && lastFloatModelFormat == format
-                && sliderModelText.Length > 0;
-            if (!sameAsModel)
-            {
-                sliderModelText.Append(slid.ToString(format));
-                lastFloatModelValue = slid;
-                lastFloatModelFormat = format;
-            }
-            string modelText = sliderModelText.ToString();
+            // The formatted echo is rebuilt only when THIS field's value or format actually changed,
+            // cached per field rather than in one shared slot. See the cache fields' notes: a single
+            // slot could never hit on a page drawing dozens of these.
+            // 格式化回显只在**本字段**的值或格式真的变化时重建，按字段各自缓存而非共用一个槽。
+            // 详见缓存字段处的说明：单槽在一页画几十个这种控件时永远不可能命中。
             int seq = ++sliderFieldSeq;
+            string modelText;
+            if (seq < FloatModelCacheSize
+                && lastFloatModelFormatBySeq[seq] == format
+                && floatModelEchoBySeq[seq] != null
+                && lastFloatModelValueBySeq[seq] == slid)
+            {
+                modelText = floatModelEchoBySeq[seq];
+            }
+            else
+            {
+                modelText = slid.ToString(format);
+                if (seq < FloatModelCacheSize)
+                {
+                    floatModelEchoBySeq[seq] = modelText;
+                    lastFloatModelValueBySeq[seq] = slid;
+                    lastFloatModelFormatBySeq[seq] = format;
+                }
+            }
             string ctrl = seq < FloatCtrlNames.Length ? FloatCtrlNames[seq] : "fsf_" + seq;
             if (slid != value) textInputBuffer.Remove(ctrl); // slider drag refreshes the field / 拖动滑块时刷新文本框
-            string text = TextInputField(ctrl, modelText, FloatFieldWidth(modelText));
+            string text = TextInputField(ctrl, modelText, FloatFieldWidth(modelText.Length));
             if (text != modelText && float.TryParse(text, out float parsed) && IsFiniteFloat(parsed))
             {
                 // Fully open input (extending v1.6.2's open ceiling, per user decision): typed values
@@ -126,14 +138,46 @@ namespace JipperKeyViewer.KeyViewer
             return slid;
         }
 
-        /// <summary>One reusable builder for the current field's model echo. TextInputField takes
-        /// the string, so one ToString is unavoidable per changed value; the point is not to
-        /// format on the Layout AND the Repaint of the same unchanged value.
-        /// 当前字段模型回显的可复用构建器。TextInputField 需要 string，故每个变化的值一次 ToString
-        /// 无法避免；要避免的是对同一个未变化值在 Layout 与 Repaint 各格式化一次。</summary>
-        private readonly System.Text.StringBuilder sliderModelText = new System.Text.StringBuilder(16);
-        private float lastFloatModelValue = float.NaN;
-        private string lastFloatModelFormat;
+        /// <summary>Per-field model-echo caches, indexed by the field's own pass sequence number.
+        ///
+        /// This used to be ONE shared slot (a StringBuilder plus a value and a format). With a page
+        /// drawing 38 of these — the rain page does — consecutive fields almost always carry
+        /// different values and formats, so the "only rebuild when the value or format changed"
+        /// check missed on essentially every call and formatted twice per event per field anyway.
+        /// The cache existed but could never hit, which is the same "one slot, N consumers" shape
+        /// that made groupTotals wrong in the first place.
+        ///
+        /// Keying by the field's own sequence lets Layout and Repaint of the SAME field hit while
+        /// each field keeps its own echo. Sharing an entry between two different fields is still
+        /// safe: the echo is a pure function of (value, format) and both are compared, so a
+        /// different field with the same value and format gets the same correct string.
+        /// Sequence numbers past the table size simply skip the cache, exactly as the control-name
+        /// table already does.
+        /// 按**每个字段**缓存的模型回显，以该字段本趟的序号为下标。
+        ///
+        /// 此前是**一份共享槽**（StringBuilder + 值 + 格式）。一页画 38 个这种控件——雨滴页正是
+        /// 如此——相邻字段几乎总是带着不同的值与格式，于是「只在值或格式变化时重建」这个检查
+        /// **基本每次都不命中**，每事件每字段照样格式化两次。缓存存在却永远打不中，这正是当初让
+        /// `groupTotals` 出错的同一个「一个槽位、N 个消费者」形状。
+        ///
+        /// 改为按字段自身序号索引后，同一字段的 Layout 与 Repaint 能命中，各字段各留一份回显。
+        /// 两个不同字段共用同一条缓存**仍然安全**：回显是 (值, 格式) 的纯函数，两者都参与比较，
+        /// 故另一个字段若带着相同的值与格式，拿到的就是同一个正确字符串。序号超出表长则直接跳过
+        /// 缓存，与控件名表的既有做法一致。
+        /// </summary>
+        private const int FloatModelCacheSize = 256;
+        private readonly float[] lastFloatModelValueBySeq = CreateNaNArray();
+        private readonly string[] lastFloatModelFormatBySeq = new string[FloatModelCacheSize];
+        private readonly string[] floatModelEchoBySeq = new string[FloatModelCacheSize];
+        /// <summary>A slider value can never be NaN, so NaN doubles as "nothing cached yet" — the
+        /// same sentinel the single-slot cache used. / 滑块值不可能是 NaN，故 NaN 兼作「尚未缓存」
+        /// 标记，与此前单槽缓存用的是同一个哨兵。</summary>
+        private static float[] CreateNaNArray()
+        {
+            float[] s = new float[FloatModelCacheSize];
+            for (int i = 0; i < s.Length; i++) s[i] = float.NaN;
+            return s;
+        }
 
         private float FloatSliderField(string label, float value, float min, float max, string format = "F2")
             => FloatSliderField(CachedFloatLabel(label), value, min, max, format);
