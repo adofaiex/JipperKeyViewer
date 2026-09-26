@@ -390,17 +390,71 @@ namespace JipperKeyViewer.KeyViewer.Settings
             }
         }
 
+        /// <summary>Copy a persisted group array into the working list, DROPPING null entries.
+        ///
+        /// LayerGroupsData is a Newtonsoft-deserialized FmLayerGroup[], and a JSON array may legally
+        /// contain nulls ("LayerGroups": [null, {...}]) — Newtonsoft maps the token to a null
+        /// reference, so the list ends up holding one. Three copies of "array becomes list" existed
+        /// and none filtered, while the group-lookup predicate itself was already inconsistent about
+        /// nulls: EditorGroupExists and the FirstOrDefault at KeyViewerEditor:3733 null-check the
+        /// element, while the editor's group manager (KeyViewerEditor:2085) dereferences g.Id
+        /// outright.
+        ///
+        /// EnsureCustomNodes does sweep nulls out — but only in its own body, and only once it runs.
+        /// The exposed path is the property SETTER: RestoreEditorSnapshot assigns
+        /// `Settings.Data.LayerGroups = doc.Groups` after an undo, and a snapshot taken from a
+        /// profile that predates this filter re-injects the nulls without EnsureCustomNodes ever
+        /// being consulted. The editor's group manager then dereferences them inside OnGUI, and an
+        /// exception escaping an IMGUI callback disables that whole window for the rest of the
+        /// session — the user cannot reopen the FreeMake editor without restarting the game.
+        ///
+        /// Filtering at the boundary where a persisted array or an assigned list becomes the working
+        /// list fixes the whole class in one place, instead of patching call sites that drift apart.
+        ///
+        /// 把持久化数组复制成工作列表，并**丢弃 null 元素**。
+        ///
+        /// `LayerGroupsData` 是 Newtonsoft 反序列化出的 `FmLayerGroup[]`，而 JSON 数组可以合法地含
+        /// null（`"LayerGroups": [null, {...}]`）——Newtonsoft 把该 token 映射成 null 引用，列表里就
+        /// 会真的有一个。「数组变成列表」此前有三份拷贝且**都不过滤**，而组查找判据本身对 null 已经
+        /// 不一致：`EditorGroupExists` 与 `KeyViewerEditor:3733` 的 `FirstOrDefault` 判了空元素，
+        /// 编辑器的组管理器（`KeyViewerEditor:2085`）则直接解引用 `g.Id`。
+        ///
+        /// `EnsureCustomNodes` 确实会剔除 null——但只在它自己的函数体里、且只在它跑过一次之后。
+        /// 真正暴露的路径是**属性的 setter**：`RestoreEditorSnapshot` 在撤销后执行
+        /// `Settings.Data.LayerGroups = doc.Groups`，而一份取自本次过滤之前的老配置的快照会把
+        /// null 重新注入，**全程不经过 EnsureCustomNodes**。随后编辑器的组管理器在 `OnGUI` 里
+        /// 解引用它们——而**逃出 IMGUI 回调的异常会禁用整个窗口直到游戏重启**，用户连 FreeMake
+        /// 编辑器都打不开。
+        ///
+        /// 在「持久化数组或被赋值的列表变成工作列表」这个**边界**上过滤一次，就地修掉整类问题，
+        /// 而不是去改那些日后必然再次分叉的调用点。
+        /// </summary>
+        private static List<FmLayerGroup> MaterializeGroups(FmLayerGroup[] data)
+        {
+            var list = new List<FmLayerGroup>(data == null ? 0 : data.Length);
+            if (data == null) return list;
+            for (int i = 0; i < data.Length; i++)
+                if (data[i] != null) list.Add(data[i]);
+            return list;
+        }
+
         /// <summary>Typed layer-group list / 类型化图层组列表。</summary>
         [JsonIgnore] public List<FmLayerGroup> LayerGroups
         {
             get
             {
                 if (_layerGroups == null)
-                    _layerGroups = new List<FmLayerGroup>(LayerGroupsData ?? new FmLayerGroup[0]);
+                    _layerGroups = MaterializeGroups(LayerGroupsData);
                 return _layerGroups;
             }
             set
             {
+                // Drop nulls in place rather than copying, so the caller's list stays aliased exactly
+                // as before — restoring an undo snapshot relies on that. The only behaviour change is
+                // that a null entry no longer survives.
+                // 就地丢弃 null 而不是复制，以保持调用方列表照旧保持别名关系——恢复撤销快照依赖这一点。
+                // 唯一的行为变化是 null 条目不再存活。
+                if (value != null) value.RemoveAll(g => g == null);
                 _layerGroups = value ?? new List<FmLayerGroup>();
                 LayerGroupsData = _layerGroups.ToArray();
             }
@@ -421,7 +475,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
         {
             ImportLegacyCarriers();
             _customNodes = new List<FmNode>(CustomNodesData ?? new FmNode[0]);
-            _layerGroups = new List<FmLayerGroup>(LayerGroupsData ?? new FmLayerGroup[0]);
+            _layerGroups = MaterializeGroups(LayerGroupsData);
             // Gate the legacy repair on the profile's OWN version stamp rather than on a value
             // heuristic. The heuristic could only ever be a guess — a user who genuinely wants
             // "no label, no glow" produces opacity 0 + scale 0.5 + GlowSize 0, which is exactly the

@@ -1602,6 +1602,45 @@ AGENTS.md 里挂了很久的那条「Save-As 空名会产出 `Unnamed`、使 `Is
   的文件名，一直都是被接受的。那样写会让判据的第二段同样变成**死代码**，同时**看起来更严格**。
   现判据只管空白，并在注释与测试里写明这一档为何**刻意不算**不可用。
 
+### null 图层组会永久禁掉整个 FreeMake 编辑器窗口（2026-09-26，第 92 轮）
+承第 90/91 轮「同一判据的两份拷贝悄悄分叉」这条，继续做了一次**机械**扫描：全仓所有
+`StringComparison` 用法（配置名 / 资产名 / 组 Id）逐条核对大小写语义是否一致。
+
+- **配置名相关全部一致**（都用 `OrdinalIgnoreCase`），核实干净，**不要**再审。
+- **组 Id 也一致**：`EditorGroupExists` 用 `string.Equals(..., Ordinal)`，其余处用 `g.Id == gid`
+  ——C# 的 `string ==` 同样对 null 安全，两者语义相同。核实干净。
+
+但扫描顺带暴露了一处**真的**分叉，而且**两份拷贝对「元素可能是 null」这件事意见不一致**：
+
+- `LayerGroupsData` 是 Newtonsoft 反序列化出的 `FmLayerGroup[]`，而 JSON 数组**可以合法含 null**
+  （`"LayerGroups": [null, {...}]`）——Newtonsoft 把该 token 映射成真正的 null 引用。
+- 「数组变成列表」此前有**三份**拷贝（属性 getter、`SyncArraysFromLists`、`SyncListsToArrays`），
+  **都没有**过滤 null。
+- `EnsureCustomNodes` **确实**会剔除 null（在其函数体里），但**只在它自己跑过一次之后**。
+- **真正暴露的路径是属性的 setter**：`RestoreEditorSnapshot` 在撤销后执行
+  `Settings.Data.LayerGroups = doc.Groups`，而一份取自本次过滤之前的老配置的快照会把 null
+  **重新注入**，全程**不经过** `EnsureCustomNodes`。
+- 随后编辑器的组管理器（`KeyViewerEditor:2085`）**直接解引用 `g.Id`**——而
+  **逃出 IMGUI 回调的异常会禁用整个窗口直到游戏重启**，用户连 FreeMake 编辑器都打不开。
+  同一份列表在 `EditorGroupExists` 与 `:3733` 处是有判空的，所以「判据不一致」是真的。
+- 现新增 `MaterializeGroups`（数组→列表，丢弃 null）供 getter 与 `SyncArraysFromLists` 共用；
+  setter **就地** `RemoveAll(g => g == null)`——**刻意不就地之外的复制**，因为恢复撤销快照依赖
+  调用方列表与属性**保持别名关系**。唯一的行为变化是 null 条目不再存活。
+- Harness 新增一条测试同时钉住两条入口（反序列化 + 撤销恢复 setter），并**验证过它确实能抓到
+  bug**：临时把过滤去掉后立刻 FAIL（`152 passed, 1 failed`），恢复后重新全绿。
+
+### 【Harness 机制陷阱】`dotnet run --project Harness` 会用**过期的** DLL
+上述验证过程中踩到，且**很危险**：临时改坏→恢复源码→重新 build，`bin\JipperKeyViewer.dll` 的
+时间戳确实更新了，但 Harness 仍在跑**旧的**那份拷贝，于是测试持续 FAIL，而**源码明明是对的**。
+若照着这个信号去「修」代码，就会去修一个不存在的 bug。
+`dotnet run --project Harness\Harness.csproj --configuration Debug --no-restore -- test`
+在**动过产品代码之后**必须先强制重新编译，否则结果不可信：
+```powershell
+dotnet build JipperKeyViewer\JipperKeyViewer.csproj --configuration Release --no-restore --no-incremental
+dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incremental
+```
+（自本轮起，验证「某条测试确实能抓 bug」时**必须**用这条路径，不能只看 FAIL/PASS。）
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
