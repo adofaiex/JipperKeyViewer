@@ -317,10 +317,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // Trail-top fade px: per-node override (UseCustomRainFade), ghost stays hard-edged
             // like the global behavior. / 顶部渐隐像素：节点级覆盖（UseCustomRainFade），鬼雨
             // 与全局行为一致保持硬边。
+            // rain.fadePx is the DIVISOR in RainLayer.AlphaAtD — `(trackH - d) / fade` — and a NaN
+            // there yields a NaN alpha, i.e. NaN vertex colours in the SHARED merged rain mesh. The
+            // other non-finite values are all harmless by luck: 0 makes fadeStartD equal trackH so
+            // every d returns 1f, and ±Infinity makes the comparison short-circuit. NaN is the one
+            // that slips through both. The per-node twin (TrailFadePx) was already scrubbed by
+            // EnsureCustomNodes; only the global read was exposed. The upper bound is deliberately
+            // wider than the 1..200 the GUI slider allows, per the round-86 rule that a load-time
+            // clamp must never narrow what the user can pick.
             rain.fadePx = rain.isGhost ? 0f
                 : key.CustomNode != null && key.CustomNode.UseCustomRainFade
                     ? (key.CustomNode.TrailFadeEnabled ? key.CustomNode.TrailFadePx : 0f)
-                    : (settings.Data.EnableRainGradient ? settings.Data.RainFadePx : 0f);
+                    : (settings.Data.EnableRainGradient
+                        ? SanitizeRainGeometry(settings.Data.RainFadePx, 40f, 0f, 200f) : 0f);
 
             float w = rain.sizeDelta?.x ?? rain.FinalSize.x;
             float h = rain.sizeDelta?.y ?? rain.FinalSize.y;

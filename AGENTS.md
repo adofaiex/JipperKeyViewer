@@ -1543,6 +1543,27 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
 - 现新增 `SanitizeRainGeometry(value, fallback, lo, hi)`（`SanitizeRowFloat` + 钳制），套用到上述
   全部 12+6+3 处。
 
+### 雨滴淡出的除数是全局值（第 89 轮，续第 88 轮）
+第 88 轮补完全局雨滴几何后，把 `RainSystem` 里每一个 `settings.Data.<字段>` 读取点清点了一遍，
+找出上轮漏掉的两个并核实其严重性。
+
+- **`RainFadePx` 是 `AlphaAtD` 的**除数**：`(trackH - d) / fade`，而 `fade` 就是 `rain.fadePx`。
+  NaN → NaN 透明度 → **共享**合并雨滴 mesh 里的 NaN 顶点色。已用
+  `SanitizeRainGeometry(…, 40f, 0f, 200f)` 补上；上限**刻意比 GUI 滑杆的 1..200 更宽**
+  （第 86 轮那条「净化不得窄于 GUI」）。按节点的孪生字段 `TrailFadePx` 早已由
+  `EnsureCustomNodes` 净化，只有全局这个读取点是裸的。
+  **值得记的细节**：其它取值是**侥幸**安全的——`fade = 0` 时 `fadeStartD` 等于 `trackH`，每个距离都
+  返回 1f；`±Infinity` 则让比较短路。**只有 NaN 两边都溜过去**。这正是该 bug 藏得深的原因。
+- **`RainFadeDuration` 核实为安全，不修**：它进的是 `fadeDur > 0f ? … : 1f`。NaN 时
+  `NaN > 0f` 为**假** → `t = 1` → 雨滴**立即退役**（难看，但不写坏顶点）；`+Inf` 时 `t = 0` →
+  雨滴永不淡出。都不是共享 mesh 损坏，故不补。
+- **`RainStartYRow1..3` / `GhostRainStartYRow1..3` 仍由 `SanitizeStartY` 守着**（第 35 轮的修复
+  依然有效），逐行确认过。
+- **新增 Harness 测试**（反射调 `SanitizeRainGeometry`）：断言 NaN 与 ±Inf 三个形态都被回退、且
+  合法值（含边界 0 与 200）原样通过。将来有人把辅助方法「优化」回裸 `Mathf.Clamp` 时测试会失败。
+  该测试**第一次运行就失败**——我把命名空间写成了 `JipperKeyViewer.KeyViewer.RainSystem`，
+  实际是 `JipperKeyViewer.KeyViewer.Rain.RainSystem`。改正后 151 项全绿。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
