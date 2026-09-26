@@ -9,6 +9,7 @@
 // 取代每键 RainLine 画布与 Rain 对象池——无逐雨滴 RectTransform 写入、无 SetSiblingIndex，
 // 下雨期间每层每帧只重建一次。
 
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -80,6 +81,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             SetMaterialDirty();
             if (ghostLayer != null)
             {
+                // A new sprite may carry geometry the old one could not, so force one rebuild
+                // rather than letting the MarkDirty latch skip it.
+                // 新贴图可能带旧贴图无法产生的几何，故强制一次重建，不让 MarkDirty 闩锁跳过。
+                ghostLayer.HadGhostGeometry = true;
                 ghostLayer.SetVerticesDirty();
                 ghostLayer.SetMaterialDirty();
             }
@@ -116,34 +121,64 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         public void MarkDirty()
         {
             SetVerticesDirty();
-            if (ghostLayer != null) ghostLayer.SetVerticesDirty();
+            // The ghost layer was dirtied on EVERY rain rebuild, for the whole session, even when
+            // the document has no ghost binding at all and its mesh is therefore empty both before
+            // and after the rebuild. A paired in-game measurement put that at 1.29 ms/frame — the
+            // single largest item in the overlay's cost. Rebuilding a mesh that stays empty cannot
+            // change a pixel, so skip it; the `HadGhostGeometry` latch keeps the one rebuild that
+            // IS needed, the frame the last ghost drop disappears and the mesh must be cleared.
+            // 鬼雨层此前在**每次**雨滴重建时都被标脏——整个会话如此——即使文档根本没有鬼雨绑定、
+            // 其 mesh 重建前后都是空的。配对实测该项为 1.29ms/帧，是覆盖层成本里最大的一项。
+            // 重建一个前后都为空的 mesh 不可能改变任何像素，故跳过；HadGhostGeometry 闩锁保留
+            // 那一次真正必需的重建——最后一滴鬼雨消失、必须清空 mesh 的那一帧。
+            if (ghostLayer != null)
+            {
+                bool hasGhost = System != null && System.HasLiveGhostDrops();
+                if (hasGhost || ghostLayer.HadGhostGeometry)
+                {
+                    ghostLayer.HadGhostGeometry = hasGhost;
+                    ghostLayer.SetVerticesDirty();
+                }
+            }
         }
 
         protected override void OnPopulateMesh(VertexHelper vh)
         {
             vh.Clear();
-            Key[] keys = System != null ? System.Keys : null;
+            RainSystem rainSystem = System;
+            Key[] keys = rainSystem != null ? rainSystem.Keys : null;
             if (keys == null) return;
+            List<int> activeKeys = rainSystem.ActiveKeys;
             // Ghost bodies normally render in GhostRainLayer; if the ghost sprite failed to load
             // (missing bundle asset / PNG), fall back to solid ghost-colored quads here (the old
             // no-sprite path drew opaque white — ghost color is the deliberate improvement).
             // 鬼雨本体通常画在 GhostRainLayer；鬼雨贴图加载失败（bundle 缺资源 / PNG 缺失）时
             // 在此退化为鬼雨色纯色四边形（旧版无贴图路径画不透明白色——用鬼雨色是有意改进）。
             bool ghostFallback = ghostLayer == null || ghostLayer.Sprite == null;
-            for (int i = 0; i < keys.Length; i++)
+            for (int a = 0; a < activeKeys.Count; a++)
             {
-                Key key = keys[i];
+                int keyIndex = activeKeys[a];
+                if ((uint)keyIndex >= (uint)keys.Length) continue;
+                Key key = keys[keyIndex];
                 if (key == null || key.rainList.Count == 0) continue;
                 // Old per-key stacking: normals below, ghost quads above (SetSiblingIndex reserved
                 // the +1 slot for ghosts) — two passes reproduce that exactly.
                 // 旧版每键内普通雨在下、鬼雨（含阴影/描边）在上（SetSiblingIndex 为鬼雨保留 +1
                 // 槽位）——两趟绘制精确复现。
+                // One pass for bodies, remembering whether this key even has ghost drops: the
+                // second pass only matters for a key that actually owns ghost rain, and a normal-rain
+                // key otherwise paid a second full rainList walk every rebuild.
+                // 一趟画本体并记录该键是否真的有鬼雨：第二趟只对拥有鬼雨的键有意义，普通雨滴的键
+                // 否则每次重建都要再走一遍完整 rainList。
+                bool hasGhost = false;
                 for (int d = 0; d < key.rainList.Count; d++)
                 {
                     RawRain rain = key.rainList[d];
-                    if (rain.removed || rain.isGhost) continue;
+                    if (rain.removed) continue;
+                    if (rain.isGhost) { hasGhost = true; continue; }
                     DrawDrop(vh, rain, drawMain: true);
                 }
+                if (!hasGhost) continue;
                 for (int d = 0; d < key.rainList.Count; d++)
                 {
                     RawRain rain = key.rainList[d];
@@ -255,12 +290,26 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             bool vertical = sides != 2;
             bool horizontal = sides != 1;
-            if (vertical && horizontal)
-            {
-                DrawRainQuad(vh, body.xMin - width, body.xMax + width, body.yMin - width, body.yMax + width,
-                    body.height + width * 2f, color, color, dNear, dFar, trackH, fade, span, simple);
-                return;
-            }
+            // NO full-quad fast path for the "all sides" case. It used to emit ONE solid quad over
+            // the whole expanded drop and let the body paint on top of it — visually a border,
+            // but every pixel of the interior was blended and then immediately covered. The
+            // measured cost was 1.75 ms/frame of rain, of which only 0.43 ms appeared inside the
+            // canvas pass; the remaining ~1.3 ms is fill/overdraw that lands after it, on the
+            // GPU, and it scales with drop area × drop count. The drop body is a large
+            // alpha-blended quad (50 px wide by up to `RainHeight` tall), so a profile with both
+            // shadow and outline enabled paid roughly four full-area blended quads per drop where
+            // three were needed.
+            // The strip emitters below already produce exactly the same visible border: with both
+            // axes set they draw the top/bottom strips at full width and the left/right strips at
+            // full height, whose union IS the complete ring. The interior is simply never emitted.
+            // 描边「全部」模式不再走整块四边形快路径。旧实现对整滴外扩矩形画一块实心四边形、再由
+            // 本体覆盖——视觉上是边框，但中间每一个像素都被混合了一次随即被覆盖。实测雨滴每帧
+            // 1.75ms 中只有 0.43ms 落在画布 pass 内，其余约 1.3ms 是其后的填充/overdraw、开销
+            // 随雨滴面积与数量增长。雨滴本体是又宽又高的半透明四边形，故同时开阴影与描边的配置
+            // 每滴要付约四块全面积混合，而只需要三块。
+            //
+            // 下方条带发射器给出的可见边框完全相同：两轴都开时先画满宽的上下条、再画满高的左右条，
+            // 其并集正是完整边框环，内部区域根本不会被发出。
             Rect outer = new Rect(body.xMin - width, body.yMin - width,
                 body.width + width * 2f, body.height + width * 2f);
             if (horizontal)
@@ -408,6 +457,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// 阴影或描边（两个开关在 GUI 里相邻），点状功能就完全失效。</summary>
         private static void DrawDottedRainRect(VertexHelper vh, RawRain rain, Rect r, Color bottom, Color top, bool simple)
         {
+            // A dotted body/outline can multiply one logical drop into dozens of quads. Keep a
+            // per-drop segment cap independent of the live-drop cap; this bounds malformed or very
+            // tall custom tracks without changing the normal short-trail appearance.
+            const int maxSegmentsPerDrop = 24;
             float dot = rain.dotLength;
             // The per-node dot/gap values are already NaN-sanitized in EnsureCustomNodes, but this
             // is the point that actually writes the SHARED merged rain mesh, and the obvious guard
@@ -443,15 +496,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             float pattern = Mathf.Max(0.5f, dot + gap);
             float step = pattern;
             int maxSegments = Mathf.CeilToInt(r.height / step);
-            if (maxSegments > 64)
+            if (maxSegments > maxSegmentsPerDrop)
             {
                 // Segment cap: scale the DOT too, not just the spacing — keeping the original
                 // dotLength while stretching the step would blow the gaps far past gapLength and
                 // silently produce a much sparser trail than the user configured.
                 // 段数上限：点长也要同比缩放——只放大步长而保留原点长会把间距拉得远超 gapLength，
                 // 实际轨迹比用户设置的稀疏得多且无任何提示。
-                float shrink = (r.height / 64f) / pattern;
-                step = r.height / 64f;
+                float shrink = (r.height / maxSegmentsPerDrop) / pattern;
+                step = r.height / maxSegmentsPerDrop;
                 dot = Mathf.Max(0.5f, dot * shrink);
             }
             for (float y0 = r.yMin; y0 < r.yMax; y0 += step)
@@ -550,6 +603,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
     {
         internal RainSystem System;
 
+        /// <summary>True when the last rebuild actually emitted ghost geometry. Latched so the
+        /// frame that removes the FINAL ghost drop still dirties this layer, otherwise its mesh
+        /// would keep the last ghost drawn forever.
+        /// 上一次重建是否真的发出了鬼雨几何。作为闩锁，使移除**最后一滴**鬼雨的那一帧仍会标脏
+        /// 本层，否则其 mesh 会把最后一滴鬼雨永久留在画面上。</summary>
+        internal bool HadGhostGeometry;
+
         public Sprite Sprite { get; set; }
 
         public override Texture mainTexture => Sprite != null ? Sprite.texture : base.mainTexture;
@@ -563,6 +623,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             vh.Clear();
             if (Sprite == null) return;
+            // The latch must reflect whether THIS rebuild really emitted geometry. Setting it
+            // unconditionally would re-arm on every rebuild and the MarkDirty guard above would
+            // never stop skipping again — which is the exact waste this latch exists to remove.
+            // Start pessimistic and raise it only when a quad is actually produced.
+            // 闩锁必须反映**本次重建**是否真的发出了几何。无条件置位会在每次重建时重新武装，
+            // 使上方的 MarkDirty 守卫再也停不下来——恰是它要消除的那种浪费。先按悲观置位，
+            // 只有真正产出四边形时才抬起。
+            HadGhostGeometry = false;
             Key[] keys = System != null ? System.Keys : null;
             if (keys == null) return;
             Rect tr = Sprite.textureRect;
@@ -612,9 +680,14 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (!RainLayer.IsFinite(tileW) || tileW <= 0f) tileW = tr.width > 0f ? tr.width : 1f;
             if (!RainLayer.IsFinite(tileH) || tileH <= 0f) tileH = tr.height > 0f ? tr.height : 1f;
             bool standalone = !hasBorder && RainLayer.IsStandaloneRect(Sprite);
-            for (int i = 0; i < keys.Length; i++)
+            RainSystem rainSystem = System;
+            List<int> activeKeys = rainSystem != null ? rainSystem.ActiveKeys : null;
+            if (activeKeys == null) return;
+            for (int a = 0; a < activeKeys.Count; a++)
             {
-                Key key = keys[i];
+                int keyIndex = activeKeys[a];
+                if ((uint)keyIndex >= (uint)keys.Length) continue;
+                Key key = keys[keyIndex];
                 if (key == null || key.rainList.Count == 0) continue;
                 for (int d = 0; d < key.rainList.Count; d++)
                 {
@@ -636,6 +709,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // `while (x < r.xMax - 0.01f)` 循环**没有迭代上限**，xMax 为无穷时永不退出，
                     // 不断撑大 VertexHelper 直到进程卡死。
                     if (!RainLayer.IsFiniteRect(r) || !RainLayer.IsFinite(rain.scaleF)) continue;
+                    // A real drop is about to be emitted — raise the latch so the NEXT MarkDirty
+                    // knows this layer still has content worth clearing.
+                    // 即将发出真实雨滴——抬起闩锁，使下一次 MarkDirty 知道本层仍有需清空的内容。
+                    HadGhostGeometry = true;
                     Color c = rain.mainColor;
                     c.a *= rain.alpha;
                     if (hasBorder && !degenerate)
@@ -687,6 +764,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (yMax < yMin) yMax = yMin;
             long nTilesW = (long)Mathf.Ceil((xMax - xMin) / tileW);
             long nTilesH = (long)Mathf.Ceil((yMax - yMin) / tileH);
+            // A user-replaceable ghost sprite and a large custom node can otherwise turn one drop
+            // into an unbounded nested tile loop. The border path historically had no cap at all;
+            // fail soft to one stretched quad when the requested tile count is pathological. This
+            // preserves a visible ghost and, more importantly, makes one malformed asset unable to
+            // freeze the main thread or allocate millions of vertices.
+            // 可替换鬼雨贴图配合大自定义节点会把一滴雨变成无界嵌套平铺循环。带边框路径此前完全没
+            // 上限；遇到病态平铺数量时退化为一个拉伸四边形，保留可见鬼雨并防止主线程卡死/顶点爆炸。
+            const long maxGhostTilesPerAxis = 32;
+            if (nTilesW <= 0 || nTilesH <= 0) return;
+            if (nTilesW > maxGhostTilesPerAxis || nTilesH > maxGhostTilesPerAxis)
+            {
+                RainLayer.AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, oL, oR, oB, oT, c, c);
+                return;
+            }
             float px = r.xMin, py = r.yMin;
 
             // Center tiles / 中心平铺

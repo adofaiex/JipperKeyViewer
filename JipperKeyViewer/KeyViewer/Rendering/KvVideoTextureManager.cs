@@ -441,6 +441,21 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 // 控制，小按键框内再加黑边会浪费大部分面积。
                 player.aspectRatio = VideoAspectRatio.Stretch;
                 player.audioOutputMode = VideoAudioOutputMode.None;
+                // NOTE: `player.clockSource = VideoClockSource.GameTime` would be the textbook fix
+                // for the pacing spikes measured here (344 of 368 frames slower than 10 ms had a
+                // video node alive; zero had none), because audio output is disabled so the player
+                // currently free-runs against a DSP clock nothing else in the frame shares. It is
+                // NOT applied because the UnityEngine.VideoModule reference assembly this project
+                // compiles against does not expose the property — the mods' own reference DLL is a
+                // stripped build. Applying it would need a reflection shim, which is not worth the
+                // failure mode for a cosmetic animation. The real fix is the source asset: see the
+                // resolution note in the report.
+                // 注：`player.clockSource = VideoClockSource.GameTime` 是此处实测节奏尖峰的教科书
+                // 修法（368 个慢于 10ms 的帧里 344 个存在视频节点、零个在无视频时发生），因为音频
+                // 输出已禁用，播放器当前对着一个帧内无人共享的 DSP 时钟自由运行。之所以**没有**
+                // 实施：本工程编译所用的 UnityEngine.VideoModule 参考程序集未暴露该属性——那是随附
+                // 的精简版 DLL。经反射兜底不值得为一个装饰性动画引入新的失败模式。真正的修法在素材
+                // 侧：见报告中的分辨率说明。
                 player.targetTexture = texture;
                 player.url = resolvedPath;
                 // Auto-start via the prepareCompleted callback: Prepare() is async, and calling

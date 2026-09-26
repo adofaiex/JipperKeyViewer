@@ -1925,7 +1925,7 @@ namespace JipperKeyViewer.KeyViewer
                 FootKeyviewerStyle.Key12 => Settings.Data.footkey12,
                 FootKeyviewerStyle.Key14 => Settings.Data.footkey14,
                 FootKeyviewerStyle.Key16 => Settings.Data.footkey16,
-                _ => new KeyCode[0]
+                _ => Array.Empty<KeyCode>()
             };
         }
 
@@ -1943,7 +1943,7 @@ namespace JipperKeyViewer.KeyViewer
                 KeyviewerStyle.Key16 => Settings.Data.GhostKey16,
                 KeyviewerStyle.Key20 => Settings.Data.GhostKey20,
                 KeyviewerStyle.Key24 => Settings.Data.GhostKey24,
-                KeyviewerStyle.Full108 => new KeyCode[0],
+                KeyviewerStyle.Full108 => Array.Empty<KeyCode>(),
                 _ => Settings.Data.GhostKey16
             };
         }
@@ -1981,7 +1981,7 @@ namespace JipperKeyViewer.KeyViewer
                 FootKeyviewerStyle.Key12 => Settings.Data.footkey12Text,
                 FootKeyviewerStyle.Key14 => Settings.Data.footkey14Text,
                 FootKeyviewerStyle.Key16 => Settings.Data.footkey16Text,
-                _ => new string[0]
+                _ => Array.Empty<string>()
             };
         }
 

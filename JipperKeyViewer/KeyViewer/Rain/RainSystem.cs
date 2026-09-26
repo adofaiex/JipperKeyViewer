@@ -18,6 +18,31 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         /// <summary>Current key array (kept in sync by UpdateEffects) for the render layers / 当前键数组（由 UpdateEffects 保持同步），供渲染层读取</summary>
         internal Key[] Keys;
+        /// <summary>Does any live ghost drop exist right now? Bounded by the active-key list, so it
+        /// is cheap enough to call once per frame. / 当前是否存在存活鬼雨滴。遍历范围限于活跃键
+        /// 列表，故每帧调用一次也很便宜。</summary>
+        internal bool HasLiveGhostDrops()
+        {
+            if (Keys == null) return false;
+            for (int i = 0; i < rainActiveKeys.Count; i++)
+            {
+                int ki = rainActiveKeys[i];
+                if ((uint)ki >= (uint)Keys.Length) continue;
+                Key key = Keys[ki];
+                if (key == null) continue;
+                for (int d = 0; d < key.rainList.Count; d++)
+                {
+                    RawRain rain = key.rainList[d];
+                    if (!rain.removed && rain.isGhost) return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>Only keys that currently own one or more live drops. Render layers use this
+        /// instead of scanning every layout slot (custom documents may contain many empty slots).
+        /// / 当前拥有存活雨滴的键；渲染层用它替代扫描全部布局槽位。</summary>
+        internal List<int> ActiveKeys => rainActiveKeys;
         /// <summary>Merged rain render layers / 合并雨滴渲染层</summary>
         internal RainLayer Layer;
         internal GhostRainLayer GhostLayer;
@@ -103,8 +128,12 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 if (key == null || key.rainList.Count == 0)
                 {
                     rainActiveSet.Remove(ki);
-                    rainActiveKeys[i] = rainActiveKeys[rainActiveKeys.Count - 1];
-                    rainActiveKeys.RemoveAt(rainActiveKeys.Count - 1);
+                    // Keep the active-key list sorted by slot index so the merged render layers
+                    // preserve the original draw order. The previous swap-remove was cheaper but
+                    // made visual stacking depend on press order once rendering used this sparse list.
+                    // 保持活跃键索引有序，确保合并渲染层保留原有绘制顺序。此前 swap-remove 虽便宜，
+                    // 但渲染改用稀疏列表后会让叠放顺序依赖按压顺序。
+                    rainActiveKeys.RemoveAt(i);
                     i--;
                     continue;
                 }
@@ -465,8 +494,15 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 把陈旧下标留在 rainActiveKeys 里——而那些下标正是 UpdateEffects 用来索引的。
             // 本类其它早退（UpdateEffects、UpdateSingleRainDrop、TriggerRainEffect、UpdateFade）
             // 都会照常做记账。
+            bool hadActiveKeys = rainActiveKeys.Count != 0;
             rainActiveKeys.Clear();
             rainActiveSet.Clear();
+            // Disabling rain is checked from Update every frame. Once the first clear has retired all
+            // drops, subsequent frames must be a true no-op: walking every key/rainList and dirtying
+            // both merged meshes here recreated a full uGUI rebuild storm while rain was disabled.
+            // 雨滴关闭状态下 Update 每帧都会检查。第一次清理完成后，后续帧必须是真正的空操作：否则
+            // 每帧遍历所有键/雨滴并标脏两层合并 Mesh，会在关闭雨滴时持续触发完整 uGUI 重建。
+            if (!hadActiveKeys) return;
             if (keys == null) return;
             foreach (var key in keys)
             {
@@ -1073,7 +1109,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
             if (!rainActiveSet.Contains(keyIndex))
             {
                 rainActiveSet.Add(keyIndex);
-                rainActiveKeys.Add(keyIndex);
+                int insert = rainActiveKeys.Count;
+                while (insert > 0 && rainActiveKeys[insert - 1] > keyIndex) insert--;
+                rainActiveKeys.Insert(insert, keyIndex);
             }
         }
 

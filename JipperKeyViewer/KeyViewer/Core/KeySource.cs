@@ -28,6 +28,26 @@ namespace JipperKeyViewer.KeyViewer
         private static bool _shimResolved;
         private static bool _shimLoadAttempted;
 
+        // Unity Input.GetKey is queried by every visible custom node, its ghost binding and
+        // sometimes a stat panel. FreeMake layouts commonly bind several nodes to the same key,
+        // so polling the same physical key repeatedly in one Update is pure duplicate work. Keep a
+        // tiny frame-stamped cache: no dictionary lookup allocations, no per-frame clearing, and
+        // no stale value can survive a frame boundary. KeyCode values outside the table simply use
+        // the uncached path, preserving forward compatibility with future Unity enum additions.
+        // 自定义布局的普通键、鬼键和统计面板可能绑定同一个按键。每帧重复调用 Unity
+        // Input.GetKey 是纯重复工作。用带帧戳的小数组缓存：无需字典、无需每帧清空，也不会跨帧
+        // 使用旧值。未来 Unity 新增超出表范围的 KeyCode 走非缓存路径，保持兼容。
+        private const int KeyCacheSize = 512;
+        private static readonly int[] keyCacheFrames = CreateKeyCacheFrames();
+        private static readonly bool[] keyCacheValues = new bool[KeyCacheSize];
+
+        private static int[] CreateKeyCacheFrames()
+        {
+            int[] frames = new int[KeyCacheSize];
+            for (int i = 0; i < frames.Length; i++) frames[i] = int.MinValue;
+            return frames;
+        }
+
         /// <summary>Make the embedded shim assembly exist in the AppDomain. Called at mod
         /// init (before the replay bootstrap's startup scan) and defensively from the lazy
         /// bind. If a real KeyViewer mod is already installed, that one wins.
@@ -67,8 +87,17 @@ namespace JipperKeyViewer.KeyViewer
 
         public static bool GetKey(KeyCode code)
         {
-            if (ShimGetKey(code)) return true;
-            return Input.GetKey(code);
+            int index = (int)code;
+            if ((uint)index < KeyCacheSize)
+            {
+                int stamp = Time.frameCount;
+                if (keyCacheFrames[index] == stamp) return keyCacheValues[index];
+                bool value = ShimGetKey(code) || Input.GetKey(code);
+                keyCacheFrames[index] = stamp;
+                keyCacheValues[index] = value;
+                return value;
+            }
+            return ShimGetKey(code) || Input.GetKey(code);
         }
 
         private static bool ShimGetKey(KeyCode code)

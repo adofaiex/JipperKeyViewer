@@ -660,26 +660,26 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (KeyViewerObject != null && enabled)
             {
-                RunStage("resolution", CheckResolutionChanged);
+                RunStage("resolution", FrameStage.Resolution, 0L);
                 long now = Stopwatch.ElapsedMilliseconds;
-                RunStage("key selection", ProcessKeySelection);   // Handle key rebinding input / 处理按键重新绑定输入
+                RunStage("key selection", FrameStage.KeySelection, 0L);   // Handle key rebinding input / 处理按键重新绑定输入
                 if (IsCustomLayout)
                 {
                     // FreeMake nodes: bindings/counters live on the nodes; ghosts included. /
                     // FreeMake 节点：绑定与计数在节点上，鬼键一并处理。
-                    RunStage("custom keys", () => ProcessCustomKeysInUpdate(now));
+                    RunStage("custom keys", FrameStage.CustomKeys, now);
                 }
                 else
                 {
-                    RunStage("main/foot keys", () => ProcessMainAndFootKeysInUpdate(now)); // Detect key presses / 检测按键按下
-                    RunStage("ghost keys", ProcessGhostKeysInUpdate);          // Process ghost key inputs / 处理鬼键输入
-                    if (Settings.Data.EnableRainEffect) RunStage("rain", () => rainSystem.UpdateEffects(Keys)); // Update rain drop positions / 更新雨滴位置
+                    RunStage("main/foot keys", FrameStage.MainFootKeys, now); // Detect key presses / 处理按键按下
+                    RunStage("ghost keys", FrameStage.GhostKeys, 0L);          // Process ghost key inputs / 处理鬼键输入
+                    if (Settings.Data.EnableRainEffect) RunStage("rain", FrameStage.Rain, 0L); // Update rain drop positions / 更新雨滴位置
                     else rainSystem.ClearActiveDrops(Keys); // 清掉在途雨滴
                 }
-                RunStage("kps", () => ProcessKpsInUpdate(now));            // Update KPS counter / 更新 KPS 计数器
-                RunStage("per-key kps", () => ProcessPerKeyKpsInUpdate(now));       // Update per-key KPS / 更新每键 KPS
-                if (IsCustomLayout) RunStage("counter bounce", TickCounterBounces); // counter bounce animations / 计数器弹跳动画
-                RunStage("text gradients", TickTextGradients); // static glyph gradients / 静态字形渐变
+                RunStage("kps", FrameStage.Kps, now);            // Update KPS counter / 更新 KPS 计数器
+                RunStage("per-key kps", FrameStage.PerKeyKps, now);       // Update per-key KPS / 更新每键 KPS
+                if (IsCustomLayout) RunStage("counter bounce", FrameStage.CounterBounce, 0L); // counter bounce animations / 计数器弹跳动画
+                RunStage("text gradients", FrameStage.TextGradients, 0L); // static glyph gradients / 静态字形渐变
             }
         }
 
@@ -697,22 +697,50 @@ namespace JipperKeyViewer.KeyViewer
         /// 日志没有任何信号。分段守卫让无关子系统继续存活，并把故障变成一行报告；消息变化时
         /// 重新武装，使真正的新故障仍会被暴露。
         /// </summary>
-        private void RunStage(string stage, Action work)
+        private enum FrameStage : byte
         {
-            if (work == null) return;
+            Resolution,
+            KeySelection,
+            CustomKeys,
+            MainFootKeys,
+            GhostKeys,
+            Rain,
+            Kps,
+            PerKeyKps,
+            CounterBounce,
+            TextGradients,
+        }
+
+        /// <summary>Dispatch a hot-path stage without allocating a closure or delegate. The old
+        /// Action overload was convenient but the custom-layout, input, KPS and rain stages created
+        /// a fresh closure on every Update call. Those allocations were small individually, yet they
+        /// happened continuously and amplified the GC spikes this overlay is meant to avoid.
+        /// / 无闭包无委托地分派逐帧阶段；旧 Action 重载在每次 Update 都为自定义布局、输入、KPS
+        /// 与雨滴阶段创建闭包，单次很小但持续发生，会放大覆盖层本来要避免的 GC 峰值。</summary>
+        private void RunStage(string stage, FrameStage frameStage, long now)
+        {
             try
             {
-                work();
+                switch (frameStage)
+                {
+                    case FrameStage.Resolution: CheckResolutionChanged(); break;
+                    case FrameStage.KeySelection: ProcessKeySelection(); break;
+                    case FrameStage.CustomKeys: ProcessCustomKeysInUpdate(now); break;
+                    case FrameStage.MainFootKeys: ProcessMainAndFootKeysInUpdate(now); break;
+                    case FrameStage.GhostKeys: ProcessGhostKeysInUpdate(); break;
+                    case FrameStage.Rain: rainSystem.UpdateEffects(Keys); break;
+                    case FrameStage.Kps: ProcessKpsInUpdate(now); break;
+                    case FrameStage.PerKeyKps: ProcessPerKeyKpsInUpdate(now); break;
+                    case FrameStage.CounterBounce: TickCounterBounces(); break;
+                    case FrameStage.TextGradients: TickTextGradients(); break;
+                }
                 if (stageFailures.Remove(stage))
                     Loader.Warning($"KeyViewer: '{stage}' recovered after an earlier failure");
             }
             catch (Exception e)
             {
                 // Report the FIRST failure of a given message, then stay quiet while it repeats.
-                // A stage that fails every frame would otherwise bury every other log line — the
-                // same trap the MelonLoader OnUpdate NullReferenceException used to be.
-                // 同一消息的首次失败才报告，随后重复时保持安静。一个每帧都失败的阶段否则会淹没
-                // 所有其它日志行——正是 MelonLoader OnUpdate 那个 NullReferenceException 曾经的陷阱。
+                // 同一消息的首次失败才报告，随后重复时保持安静。
                 string message = e.GetType().Name + ": " + e.Message;
                 if (!stageFailures.TryGetValue(stage, out string last) || last != message)
                 {

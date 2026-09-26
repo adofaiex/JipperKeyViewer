@@ -53,6 +53,12 @@ namespace JipperKeyViewer.KeyViewer
         // of G's keys only. Ungrouped panels keep the global PressTimes semantics. /
         // 按组的按压时间戳：G 组的面板只显示 G 组按键的 KPS。未分组面板保持全局语义。
         private readonly Dictionary<string, Queue<long>> customGroupPresses = new Dictionary<string, Queue<long>>();
+        // Only groups with a visible KPS panel ever need a timestamp queue. Previously every
+        // grouped key enqueued press times even when its group had no KPS panel (for example a
+        // Total-only group), so that queue could grow for the whole session and was never drained.
+        // 只有存在可见 KPS 面板的组才需要时间戳队列。此前 Total-only 组也会不断入队，而没有
+        // 任何读取方排空，导致队列可在整个会话中持续增长。
+        private readonly HashSet<string> customKpsGroups = new HashSet<string>(StringComparer.Ordinal);
 
         /// <summary>Append a press stamp to a group's queue. Ungrouped ("") is a no-op: the
         /// ungrouped panels read the already-drained GLOBAL PressTimes, so the "" bucket was
@@ -62,7 +68,7 @@ namespace JipperKeyViewer.KeyViewer
         internal void EnqueueCustomGroupPress(string groupId, long timeMs)
         {
             string g = groupId ?? "";
-            if (g.Length == 0) return;
+            if (g.Length == 0 || !customKpsGroups.Contains(g)) return;
             if (!customGroupPresses.TryGetValue(g, out Queue<long> q))
                 customGroupPresses[g] = q = new Queue<long>(64);
             q.Enqueue(timeMs);
@@ -730,16 +736,37 @@ namespace JipperKeyViewer.KeyViewer
         // 调用方不得持有返回引用。
         private readonly List<Key> statKeyBuffer = new List<Key>(8);
 
+        /// <summary>Per-type panel lists, plus the Keys array instance they were derived from.
+        /// StatKeys used to rescan every slot on every call, and the per-frame KPS/Total refresh
+        /// calls it once per type — so a 112-slot custom document paid ~224 reference checks per
+        /// frame purely to rediscover an unchanging set. Keying validity on the array IDENTITY
+        /// (not on "did someone remember to clear it") makes the cache self-healing: any rebuild
+        /// that assigns a fresh Keys array invalidates it automatically.
+        /// 按面板类型缓存的列表 + 其来源 Keys 数组实例。StatKeys 此前每次调用都重新扫描全部槽位，
+        /// 而逐帧 KPS/Total 刷新每种类型各调一次——112 槽自定义文档每帧因此要付约 224 次引用
+        /// 检查去重新发现一个不会变化的集合。以**数组身份**（而非「有没有人记得清缓存」）作为
+        /// 有效性判据，使缓存自愈：任何重新赋值 Keys 数组的重建都会自动失效。</summary>
+        private readonly List<Key>[] statKeyCache = { new List<Key>(4), new List<Key>(4), new List<Key>(4) };
+        private Key[] statKeyCacheSource;
+
         private List<Key> StatKeys(int type)
         {
-            statKeyBuffer.Clear();
+            if (type < 0 || type >= statKeyCache.Length) return statKeyBuffer;
             if (Keys == null) return statKeyBuffer;
-            for (int i = 0; i < Keys.Length; i++)
+            if (!ReferenceEquals(statKeyCacheSource, Keys))
             {
-                Key k = Keys[i];
-                if (k != null && k.CustomNode != null && k.CustomNode.NodeType == type) statKeyBuffer.Add(k);
+                statKeyCacheSource = Keys;
+                for (int t = 0; t < statKeyCache.Length; t++) statKeyCache[t].Clear();
+                for (int i = 0; i < Keys.Length; i++)
+                {
+                    Key k = Keys[i];
+                    if (k == null || k.CustomNode == null) continue;
+                    int nodeType = k.CustomNode.NodeType;
+                    if (nodeType < 0 || nodeType >= statKeyCache.Length) continue;
+                    statKeyCache[nodeType].Add(k);
+                }
             }
-            return statKeyBuffer;
+            return statKeyCache[type];
         }
 
         /// <summary>Show/hide every stat panel (streamer mode). Custom layouts iterate all
@@ -773,6 +800,16 @@ namespace JipperKeyViewer.KeyViewer
             // 面板排在按键槽位之后绘制，各占一个形状槽。
             customStatSlotCursor = Keys.Length;
             customGroupPresses.Clear();
+            customKpsGroups.Clear();
+            if (nodes != null)
+            {
+                for (int i = 0; i < nodes.Count; i++)
+                {
+                    FmNode n = nodes[i];
+                    if (n != null && n.NodeType == 1 && CustomNodeVisible(n))
+                        customKpsGroups.Add(n.GroupId ?? "");
+                }
+            }
             customImageRects.Clear();
             customImageRaws.Clear();
             customGlowImages.Clear();
