@@ -2314,18 +2314,29 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             if (!aligned) return;
+            // The guide spans the SELECTED nodes only. Reaching out to the reference node — as this
+            // used to — made a drag that happened to snap to an edge anywhere else in the layout
+            // draw a line from the selection clear across to that node, which reads as a box around
+            // the whole group. Nothing about the selection changed: the frame and the handles come
+            // from EditorSelectionBounds(), and only this overlay was reaching further.
+            // 参考线只覆盖**选中**的节点。此前会延伸到参考节点——于是只要吸附到布局里别处的某条边，
+            // 就会从选区一路画到那个节点，看上去像「框住了整个组」。选中本身没有变：框与拖动描点
+            // 都来自 EditorSelectionBounds()，只有这条参考线伸得太远。
             if (refNode != null)
             {
-                float lo = vertical ? refNode.Y : refNode.X;
-                float hi = vertical ? refNode.Y + refNode.Height : refNode.X + refNode.Width;
-                if (lo < min) min = lo;
-                if (hi > max) max = hi;
+                // A reference elsewhere in the layout would stretch the line back across it, so it
+                // only counts when it already lies within the selection's own span. / 布局别处的
+                // 参考节点会把线拉回去，故只有落在选区跨度内时才计入。
+                float rlo = vertical ? refNode.Y : refNode.X;
+                float rhi = vertical ? refNode.Y + refNode.Height : refNode.X + refNode.Width;
+                if (rlo < max && rhi > min)
+                {
+                    if (rlo < min) min = rlo;
+                    if (rhi > max) max = rhi;
+                }
             }
-            else
-            {
-                min -= 10f;
-                max += 10f;
-            }
+            min -= 10f;
+            max += 10f;
             fmAlignLines.Add(new FmAlignLine { Vertical = vertical, Coord = coord, Min = min, Max = max });
         }
 

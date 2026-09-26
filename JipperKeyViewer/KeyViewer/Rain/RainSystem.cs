@@ -334,6 +334,31 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 而独立维护第二份拷贝正是"第 2 排速度配第 1 排宽度"这类 bug 的成因。</summary>
         private static int RowFromRainByte(byte color) => color == 0 ? 0 : color == 3 ? 2 : 1;
 
+        /// <summary>Horizontal offset that places a rain drop inside its node, for the
+        /// 0 = left / 1 = centre / 2 = right encoding. Extracted as a pure function so the Harness
+        /// can pin the mapping. / 雨滴在节点内的水平偏移量，对应 0=左 / 1=中 / 2=右 的编码；
+        /// 抽为纯函数以便测试钉死该映射。
+        ///
+        /// cx = nodeX + offset + dropW * 0.5f, so:
+        ///   offset 0                 -> drop spans [nodeX, nodeX+dropW]  = LEFT-flush
+        ///   offset (nodeW-dropW)/2   -> cx == nodeX + nodeW/2             = CENTRED
+        ///   offset nodeW-dropW       -> drop's right edge at nodeW       = RIGHT-flush
+        /// Note that offset 0 is LEFT, not centre: with the centre term a bare zero still leaves
+        /// the drop's left edge on the node's left edge. A previous revision of this file "fixed" a
+        /// supposed 0/1 transposition here and thereby broke left alignment, which is how the
+        /// mapping got pinned down properly in the first place.
+        /// 注意 offset 0 是**左**而非中：中心项之外，单纯的 0 仍让雨滴左缘落在节点左缘上。
+        /// 本文件此前某个版本把这里"修正"成所谓的 0/1 写反，反而弄坏了左对齐——这才是该映射
+        /// 最终被钉死的真正原因。
+        /// </summary>
+        internal static float ComputeAlignOffset(int alignment, float nodeWidth, float dropWidth)
+        {
+            if (alignment == 0) return 0f;                                 // left edge flush
+            if (alignment == 1) return (nodeWidth - dropWidth) * 0.5f;      // centred
+            return nodeWidth - dropWidth;                                   // right edge flush
+        }
+
+
         private void UpdateRectAndTrail(RawRain rain, Key key, int keyIndex, Vector2 keyPos, float speed, float height, float keyScale)
         {
             float trailEdgeDist = rain.elapsedMs * speed;
@@ -391,9 +416,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 // 宽度。左/右对齐时雨滴因此按 (50 - w)/2 挂到节点外：节点宽 200、RainWidth 80 时
                 // 就有 15px 在框外。按排默认值本就是 50/40/30，故第 2/3 排节点在**完全没配置**时
                 // 就已偏 5–10px。居中对齐恰好正确（两个偏移相消），所以一直没人发现。
-                if (key.CustomNode.RainAlignment == 0) alignOffset = 0f;
-                else if (key.CustomNode.RainAlignment == 1) alignOffset = (key.keySize.x - w) * 0.5f;
-                else alignOffset = key.keySize.x - w;
+                // Encoding is 0 = left, 1 = centre, 2 = right — it is what the editor's
+                // SelectionGrid writes (`fm_rain_align_left/center/right` in that order) and what
+                // ResolveDmNoteAlign produces ("left" → 0, "right" → 2, else 1). This used to test
+                // 0 as CENTRE and 1 as LEFT, i.e. the first two branches were swapped — and because
+                // (nodeW - w) * 0.5f added to a centre term also centres the drop, both branches
+                // rendered centred and "left" silently did nothing. Every node the user had set to
+                // left therefore drew centred: a 50px node with 40px rain sat 5px right of flush.
+                // 编码为 0=左、1=中、2=右——与编辑器下拉框写入的顺序、以及 ResolveDmNoteAlign 的
+                // 产出（"left"→0、"right"→2、其余→1）一致。此处此前把 0 当中、1 当左，即前两个
+                // 分支被写反；而 (nodeW - w) * 0.5f 代入中心项后同样得到居中，于是两个分支都画成
+                // 居中，「左」形同虚设。用户设为左对齐的节点全部画成居中：50px 节点配 40px 雨滴
+                // 就会向右偏 5px 而非贴齐左缘。
+                alignOffset = ComputeAlignOffset(key.CustomNode.RainAlignment, key.keySize.x, w);
             }
             float cx = keyPos.x + alignOffset + ox + w * 0.5f;
             float topY = keyPos.y - key.keySize.y * 0.5f + baseStart + RainContainerHeight + travel;
@@ -1069,7 +1104,19 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 查询共用，二者不会各自漂移。
             if (rawRain.NodeWidth <= 0f)
             {
-                int widthRow = RowFromRainByte(key.color);
+                // The row must come from the DROP's own colour byte, which the caller derived from
+                // the node's RainRow via CustomRainRowByte. Reading it from `key.color` instead gave
+                // the width one source and the start-Y (in UpdateRectAndTrail) another: key.color is
+                // only ever written by the FIXED layout's SetupRainContainer and is never assigned
+                // for a FreeMake node, so a node on row 2 could render row 2's start-Y with row 1's
+                // width. Rows are 50/40/30, so the drop came out 5px too wide — and, because the
+                // width also feeds the left/right alignment offset, shifted sideways too.
+                // 排号必须取自雨滴**自身**的颜色字节（调用方由节点 RainRow 经 CustomRainRowByte
+                // 得出）。此前从 `key.color` 读，等于宽度与起始 Y（UpdateRectAndTrail）各取一处：
+                // key.color 只由固定布局的 SetupRainContainer 写过，FreeMake 节点从不赋值，于是选了
+                // 第 2 排的节点可能用第 2 排的起始 Y 配第 1 排的宽度。各排宽度为 50/40/30，
+                // 雨滴因此宽了 5px——而该宽度同时喂给左/右对齐偏移，横向也跟着偏了。
+                int widthRow = RowFromRainByte(rawRain.color);
                 rawRain.NodeWidth = isGhost
                     ? (widthRow == 0 ? settings.Data.GhostRainWidthRow1 : widthRow == 1 ? settings.Data.GhostRainWidthRow2 : settings.Data.GhostRainWidthRow3)
                     : (widthRow == 0 ? settings.Data.RainWidthRow1 : widthRow == 1 ? settings.Data.RainWidthRow2 : settings.Data.RainWidthRow3);
