@@ -333,16 +333,23 @@ namespace JipperKeyViewer.KeyViewer
             packagesDir = null;
         }
 
+        /// <summary>The placeholder SanitizeFileName falls back to when the caller passes nothing
+        /// usable. Exposed as a constant so the UI can recognise that fallback and REJECT the input
+        /// rather than silently creating or renaming a profile to it. / SanitizeFileName 在调用方
+        /// 传入不可用内容时回退到的占位名。提为常量，好让界面能识别这个回退并**拒绝**输入，
+        /// 而不是静默地创建/重命名出一个叫它的配置。</summary>
+        internal const string UnnamedProfileName = "Unnamed";
+
         /// <summary>Sanitize a profile name for use as a filename / 将配置名称净化用于文件名</summary>
         static string SanitizeFileName(string name)
         {
             // A null name used to NRE inside Replace(); callers include GetProfilePath, which can be
             // reached with a null profile name from a corrupt meta. Treat it as "no name".
             // null 名称曾在 Replace() 内抛 NRE；GetProfilePath 等调用方可能从损坏的 meta 传入 null。
-            if (string.IsNullOrWhiteSpace(name)) return "Unnamed";
+            if (string.IsNullOrWhiteSpace(name)) return UnnamedProfileName;
             foreach (char c in Path.GetInvalidFileNameChars())
                 name = name.Replace(c, '_');
-            return string.IsNullOrWhiteSpace(name) ? "Unnamed" : name;
+            return string.IsNullOrWhiteSpace(name) ? UnnamedProfileName : name;
         }
 
         /// <summary>Get the full path to a profile JSON file / 获取配置 JSON 文件的完整路径</summary>

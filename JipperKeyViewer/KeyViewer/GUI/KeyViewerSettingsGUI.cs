@@ -211,13 +211,38 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>True when the typed text cannot become a profile name at all.
+        ///
+        /// Both profile-name inputs used to guard on `!string.IsNullOrEmpty(SanitizeFileName(typed))`,
+        /// which could never be false: SanitizeFileName substitutes the "Unnamed" placeholder for
+        /// exactly those inputs, so the guard was dead in both places. The symptom differed by call
+        /// site — Save-As silently produced a profile called "Unnamed" (and every later attempt hit
+        /// the duplicate check and returned with no message, so the button looked broken), while
+        /// Rename took a REAL profile, renamed it to "Unnamed" and wrote that to disk. The predicate
+        /// belongs on the typed text, not on the sanitizer's post-condition, and it now lives in one
+        /// place so the two inputs cannot drift apart again.
+        ///
+        /// 输入完全无法成为配置名时为真（目前即：空白）。
+        ///
+        /// 两个配置名输入框此前都用 `!string.IsNullOrEmpty(SanitizeFileName(输入))` 守卫，而它**永远**
+        /// 为真：SanitizeFileName 恰恰对空白回退成 "Unnamed" 占位，故该守卫在两处都是死代码。
+        /// 症状按调用点而不同——另存为会静默产出一个叫 "Unnamed" 的配置（此后每次都被重名检查
+        /// 挡下且**毫无提示**，按钮看起来像坏了）；而重命名会把一个**真实**的配置改名成 "Unnamed"
+        /// 并落盘。判据应当落在输入文本上，而不是净化器的后置条件上；且现在只有一份实现，
+        /// 两个输入框不会再各走各的。
+        ///
+        /// **刻意不**把「全是文件系统非法字符」算作不可用：Windows 把每个非法字符替换成 '_'，
+        /// 故 "?<>|*" 会变成一个全由下划线构成的**合法**文件名，从来都是被接受的（这点未变）。
+        /// 我最初把这一档也写进判据，是 Harness 测试当场指出错的——第二段判据同样永远不会命中。
+        static bool ProfileNameUnusable(string typed) => string.IsNullOrWhiteSpace(typed);
+
         private void DrawProfileSaveAs()
         {
             profileSaveAsBuffer = GUILayout.TextField(profileSaveAsBuffer, GUILayout.Width(120));
             if (GUILayout.Button(I18n.Tr("save_as"), GUILayout.MinWidth(60)))
             {
+                if (ProfileNameUnusable(profileSaveAsBuffer)) return;
                 string name = SanitizeFileName(profileSaveAsBuffer.Trim());
-                if (string.IsNullOrEmpty(name)) return;
                 bool exists = File.Exists(GetProfilePath(name));
                 if (Settings.ProfileNames != null)
                     // Case-insensitive: on NTFS "MyProfile"/"myprofile" are the same file / 大小写不敏感:
@@ -283,9 +308,10 @@ namespace JipperKeyViewer.KeyViewer
             profileRenameBuffer = GUILayout.TextField(profileRenameBuffer, GUILayout.Width(100));
             if (GUILayout.Button("✓", GUILayout.Width(24)))
             {
-                string newName = SanitizeFileName(profileRenameBuffer.Trim());
-                if (!string.IsNullOrEmpty(newName) && newName != SanitizeFileName(Settings.CurrentProfile))
+                if (!ProfileNameUnusable(profileRenameBuffer)
+                    && SanitizeFileName(profileRenameBuffer.Trim()) != SanitizeFileName(Settings.CurrentProfile))
                 {
+                    string newName = SanitizeFileName(profileRenameBuffer.Trim());
                     // OrdinalIgnoreCase, matching RenameProfile's own duplicate check. With the
                     // ordinal form here, "Boss" → "boss" passed this test and was then refused
                     // inside RenameProfile, which returns silently — so the foldout closed and the
