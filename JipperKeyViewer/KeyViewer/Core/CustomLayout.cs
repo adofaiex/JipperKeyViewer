@@ -1455,10 +1455,39 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     Key k = Keys[i];
                     if (k == null) continue;
-                    DestroyCustomImageTexture(k.CustomTexNormal);
-                    DestroyCustomImageTexture(k.CustomTexPressed);
-                    k.CustomTexNormal = null;
-                    k.CustomTexPressed = null;
+                    // A cache-owned texture is deliberately ALIVE after this call (see above), so
+                    // dropping the field is throwing away a reference to something still perfectly
+                    // usable. The rebuild is supposed to re-fetch it, but `Keys` is an array that
+                    // outlives an individual rebuild, and every one of those re-fetches is another
+                    // chance to miss: a node whose image object is not rebuilt, a build that returns
+                    // early, a key slot reused by a different node. Each miss leaves the key drawing
+                    // nothing, with no error anywhere — the texture is right there, still valid, in
+                    // the cache, and the field pointing at it was nulled for no reason.
+                    //
+                    // Keeping the reference is safe in both directions. If the rebuild does re-fetch,
+                    // the field is simply overwritten with the same instance. If it does not, the key
+                    // still draws its image instead of going blank. Nothing is leaked: the cache
+                    // still owns the texture and still releases it once, on full teardown.
+                    //
+                    // 缓存持有的贴图在此调用之后刻意**仍然存活**（见上），所以丢掉字段等于扔掉一个
+                    // 完全可用的引用。重建本应重新取回它，但 `Keys` 是一个**跨重建存活**的数组，
+                    // 每一次重新取回都是又一次可能漏掉的机会：某个节点的图片对象没有被重建、某次
+                    // 构建提前返回、某个键槽被别的节点复用。每一次漏掉都让该按键什么都不画，
+                    // 且**没有任何报错**——贴图就在缓存里、完好无损，而指向它的字段被毫无理由地置空。
+                    //
+                    // 保留引用在两个方向上都安全：若重建确实重新取回，字段只是被同一个实例覆盖；
+                    // 若没有，该按键仍会画出它的图片而不是变空白。**没有泄漏**：贴图仍归缓存所有，
+                    // 仍只在完全拆解时释放一次。
+                    if (!KvImageLoader.IsCacheOwned(k.CustomTexNormal))
+                    {
+                        DestroyCustomImageTexture(k.CustomTexNormal);
+                        k.CustomTexNormal = null;
+                    }
+                    if (!KvImageLoader.IsCacheOwned(k.CustomTexPressed))
+                    {
+                        DestroyCustomImageTexture(k.CustomTexPressed);
+                        k.CustomTexPressed = null;
+                    }
                     k.CustomImage = null;
                     k.CustomImageRect = null;
                     k.CustomVideoTexture = null;
