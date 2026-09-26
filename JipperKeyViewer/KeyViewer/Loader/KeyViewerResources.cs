@@ -205,6 +205,11 @@ namespace JipperKeyViewer.KeyViewer
             foreach (var e in fontList)
                 if (e.font != null) Destroy(e.font);
             fontList.Clear();
+            // The source Fonts the dynamic atlases rasterise through, freed with the assets above.
+            // Releasing them earlier is what made every non-CJK font render as the CJK face.
+            // 动态图集赖以光栅化的源 Font，与上面的资源一同释放。提前释放正是让每一个非 CJK 字体
+            // 都显示成 CJK 那张脸的原因。
+            ReleaseSourceFonts();
             DestroyReloadedSprite(ref keyBackgroundSprite);
             DestroyReloadedSprite(ref keyOutlineSprite);
             DestroyReloadedSprite(ref ghostRainSprite);
@@ -855,6 +860,31 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>Hold a source Font alive for as long as the font asset that rasterises through
+        /// it. A dynamic TMP atlas cannot produce a glyph without it, so freeing one at creation time
+        /// silently kills every character that font would ever draw. Freed once, on teardown, by
+        /// ReleaseSourceFonts. / 让源 Font 活得和「靠它光栅化」的字体资源一样久。动态 TMP 图集没有它
+        /// 就产不出任何一个字形，故在创建时就释放它，等于悄悄废掉该字体要画的每一个字符。仅在拆解
+        /// 时由 ReleaseSourceFonts 释放一次。
+        ///
+        /// 刻意是**实例**字段而非 static：该分部类的静态初始化器一旦需要 `Font`，就等于要求
+        /// **任何**触碰 KeyViewer 的调用方都带上 UnityEngine.TextRenderingModule——Harness 只引用
+        /// CoreModule，会立刻以程序集加载失败暴露这一点。
+        /// </summary>
+        readonly List<Font> sourceFonts = new List<Font>();
+
+        void RetainSourceFont(Font font)
+        {
+            if (font != null) sourceFonts.Add(font);
+        }
+
+        void ReleaseSourceFonts()
+        {
+            for (int i = 0; i < sourceFonts.Count; i++)
+                if (sourceFonts[i] != null) UnityEngine.Object.Destroy(sourceFonts[i]);
+            sourceFonts.Clear();
+        }
+
         /// <summary>
         /// Link CJK font as fallback to all other fonts so Chinese characters display correctly / 将 CJK 字体链接为所有其他字体的后备字体，使中文字符正确显示
         /// </summary>
@@ -962,19 +992,40 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         tmpFont = TMP_FontAsset.CreateFontAsset(font);
                     }
-                    finally
+                    catch (Exception e)
                     {
-                        // The atlas is baked by now and does not reference the source Font. / 图集
-                        // 此时已烘焙完成，不再引用源 Font。
                         UnityEngine.Object.Destroy(font);
+                        Loader.Error($"KeyViewer: Failed to create TMP_FontAsset from '{fontPath}': {e.Message}");
+                        continue;
                     }
                     if (tmpFont != null)
                     {
                         fontList.Add(new FontEntry(entryName, tmpFont));
                         customFontCount++;
+                        // DO NOT destroy the source Font here. TMP_FontAsset.CreateFontAsset builds a
+                        // DYNAMIC atlas: it rasterises glyphs on demand, at runtime, through this very
+                        // Font. Destroying it right after creation leaves a font asset that can never
+                        // produce a single glyph, so every lookup misses and TMP walks
+                        // fallbackFontAssetTable — which LinkFallbackFonts points at the CJK font. The
+                        // symptom is that EVERY font you pick renders as the same CJK face, which is
+                        // exactly what was reported. The sibling game-font path never destroyed it,
+                        // which is why some fonts appeared to work and custom ones never did.
+                        // Object.Destroy is deferred to end of frame, so the destruction did not even
+                        // "work" immediately — it removed the source font on the first frame and
+                        // every glyph after that resolved through the fallback.
+                        // 这里**不要**销毁源 Font。TMP_FontAsset.CreateFontAsset 生成的是**动态**图集：
+                        // 它在运行时通过这个 Font **按需**光栅化字形。创建后立刻销毁它，留下的就是一个
+                        // 一个字形都产不出的字体资源，于是每次查找都落空，TMP 便顺着
+                        // fallbackFontAssetTable 退到 LinkFallbackFonts 指向的 CJK 字体。症状正是
+                        // **无论选哪个字体都显示成同一张 CJK 脸**——而这正是被报告的现象。孪生的游戏字体
+                        // 路径从不销毁它，故部分字体看似可用、自定义字体则从不可用。
+                        // Object.Destroy 是帧末的延迟销毁，所以它连「立刻生效」都做不到：它在第一帧
+                        // 移除了源字体，此后每一个字形都走回退链。
+                        RetainSourceFont(font);
                     }
                     else
                     {
+                        UnityEngine.Object.Destroy(font);
                         Loader.Error($"KeyViewer: Failed to create TMP_FontAsset from '{fontPath}'");
                     }
                 }
