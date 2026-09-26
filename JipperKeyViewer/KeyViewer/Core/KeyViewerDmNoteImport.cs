@@ -478,7 +478,15 @@ namespace JipperKeyViewer.KeyViewer
             {
                 node.TextColor = DmColorArray(text);
                 node.TextColorPressed = DmColorArray(activeText);
-                node.TextOpacity = text.a;
+                // Never write a 0 here. The DmNote text colour is frequently absent (`fontColor:
+                // null` in most presets), and a colour object like {"type":"gradient", …} that
+                // ReadColor cannot reduce falls back too — and a 0 alpha landing in TextOpacity
+                // renders as a key with no label at all. See KeyViewer.EffectiveTextOpacity.
+                // 这里**绝不**写入 0。DmNote 的文字颜色经常是缺的（多数预设里就是 `fontColor: null`），
+                // 而 `{"type":"gradient", …}` 这类 ReadColor 无法归约的颜色对象同样会落到回退值；
+                // alpha 0 一旦写进 TextOpacity，渲染出来就是一个完全没有标签的按键。
+                // 见 KeyViewer.EffectiveTextOpacity。
+                node.TextOpacity = Mathf.Clamp01(text.a) <= 0f ? 1f : text.a;
             }
             if (ReadBool(raw, "noteEffectEnabled", true)) node.RainEnabled = true;
 

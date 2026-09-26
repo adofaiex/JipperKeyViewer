@@ -125,7 +125,7 @@ namespace JipperKeyViewer.KeyViewer
             if (text == null) return;
             Color restored = ResolveSolidTextColor(key, count);
             if (IsCustomLayout && key?.CustomNode != null)
-                restored.a *= count ? key.CustomNode.CountTextOpacity : key.CustomNode.TextOpacity;
+                restored.a *= global::JipperKeyViewer.KeyViewer.KeyViewer.EffectiveTextOpacity(key.CustomNode, count);
             text.color = restored;
         }
 
@@ -292,7 +292,7 @@ namespace JipperKeyViewer.KeyViewer
                 Color fallback = ResolveSolidTextColor(key, count);
                 left = NodeColor(leftArray, fallback);
                 right = NodeColor(rightArray, fallback);
-                float opacity = count ? node.CountTextOpacity : node.TextOpacity;
+                float opacity = global::JipperKeyViewer.KeyViewer.KeyViewer.EffectiveTextOpacity(node, count);
                 left.a *= opacity;
                 right.a *= opacity;
                 return;

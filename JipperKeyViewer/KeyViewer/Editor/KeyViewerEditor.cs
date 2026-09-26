@@ -3818,12 +3818,19 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.Space(4f);
             DrawEditorFloatField(I18n.Tr("fm_text_opacity"), "fme_to_" + first.Id, n => n.TextOpacity, v =>
             {
-                foreach (FmNode n in editorSelection) n.TextOpacity = Mathf.Clamp01(v);
+                // Floor at 0.01, matching what the renderer treats as opaque. A literal 0 would
+                // read back as "unset" and render fully opaque, so letting the slider author it
+                // would make the field jump back the moment it is touched. HideLabel is the control
+                // for actually hiding a label.
+                // 下限取 0.01，与渲染器「当作完全不透明」的判据一致。若让滑杆写出字面量 0，读回来会
+                // 被判为「未设置」而按完全不透明渲染，于是这个字段一被碰就会自己弹回去。真正要隐藏
+                // 标签请用 HideLabel。
+                foreach (FmNode n in editorSelection) n.TextOpacity = Mathf.Clamp(v, 0.01f, 1f);
                 EditorTextGradientPropertyChanged();
             });
             DrawEditorFloatField(I18n.Tr("fm_count_text_opacity"), "fme_cto_" + first.Id, n => n.CountTextOpacity, v =>
             {
-                foreach (FmNode n in editorSelection) n.CountTextOpacity = Mathf.Clamp01(v);
+                foreach (FmNode n in editorSelection) n.CountTextOpacity = Mathf.Clamp(v, 0.01f, 1f);
                 EditorTextGradientPropertyChanged();
             });
             Color textFallback = first.NodeType == 1 ? Settings.Data.KpsText

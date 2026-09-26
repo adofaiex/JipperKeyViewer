@@ -1544,6 +1544,43 @@ namespace JipperKeyViewer.KeyViewer
             keyShapeLayer.SetBorderThickness(key.shapeSlot, node.BorderThickness);
         }
 
+        /// <summary>A label/count opacity of 0 does not mean "make it invisible" — it means the
+        /// field was never set. / 标签/计数不透明度为 0 不表示「让它不可见」，而表示该字段从未被设置。
+        ///
+        /// Three things write this field and all three could produce 0 for a node nobody ever
+        /// touched: old profiles deserialized before the field existed read 0 instead of the
+        /// initializer's 1 (JsonUtility and Newtonsoft field-mode both skip field initializers),
+        /// the DmNote importer copied it straight out of a parsed colour's alpha, and a NaN clamps
+        /// to 0 through Mathf.Clamp01. Rendered, that is a key with no label at all and nothing on
+        /// screen to explain it.
+        ///
+        /// Zero is therefore treated as "unset" and rendered as fully opaque. That is not a
+        /// narrowing of what the GUI allows: hiding a label is HideLabel's job, and it does that
+        /// better — it also re-centres the count. Every other value in 0..1 is honoured unchanged,
+        /// so a deliberate 0.2 still reads as 0.2.
+        ///
+        /// 标签/计数不透明度为 0 不表示「让它不可见」，而表示该字段从未被设置。
+        ///
+        /// 有三处会写这个字段，且都可能给一个**从未被碰过**的节点写出 0：字段存在之前写下的旧配置
+        /// （JsonUtility 与 Newtonsoft 字段模式都跳过字段初始化器）读出来是 0 而不是初始化器的 1；
+        /// DmNote 导入器直接照抄解析出来的颜色 alpha；NaN 经 `Mathf.Clamp01` 也会变成 0。
+        /// 渲染出来的后果是**一个完全没有标签的按键**，且屏幕上没有任何东西能解释。
+        ///
+        /// 故 0 被当作「未设置」、按完全不透明渲染。这**不是**收窄 GUI 允许的范围：隐藏标签是
+        /// `HideLabel` 的职责，而且它做得更好——它还会把计数重新居中。0..1 里的其它取值一律照旧，
+        /// 故刻意设的 0.2 仍读作 0.2。
+        /// </summary>
+        internal static float EffectiveTextOpacity(FmNode node, bool count)
+        {
+            if (node == null) return 1f;
+            float a = count ? node.CountTextOpacity : node.TextOpacity;
+            if (float.IsNaN(a) || float.IsInfinity(a) || a <= 0f) return 1f;
+            return a > 1f ? 1f : a;
+        }
+
+        internal static float EffectiveLabelOpacity(FmNode node) => EffectiveTextOpacity(node, false);
+        internal static float EffectiveCountOpacity(FmNode node) => EffectiveTextOpacity(node, true);
+
         private void ApplyCustomKeyColors(Key key, FmNode node, bool pressed)
         {
             ProfileData d = Settings.Data;
@@ -1557,12 +1594,12 @@ namespace JipperKeyViewer.KeyViewer
                 Color olPressed = node.UseCustomColor ? NodeColor(node.OutlinePressed, d.OutlineClicked) : d.OutlineClicked;
                 SetShapeColors(key, pressed ? bgPressed : bg, pressed ? olPressed : ol);
             }
-            // Per-node text colors (null arrays fall back to the globals). /
-            // 节点级文本颜色（数组为空回落全局）。
+            /// <summary>Per-node text colors (null arrays fall back to the globals). /
+            /// 节点级文本颜色（数组为空回落全局）。</summary>
             Color txt = node.UseCustomColor && node.TextColor != null ? NodeColor(node.TextColor, d.Text) : d.Text;
             Color txtPressed = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, d.TextClicked) : d.TextClicked;
             Color labelColor = pressed ? txtPressed : txt;
-            labelColor.a *= node.TextOpacity;
+            labelColor.a *= EffectiveLabelOpacity(node);
             // With a glyph gradient active, the SOLID colour must stay white. TMP's colour setter
             // schedules a mesh rebuild and GenerateTextMesh() repaints every vertex from that
             // colour, so writing the pressed solid here is what wipes the gradient; the gradient
@@ -1580,8 +1617,8 @@ namespace JipperKeyViewer.KeyViewer
                     ? NodeColor(node.CountTextColor, txt) : txt;
                 Color countTxtP = node.UseCustomCountTextColor && node.CountTextColorPressed != null
                     ? NodeColor(node.CountTextColorPressed, txtPressed) : txtPressed;
-                countTxt.a *= node.CountTextOpacity;
-                countTxtP.a *= node.CountTextOpacity;
+                countTxt.a *= EffectiveCountOpacity(node);
+                countTxtP.a *= EffectiveCountOpacity(node);
                 key.value.color = node.UseCountTextGradient ? Color.white : (pressed ? countTxtP : countTxt);
             }
             ApplyCustomGlow(node, pressed);
@@ -1626,7 +1663,7 @@ namespace JipperKeyViewer.KeyViewer
             Color statTxt = node.UseCustomColor && node.TextColor != null ? NodeColor(node.TextColor, statBase) : statBase;
             Color statTxtP = node.UseCustomColor && node.TextColorPressed != null ? NodeColor(node.TextColorPressed, statTxt) : statTxt;
             Color labelColor = pressed ? statTxtP : statTxt;
-            labelColor.a *= node.TextOpacity;
+            labelColor.a *= EffectiveLabelOpacity(node);
             // Same gradient rule as ApplyCustomKeyColors. / 与 ApplyCustomKeyColors 同一渐变规则。
             key.text.color = node.UseTextGradient ? Color.white : labelColor;
             if (key.value != null)
@@ -1635,8 +1672,8 @@ namespace JipperKeyViewer.KeyViewer
                     ? NodeColor(node.CountTextColor, statTxt) : statTxt;
                 Color countTxtP = node.UseCustomCountTextColor && node.CountTextColorPressed != null
                     ? NodeColor(node.CountTextColorPressed, statTxtP) : statTxtP;
-                countTxt.a *= node.CountTextOpacity;
-                countTxtP.a *= node.CountTextOpacity;
+                countTxt.a *= EffectiveCountOpacity(node);
+                countTxtP.a *= EffectiveCountOpacity(node);
                 key.value.color = node.UseCountTextGradient ? Color.white : (pressed ? countTxtP : countTxt);
             }
             ApplyCustomGlow(node, pressed);
