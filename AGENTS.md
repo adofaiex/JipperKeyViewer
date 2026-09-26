@@ -2084,6 +2084,35 @@ try/catch，故某个阶段抛异常**不会中断**后面的链——`UpdateCus
   **用户报的故障必须排在最前**，而且要用他的**真实数据**验证，不能用我自己的合成用例。
   本轮的根因只有在读过他的 JSON 之后才浮出水面——靠读代码推理**没有**找到它。
 
+### 【最重要的流程漏洞：从来没有把构建产物部署到游戏目录】（2026-09-27，第 110 轮）
+- **症状**：用户连续多轮报告「你根本没有修复」「提交了 80 多个 commit 怎么还有 bug」。
+- **真相**：我每轮做完都是「构建 → 回归 → commit → push → 报告『已验证』」，**但从来没有把
+  构建产物复制到游戏 mod 目录**。用户在游戏里跑的那个 DLL 是**他自己某一次手动复制的旧版本**。
+  实测：mod 目录里的 `JipperKeyViewer.dll` 时间戳是 **11:16:48**，而我当时最新的提交
+  `b10df57` 是 **11:22:32**——**用户测的 DLL 里根本没有最后几次修复**，包括图片按键的修复。
+  字体修复 `670df83`（11:11:08）时间上勉强赶在前面，所以「字体修了但没用」才更让人困惑。
+- **危害等级：最高。** 它把「代码是否修好」和「用户是否可能在测修好的代码」这两件事彻底脱钩。
+  我此前所有「已推送、已验证、已修复」的说法**都不成立**——我验证的只是编译和 Harness，
+  **从未验证用户实际运行的二进制**。
+- **Release 输出路径不是 `JipperKeyViewer\bin\Release`**，而是仓库根的 **`bin\`**
+  （csproj 里 `OutputPath=..\bin\` 且 `AppendTargetFrameworkToOutputPath=false`）。
+  我按常规路径去找时得到「路径不存在」，差点误判成没有产物。**先 read csproj 再找产物。**
+- **固定做法（此后每轮必须执行）**：
+  ```powershell
+  dotnet build JipperKeyViewer\JipperKeyViewer.csproj --configuration Release --no-restore --no-incremental
+  dotnet build JipperKeyViewer.Loader.Melon\JipperKeyViewer.Loader.Melon.csproj --configuration Release --no-restore
+  dotnet build JipperKeyViewer.Loader.UMM\JipperKeyViewer.Loader.UMM.csproj --configuration Release --no-restore
+  $mod='D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice\Mods\JipperKeyViewer'
+  Copy-Item bin\JipperKeyViewer.dll,bin\JipperKeyViewer.Loader.Melon.dll,bin\JipperKeyViewer.Loader.UMM.dll $mod -Force
+  Get-ChildItem $mod -Filter *.dll | ForEach-Object { $_.LastWriteTime }   # 确认时间戳晚于最新提交
+  ```
+  **报告里必须写出部署后的 DLL 时间戳**，并与最新提交时间对比，让用户能自己核对。
+- **同一条教训的另一面**：连续三轮我都在**用推断代替读代码**去解释「字体坏了」——先怪自己最近
+  三个提交，再怪位置索引，再怪字体数量上限，**三次全错**。用户的字体目录只有 7 个文件
+  （上限是 24），根本没被截断；而 `FontName = "Custom: LexendDeca-Regular"` 与列表里的
+  `entryName`（`$"Custom: {fileName}"`）**完全一致**。真因是**用户根本没在跑修好的代码**。
+  **先确认用户在测哪个二进制，再谈运行时行为。**
+
 ### 【同一份毒值我只修了一半，用户当场指出】（2026-09-27，第 109 轮）
 - **用户的原话**：「为什么现在按键文本这么小，你根本没有做向后适配」。**他是对的**：上一轮我只修了
   毒值的「双不透明度 0」，漏了「双缩成一半」，于是文字从「完全不可见」变成「可见但极小」——
