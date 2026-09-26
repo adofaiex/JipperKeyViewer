@@ -55,6 +55,53 @@ namespace JipperKeyViewer.KeyViewer
 
         /// <summary>Display names for main key layout selection grid / 主按键布局选择网格的显示名称</summary>
         static readonly string[] KeyLayoutNames = { "12K", "16K", "20K", "10K", "8K", "14K", "24K", "108K", "自定义/Custom" };
+
+        /// <summary>The labels behind the FreeMake editor's preset strip: every key layout except
+        /// Custom, which has no built-in preset to generate.
+        ///
+        /// Extracted so the property is testable offline. The editor used to do this inline by
+        /// allocating KeyLayoutNames.Length-1 and copying that many entries — which skips Custom
+        /// ONLY because Custom happens to be declared last. The grid index `picked` is passed
+        /// straight through as a KeyviewerStyle value, so the array must stay index-aligned with
+        /// KeyLayoutNames AND must drop the Custom slot BY VALUE. Declaring one more layout after
+        /// Custom and the old truncation would show a bogus "Custom" entry while hiding the layout
+        /// that was just added — no error anywhere, the user simply cannot reach their preset.
+        /// Skipping by value makes that failure structurally impossible.
+        ///
+        /// FreeMake 编辑器预设条的标签来源：除 Custom 外的全部键位布局（Custom 没有内置预设可生成）。
+        /// 抽成独立方法以便离线测试。此前是就地做的——分配 `KeyLayoutNames.Length-1` 再拷贝这么多
+        /// 个元素，而**它之所以跳过 Custom，只因 Custom 恰好声明在最后**。网格下标 `picked` 会被
+        /// 直接当作 `KeyviewerStyle` 值传下去，故该数组必须既与 `KeyLayoutNames` 保持下标对齐、
+        /// 又必须**按取值**丢掉 Custom 槽位。在 Custom 之后再加一个布局，老的截尾写法就会显示一个
+        /// 假的「Custom」项、同时把刚加的布局藏起来——不报任何错，用户只是**够不到**自己的预设。
+        /// 按取值跳过则让这种错在结构上不可能发生。</summary>
+        internal static string[] BuildPresetStripNames()
+            => StripCustomFrom(KeyLayoutNames, (int)KeyviewerStyle.Custom);
+
+        /// <summary>Return <paramref name="names"/> without the entry at <paramref name="customIndex"/>,
+        /// preserving the order and the index alignment of everything else.
+        ///
+        /// Parameterised on the index rather than hard-coding the shape so the behaviour is
+        /// observable when the slot is NOT the last one — which is the whole point. With Custom
+        /// declared last, "skip the tail" and "skip the Custom slot" are indistinguishable, so a test
+        /// written against the real table cannot tell a correct implementation from the truncation it
+        /// replaced. Feeding it a table where Custom sits first is what actually proves the skip is
+        /// by value. / 返回去掉 <paramref name="customIndex"/> 那一项后的 <paramref name="names"/>，
+        /// 其余项的顺序与下标对齐全部保持。
+        ///
+        /// 之所以把下标参数化、而不把形状写死，正是为了让「槽位**不是**最后一个」时的行为可观测。
+        /// 当 Custom 声明在最后时，「截尾」与「跳过 Custom 槽位」无法区分，于是针对真实表写的测试
+        /// 分不出正确实现与它替换掉的那个截尾实现。只有喂进一张 Custom 位于开头的表，才能真正证明
+        /// 跳过是按取值进行的。</summary>
+        internal static string[] StripCustomFrom(string[] names, int customIndex)
+        {
+            if (names == null || customIndex < 0 || customIndex >= names.Length) return names;
+            string[] result = new string[names.Length - 1];
+            int write = 0;
+            for (int i = 0; i < names.Length; i++)
+                if (i != customIndex) result[write++] = names[i];
+            return result;
+        }
         /// <summary>Display names for foot key layout selection grid / 脚键布局选择网格的显示名称</summary>
         static readonly string[] FootKeyLayoutNames = { "Off", "2K", "4K", "6K", "8K", "10K", "12K", "14K", "16K" };
 

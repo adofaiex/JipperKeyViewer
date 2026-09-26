@@ -538,7 +538,19 @@ namespace JipperKeyViewer.KeyViewer
             PerKeyTypeDefaults[0] = Background; PerKeyTypeDefaults[1] = BackgroundClicked;
             PerKeyTypeDefaults[2] = Outline; PerKeyTypeDefaults[3] = OutlineClicked;
             PerKeyTypeDefaults[4] = Text; PerKeyTypeDefaults[5] = TextClicked;
-            PerKeyTypeDefaults[6] = RainColor; PerKeyTypeDefaults[7] = GhostRainColorDefault;
+            // The rain default is PER ROW, not one global colour. The ProfileData ctor,
+            // InitPerKeyColors, SafeEnsureRain and the v4->v5 migration all resolve slot i through
+            // ProfileData.DefaultPerKeyRainColor(i), which maps slots 0-7/8-15/16-23 onto rain row
+            // 1/2/3. Using the row-1 global here meant "reset default" on a row-2 or row-3 key wrote
+            // a colour no other path would ever produce for that slot — so the picker's default
+            // disagreed with what the same slot receives from a profile reset.
+            // 雨色默认值是**按排**的，不是某一个全局色。ProfileData 构造函数、`InitPerKeyColors`、
+            // `SafeEnsureRain` 与 v4→v5 迁移全都用 `ProfileData.DefaultPerKeyRainColor(i)` 解析槽位 i
+            // （0-7/8-15/16-23 → 第 1/2/3 排）。此处用第 1 排的全局色，意味着对第 2、3 排的按键点
+            // 「恢复默认」会写入一个**其它任何路径都不会为该槽位产生**的颜色——于是取色器的默认值与
+            // 同一槽位在「重置配置」时得到的值互相矛盾。
+            PerKeyTypeDefaults[6] = ProfileData.DefaultPerKeyRainColor(s);
+            PerKeyTypeDefaults[7] = GhostRainColorDefault;
             string[] typeNames = PerKeyTypeNames;
             Color[] values = PerKeyTypeValues;
             Color[] defaults = PerKeyTypeDefaults;
@@ -557,6 +569,24 @@ namespace JipperKeyViewer.KeyViewer
                 {
                     SetPerKeyColor(s, t, newColor);
                     UpdateAllKeyColors();
+                    // Types 6 and 7 are the per-key rain / ghost-rain colours, and they are the
+                    // per-key counterpart of the global list's own `if (i >= 6) RefreshRainDropColors()`
+                    // at the top of this file. A drop's colour is baked in at creation, and
+                    // UpdateAllKeyColors only writes Keys[i].rainColor for the NEXT drop — so without
+                    // this the drops already on screen kept the old colour. With a tall track and a
+                    // slow speed (the rain page allows height up to 2000) that lasts many seconds,
+                    // which is exactly the reported "the colour control does nothing". Ghost rain is
+                    // the worst case: PerKeyGhostRainColor is read for LIVE drops in exactly one
+                    // place in the whole codebase, RefreshDropColors, so without this call the
+                    // per-key ghost-rain colour was effectively dead.
+                    // 类型 6/7 是每键雨色/鬼雨色，与本文件顶部全局列表自己的
+                    // `if (i >= 6) RefreshRainDropColors()` 恰好是一对。雨滴颜色在创建时烙入，而
+                    // `UpdateAllKeyColors` 只写 `Keys[i].rainColor` 供**下一滴**使用——故缺了这一句，
+                    // 已经在屏的雨滴就会保持旧色。高轨道配慢速度（雨滴页高度上限 2000）能持续数秒，
+                    // 正是「颜色控件点了没反应」那条反馈。鬼雨最糟：`PerKeyGhostRainColor` 对
+                    // **在飞**雨滴的读取点全仓**只有** `RefreshDropColors` 一处，缺了这一句，
+                    // 每键鬼雨色基本等于死的。
+                    if (t >= 6) RefreshRainDropColors();
                     SaveSettingsFromGui();
                 }
                 GUILayout.EndVertical();

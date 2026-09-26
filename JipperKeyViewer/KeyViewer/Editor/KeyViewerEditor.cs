@@ -300,8 +300,16 @@ namespace JipperKeyViewer.KeyViewer
             {
                 GUILayout.BeginHorizontal();
                 fmPresetNewProfile = GUILayout.Toggle(fmPresetNewProfile, I18n.Tr("fm_preset_new_profile"), GUILayout.MinWidth(120f));
-                string[] names = new string[KeyLayoutNames.Length - 1]; // skip only Custom / 仅跳过「自定义」
-                Array.Copy(KeyLayoutNames, names, names.Length);
+                // Skips Custom by VALUE, not by position: `picked` is passed straight through as a
+                // KeyviewerStyle, so the array must stay index-aligned with KeyLayoutNames. The old
+                // inline truncation only skipped Custom because Custom happened to be declared last;
+                // one more layout added after it would have shown a bogus "Custom" entry and hidden
+                // the new layout, with no error anywhere. See KeyViewer.BuildPresetStripNames.
+                // 按**取值**跳过 Custom 而非按位置：`picked` 会被直接当作 KeyviewerStyle 传下去，故
+                // 该数组必须与 KeyLayoutNames 保持下标对齐。此前就地截尾之所以跳过 Custom，只因
+                // Custom 恰好声明在最后；若在其后再加一个布局，就会多出一个假的「Custom」项并把刚加
+                // 的布局藏起来，且不报任何错。详见 KeyViewer.BuildPresetStripNames。
+                string[] names = BuildPresetStripNames();
                 int picked = GUILayout.SelectionGrid(-1, names, names.Length, GUILayout.MinHeight(22f));
                 GUILayout.EndHorizontal();
                 if (picked >= 0)

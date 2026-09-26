@@ -1808,6 +1808,73 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   `KeyViewer.Settings` 静态字段，Harness 中它很可能是 null，异常会被 `Invoke` 包成
   `TargetInvocationException`。测它的契约要通过**产物本身**（字段/常量反射），不是通过调用。
 
+### 每键雨色「点了没反应」：真缺陷（2026-09-26，第 100 轮）
+第 99 轮派出的两份子代理审计（颜色控件链路、每帧热路径）本轮回执。颜色那份挑出一条
+**正中用户那条反馈**（「颜色控件点了没反应」）的真缺陷，已核实后修掉：
+
+- **每键雨色/鬼雨色改了，在屏雨滴纹丝不动**：全局颜色列表在 `KeyViewerColorGUI.cs:84-89`
+  带着明确注释调了 `if (i >= 6) RefreshRainDropColors();`；而**每键**颜色编辑器
+  （`:568-573`）只调 `SetPerKeyColor` + `UpdateAllKeyColors`。`UpdateAllKeyColors` →
+  `ApplyPerKeyColorsToAll` 只写 `Keys[i].rainColor` 供**下一滴**用，从不碰 `key.rainList`；
+  而雨滴颜色是创建时烙入的。于是高轨道配慢速度（雨滴页高度上限 2000）时，旧色轨迹要落好几秒，
+  控件读起来就是坏的。**鬼雨最糟**：`PerKeyGhostRainColor` 对**在飞**雨滴的读取点全仓**只有**
+  `RefreshDropColors` 一处，缺了这一句，每键鬼雨色基本等于**死的**。
+  已补 `if (t >= 6) RefreshRainDropColors();`，与全局路径同款。
+- **每键雨色「恢复默认」给第 2/3 排的按键写第 1 排的颜色**：`PerKeyTypeDefaults[6] = RainColor`
+  是一份**全局**雨色，而槽位的规范默认是**按排**的 `ProfileData.DefaultPerKeyRainColor(i)`
+  （0-7/8-15/16-23 → 第 1/2/3 排）——ProfileData 构造函数、`InitPerKeyColors`、`SafeEnsureRain`、
+  v4→v5 迁移**全都**用它。于是对第 2/3 排按键点「恢复默认」会写入一个**其它任何路径都不会为该槽位
+  产生**的颜色，与「重置配置」时同一槽位得到的值互相矛盾。已改走同一个函数。
+
+**一个必须写下来的方法论教训（本轮差点栽两次）**：
+
+- **我写的第一版测试是「空转」的**：它在测试里同时重建了「按取值跳过」与「截尾」两种实现，
+  再把两者**互相比对**。而当 `Custom` 恰好声明在最后时，两者**按构造就完全相同**——于是我
+  **故意把 `KeyLayoutNames` 改成乱序后，测试照样 PASS**。它压根没碰到产品代码。
+  改成「调用产物方法、把它的**返回值**与期望数组比对」之后仍然 PASS——因为真实表里 Custom
+  在最后，两种实现无法区分。**最终解法是把下标参数化**（`StripCustomFrom(names, customIndex)`），
+  喂一张 Custom 位于中间的合成表，截尾写法才会立刻露馅。
+  > **凡是「同一份数据上存在两种写法」的测试，若两种写法在当前数据下必然等价，测试就是空转的**。
+  > 必须构造出**让两者分歧**的输入，否则它只是一句同义反复。
+- **PowerShell 篡改在 UTF-8 中文文件上静默失败**：`(Get-Content -Raw) -replace … | Set-Content`
+  改 `KeyLayoutNames`（含「自定义/Custom」）时**替换没生效**，而我还以为测试通过=「测试不够敏感」。
+  改用 `edit` 工具后篡改才真正落地。第 63/86/92 轮记过 PowerShell 整文件替换不安全，**这次轮到
+  「静默不生效」而不是「内容损坏」**——更难发现，因为它看起来像一次干净的通过。
+
+### 预设条把 Custom 当成「最后一个」来跳（2026-09-26，第 100 轮）
+扫 `Array.Copy` 时发现 `KeyViewerEditor.cs:303-304` 用 `new string[N-1]` + 拷贝 N-1 个元素，
+注释写「skip only Custom」——而截尾之所以跳过的正是 Custom，**只因 Custom 恰好声明在最后**。
+`picked` 会被直接当作 `KeyviewerStyle` 值传下去，故数组必须既与 `KeyLayoutNames` 下标对齐、
+又必须按取值丢掉 Custom 槽位。在 Custom 之后再加一个布局（往列表里加一项是最自然的改动方式），
+截尾写法就会显示一个假的「Custom」项、同时把刚加的布局藏起来，**且任何地方都不报错**。
+已抽成 `KeyViewer.BuildPresetStripNames()` / `StripCustomFrom(names, customIndex)` 并按取值跳过。
+（顺带核实同类的 `KeyViewerResources.cs:831-833` 是**正确**的：目标数组恰好按 ttf+otf 长度分配。）
+
+### 仍待处理（每帧性能审计的积压，第 100 轮记录，本轮未动）
+子代理逐条量化了每帧/每事件分配，按收益排序。**均未修**，留待后续逐项处理：
+1. **编辑器属性面板每个字段每 IMGUI 事件约 10 次分配**（捕获 lambda + 控件名拼接 + 2 个
+   `GUILayoutOption` + 未缓存的 `ToString("R")` + params 数组）。属性面板 55 个浮点字段 + 55 个
+   toggle + 32 个颜色；开着覆盖项时每事件约 700-900 次，即 **2.4 万-10 万次/秒**。
+2. **`FloatSliderField` 每次调用仍有 3-4 次分配**（第 43 轮只做了一半）：`StringBuilder.ToString()`
+   无条件执行、`FloatFieldWidth(...)` 每事件新建 option、params 数组；且
+   `lastFloatModelValue` 是**全页共享单槽**，38 个字段回显基本每次都未命中缓存。约 1.5-1.8 万/秒。
+3. **`DrawColorPicker` 每个取色器每事件约 15-20 次分配**：`FormatChannel` 同样是**单槽**缓存，
+   被 R/G/B/A 四个不同值冲刷；另有 4 处 `name + ":"` 与 5 个 params 数组。颜色页最多 20 个取色器
+   ⇒ 3.6 万-4.8 万/秒。
+4. **`EditorDrawOrder()` 每个 Repaint 两次全量插入排序且无缓存**（无 dirty 标志）：112 节点约
+   6300 次比较（可忽略），**2048 节点约 210 万次/Repaint ≈ 1.26 亿次/秒**。
+5. 若干注释声称「已提为静态/暂存」但其实没提的 `Color[]`/`string[]` 数组字面量（颜色页 3 处、
+   雨滴页 1 处、编辑器 2 处）；编辑器工具栏 18 个 `GUILayoutOption`；`DrawEditorHelpMarker` 每行 2 个；
+   组管理器每组 4 个 `new GUIContent`。
+6. **子代理纠正了本代码库注释里的一个错误数字**：`Enum.TryParse(ignoreCase: true)` 在
+   .NET Framework 4.8 上是对名称排序值做**二分查找**（约 9 次 `OrdinalIgnoreCase` 比较），
+   **不是**注释里反复说的「约 500 次」。第 42 轮给鬼键/面板加缓存的理由因此被夸大约 50 倍
+   （缓存仍值得保留：9 次 vs 0 次）。编辑器画布上仍未缓存的那一处（`KeyViewerEditor.cs:2714`）
+   约 1000 次比较/Repaint。
+- 子代理同时**读代码确认干净**的项：每帧路径无 LINQ/闭包；三个既有缓存（`HasTextGradientSettings`、
+  `CustomGroupTotal`、按键绑定解析缓存）**确实被查询**（读的是调用点，不是注释）；合并 mesh 的
+  scratch 缓冲全是 `static readonly`、`OnPopulateMesh` 只在标脏时跑；目录扫描确实按展开期缓存。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
