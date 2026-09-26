@@ -256,6 +256,10 @@ namespace JipperKeyViewer.KeyViewer.Util
         private const long MaxImageBytes = 16L * 1024 * 1024;
         private const int MaxImageDimension = 4096;
 
+        private static bool IsPngSignature(byte[] bytes)
+            => bytes != null && bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50
+               && bytes[2] == 0x4E && bytes[3] == 0x47;
+
         private static bool IsPngHeaderReasonable(byte[] bytes)
         {
             // PNG signature (8) + IHDR chunk (4 len + 4 type + 13 data) / PNG 签名(8) + IHDR 块
@@ -310,7 +314,19 @@ namespace JipperKeyViewer.KeyViewer.Util
                     }
                 }
                 tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                if (!IsPngHeaderReasonable(bytes))
+                // The header guard applies to PNG ONLY. It parses the IHDR to reject a decompression
+                // bomb before allocating — but a JPEG has no IHDR, and running that parse over one
+                // reads width/height out of unrelated JPEG bytes, which comes out garbage, fails the
+                // range test, and rejects the file with "is not a PNG". Every JPEG then degraded to
+                // the grey placeholder at the call site, while a real oversized PNG was the only
+                // thing the check was ever written for. The decoded-size check below now covers
+                // every format, which is where the real allocation risk actually is.
+                // 头部校验**只对 PNG 生效**。它解析 IHDR 以在分配前拒绝解压炸弹——但 JPEG 没有
+                // IHDR，把这段解析跑在 JPEG 上会从未无关的 JPEG 字节里读出宽高，得到垃圾值、
+                // 范围检查不通过，于是以「不是 PNG」拒掉文件。此后**每一张** JPEG 都在调用处退化成
+                // 灰色占位框，而该检查当初只为「真实超大的 PNG」而写。下面按**解码后尺寸**的检查
+                // 覆盖所有格式——那才是真正会分配显存的地方。
+                if (IsPngSignature(bytes) && !IsPngHeaderReasonable(bytes))
                 {
                     UnityEngine.Object.Destroy(tex);
                     Loader.Error($"KeyViewer: image '{path}' is not a PNG within {MaxImageDimension}x{MaxImageDimension} — not loaded");
@@ -327,7 +343,24 @@ namespace JipperKeyViewer.KeyViewer.Util
                 if (result is bool ok && !ok)
                 {
                     UnityEngine.Object.Destroy(tex);
-                    Loader.Error($"KeyViewer: PNG data corrupt, cannot decode '{path}'");
+                    Loader.Error($"KeyViewer: image data corrupt, cannot decode '{path}'");
+                    return null;
+                }
+                // The real allocation guard, and the only one that covers every format. The PNG
+                // header check above can see the dimensions of a PNG before decoding; for anything
+                // else the dimensions are only knowable here, and by then Texture2D has already
+                // reserved width*height*4 bytes. A hand-edited or .jkv-carried image that claims to
+                // be huge must still be refused, exactly as before — just without refusing every
+                // JPEG on the way.
+                // 真正的分配防护，且是唯一覆盖所有格式的那一个。上面的 PNG 头部检查能在解码前看到
+                // PNG 的尺寸；其它格式的尺寸只能在这里知道，而此时 Texture2D 已经预留了
+                // width*height*4 字节。手改或 .jkv 携带的、声称自己极大的图片仍必须被拒绝——与
+                // 之前完全一样，只是不再顺带拒绝每一张 JPEG。
+                if (tex == null || tex.width <= 0 || tex.height <= 0
+                    || tex.width > MaxImageDimension || tex.height > MaxImageDimension)
+                {
+                    if (tex != null) UnityEngine.Object.Destroy(tex);
+                    Loader.Error($"KeyViewer: image '{path}' decoded to an unusable size — not loaded");
                     return null;
                 }
                 tex.filterMode = FilterMode.Bilinear;
