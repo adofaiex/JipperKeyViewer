@@ -1202,10 +1202,20 @@ namespace JipperKeyViewer.KeyViewer
                 key.value.fontSizeMax = node.CountFontSize > 0f
                     ? node.CountFontSize / countScale
                     : (node.FontSize > 0f ? node.FontSize / labelScale : key.text.fontSizeMax);
-            FontStyles nodeFontStyle = (FontStyles)node.FontStyleFlags;
+            // Same gate as the material in UpdateAllFonts: a node inherits the global font style
+            // until it opts in, and never cancels it by default. Un-gated here, a profile with a
+            // bold global and all-zero node flags rendered every key unbold while the per-node
+            // control the user could see had no effect at all.
+            // 与 UpdateAllFonts 里材质同一把门控：节点在勾选之前继承全局字体样式，绝不默认取消。
+            // 不加门控时，一份「全局粗体、节点全 0」的配置会让每个按键都渲染成常规体，而界面上
+            // 那个用户看得见的节点控件却完全没有作用。
+            bool nodeHasStyle = node.UseCustomTextStyle;
+            FontStyles nodeFontStyle = nodeHasStyle
+                ? (FontStyles)node.FontStyleFlags
+                : (FontStyles)Settings.Data.FontStyleFlags;
             key.text.fontStyle = nodeFontStyle;
             if (key.value != null)
-                key.value.fontStyle = node.UseCustomCountFontStyle
+                key.value.fontStyle = nodeHasStyle && node.UseCustomCountFontStyle
                     ? (FontStyles)node.CountFontStyleFlags
                     : nodeFontStyle;
             if (!isStat)

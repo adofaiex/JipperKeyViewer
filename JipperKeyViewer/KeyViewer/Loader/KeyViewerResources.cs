@@ -463,7 +463,19 @@ namespace JipperKeyViewer.KeyViewer
                         isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel));
                 }
                 if (use != null) ApplyFontMaterial(t, use);
-                t.fontStyle = node != null
+                // The material above is gated on UseCustomTextStyle; the font style has to be gated
+                // the SAME way, or a node that never opted into a per-node style silently cancels
+                // the global one. A real profile had FontStyleFlags 1 (bold) globally while its
+                // nodes all read 0 — every un-opted-in key rendered unbold, and there was no setting
+                // anywhere that explained it, because the per-node override the user could see and
+                // toggle had no effect on the style at all. A node opts in or it inherits; it never
+                // overrides by default.
+                // 上面的材质是按 UseCustomTextStyle 门控的；字体样式**必须用同一把门控**，否则一个
+                // 从未选择「自定义文字样式」的节点会静默取消全局设置。一份真实配置全局
+                // FontStyleFlags 1（粗体）而节点全是 0——于是每一个未勾选的按键都渲染成常规体，
+                // 且**界面上没有任何设置能解释它**：那个用户看得见、点得动的节点级覆盖对样式根本
+                // 没有作用。节点要么勾选、要么继承，绝不默认覆盖。
+                t.fontStyle = node != null && node.UseCustomTextStyle
                     ? (isCount && node.UseCustomCountFontStyle ? (FontStyles)node.CountFontStyleFlags : (FontStyles)node.FontStyleFlags)
                     : style;
                 // Key labels are sized purely by TMP auto-sizing (enableAutoSizing is on for every
