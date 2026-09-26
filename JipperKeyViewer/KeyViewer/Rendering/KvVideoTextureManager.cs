@@ -140,20 +140,6 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             }
         }
 
-        /// <summary>Release one node's video entry immediately. Used when the editor changes a
-        /// video node's path/size so the next rebuild gets a fresh player instead of reusing a
-        /// stale one that may not have prepared correctly. / 立即释放单个节点的视频条目。
-        /// 编辑器修改视频节点的路径/尺寸时使用，使下次重建获得全新播放器，而非复用一个
-        /// 可能未正确 prepared 的旧播放器。</summary>
-        public static void Release(int nodeId)
-        {
-            if (entries.TryGetValue(nodeId, out Entry entry))
-            {
-                DestroyEntry(entry);
-                entries.Remove(nodeId);
-            }
-        }
-
         public static bool HasFailed(int nodeId)
             => entries.TryGetValue(nodeId, out Entry entry) && entry != null && entry.Failed;
 

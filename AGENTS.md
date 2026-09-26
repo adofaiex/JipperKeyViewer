@@ -1564,6 +1564,24 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
   该测试**第一次运行就失败**——我把命名空间写成了 `JipperKeyViewer.KeyViewer.RainSystem`，
   实际是 `JipperKeyViewer.KeyViewer.Rain.RainSystem`。改正后 151 项全绿。
 
+### 另一块共享 mesh 的除法复核 + 15 轮悬案结案（2026-09-26，第 90 轮）
+- **`KeyShapeLayer` 的三处除法逐个核实为安全**（与第 88/89 轮那条对照）：
+  - `tw`/`th` 来自真实 `Texture` 的宽高（≥1），故 UV 归一化不会除零；
+  - `ppuScale` 已有 `pixelsPerUnit > 0f` 守卫；
+  - `r.width / (border.x + border.z)` 看着危险，但被外层 `if (r.width < border.x + border.z)`
+    挡住——为 0 时 `r.width < 0` 为假，根本走不到除法；`sprite.border` 由 Unity 导入时钳成非负，
+    `BorderScale` 是正常数。**与第 89 轮 `fade = 0` 是同一类「靠上游守卫侥幸安全」**，
+    但这里的守卫是显式且正确的，不需要补。
+- **`KvVideoTextureManager.Release(int nodeId)` 删除**（自第 79 轮记在「仍待处理」里，15 轮未动）。
+  它**零调用点**（全仓只有 `ReleaseAll()` 的两处），而它的文档注释却声称
+  「Used when the editor changes a video node's path/size so the next rebuild gets a fresh
+  player」——**这句话是假的**，编辑器从不调它。
+  这份文档描述的能力已被第 76 轮的**代次机制**取代：`BeginBuild` 自增 `generation`、
+  `EndBuild` 回收 `LastGeneration != generation` 的条目，故整层重建本就会丢弃全部旧条目。
+  删除后仍能编译——这**就是**它已死的证明，任何调用点都会编译失败。
+  **教训（与第 86 轮那条同类）**：一份**承诺了不存在的行为**的注释，比没有注释更糟——
+  它会让下一个人以为那条路已经走通过，从而不去查真正的代次机制。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
