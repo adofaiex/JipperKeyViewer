@@ -551,6 +551,66 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// 而漏加修复条目会让测试失败，而不是静默读成 0。</summary>
         public const int NodeTextDefaultsVersion = 1;
 
+        /// <summary>The scale floor the runtime clamps to. A value sitting exactly here, on a node
+        /// whose opacity is 0, is the fingerprint of the broken clamp (0 -> 0.5). / 运行时钳制的缩放下限。
+        /// 位于该值、且不透明度为 0 的节点，即旧钳制（0 -> 0.5）的指纹。
+        /// </summary>
+        public const float NodeScaleFloor = 0.5f;
+
+        /// <summary>Repair a node that still carries the legacy deserialization poison, for profiles
+        /// the version gate can no longer reach.
+        ///
+        /// Why this exists at all: the one-shot gate is
+        /// `NodeDefaultsVersion &lt; NodeTextDefaultsVersion`, and a profile that was ever stamped
+        /// while still carrying the poison is skipped forever after. A real, current,
+        /// DataVersion-6 export sat at NodeDefaultsVersion 1 with NodeTextDefaultsVersion 1 — 1 &lt; 1
+        /// is false — so all 85 of its nodes kept TextOpacity 0 (every label invisible) and all four
+        /// scale fields at exactly 0.5, i.e. every label drawn at half size. The gate was doing its
+        /// job; it simply could not help a document that had already been marked as repaired.
+        ///
+        /// Why this is not the heuristic that was removed before: it does not guess from a bundle of
+        /// weak signals. It keys on ONE value that cannot be a deliberate choice — a label opacity of
+        /// 0, where the field's own default is 1 and hiding a label is HideLabel's job. Having
+        /// established that this node is poisoned, attributing a scale sitting exactly on the clamp
+        /// floor to the same broken clamp is evidence, not a guess. A node with a normal opacity and
+        /// a deliberate half-size scale is left completely alone.
+        ///
+        /// Why it cannot thrash: the repair writes the opacities to 1, so the marker is gone from
+        /// memory and the next rebuild cannot re-trigger it. If the file is never re-saved it simply
+        /// repeats next session with the same result. Steady state therefore does NOT narrow the
+        /// GUI: a healthy node may still be authored at 0.5.
+        ///
+        /// 修复仍带着旧反序列化毒值、且版本闸门**再也够不着**的节点。
+        ///
+        /// 为何需要它：一次性闸门是 `NodeDefaultsVersion &lt; NodeTextDefaultsVersion`，而一份**在仍
+        /// 带着毒值时就被盖过章**的配置此后永远被跳过。一份真实的、当前版本的（DataVersion=6）
+        /// 导出正是如此：NodeDefaultsVersion 为 1、NodeTextDefaultsVersion 也是 1——`1 &lt; 1` 为假
+        /// ——于是它全部 85 个节点保持 TextOpacity 0（每个标签都不可见），且四个缩放字段**全部**恰好
+        /// 等于 0.5，即每个标签都按一半大小绘制。闸门在**正确**地工作；它只是救不了一份早已被标记为
+        /// 「已修复」的文档。
+        ///
+        /// 为何这不是当初被删掉的那套启发式：它**不**从一束弱信号去猜。它只认**一个**不可能是刻意
+        /// 选择的值——标签不透明度为 0，而该字段自身的默认值是 1，隐藏标签是 `HideLabel` 的职责。
+        /// 既已断定该节点被污染，那么把「恰好落在钳制下限上」的缩放归因于**同一次**坏钳制，是证据
+        /// 而不是猜测。不透明度正常的节点、以及刻意设成一半大小的节点，完全不受影响。
+        ///
+        /// 为何不会反复触发：修复把不透明度写成 1，标记随即从内存中消失，下次重建无法再次触发。
+        /// 若文件一直没被重新保存，则下次启动重复一次、结果相同。故稳态**不会**收窄 GUI：健康节点
+        /// 仍可被设成 0.5。
+        /// </summary>
+        internal static bool RepairLegacyScaledTextPoison(FmNode node)
+        {
+            if (node == null) return false;
+            if (!(node.TextOpacity <= 0f || node.CountTextOpacity <= 0f)) return false;
+            node.TextOpacity = 1f;
+            node.CountTextOpacity = 1f;
+            if (node.LabelScale <= NodeScaleFloor) node.LabelScale = 1f;
+            if (node.CountScale <= NodeScaleFloor) node.CountScale = 1f;
+            if (node.PressedLabelScale <= NodeScaleFloor) node.PressedLabelScale = 1f;
+            if (node.PressedCountScale <= NodeScaleFloor) node.PressedCountScale = 1f;
+            return true;
+        }
+
         /// <summary>Newtonsoft's field-only contract bypasses field initializers for an empty/
         /// legacy node object, leaving newly added non-zero defaults (notably TextOpacity and
         /// LabelScale) at 0. A zero label scale is an invalid runtime value and therefore an
