@@ -1778,6 +1778,36 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   （按类型重解析 + 整体 try/catch + 解析不到即 `Loader.Error`）、`ImageConversion` 的
   `Type.GetType` + 按名回退扫描。**没有新的未检查耦合。**
 
+### 预设路径的每键数组长度靠「继承」而非「断言」（2026-09-26，第 99 轮）
+本轮自查了四类怀疑，**全部核实为干净**（记录下来是为了不再重复查）：
+
+- **编辑器里 `GroupHasStat` 的全表 `Any` 扫描**（`KeyViewerEditor.cs:381-383` 的谓词里嵌套）：
+  看着像第 43 轮修过的那个 O(组数×节点数) 老形状，实测**不是**——谓词被
+  `n.NodeType == 1 &&` 短路，只有 KPS/Total 节点才触发扫描；且该行在 `EditorApplyPreset`
+  这个**用户点击**路径上，不是每帧。
+- **三处 `Enum.TryParse`（`CustomLayout.cs:1666/1801/1853`）**：第 42 轮的缓存**仍然完好**——
+  1801/1853 是**缓存赋值**行，前置 `string.Equals` 比较；`CustomNodeKeyCode` 只在
+  `CustomKeyBindCached` 与 `node.KeyBind` 不同时才跑。不是每帧回归。
+- **`Settings.Data` 的五个赋值点**：三个是回滚（还原成已 `EnsureSettingsArrays` 过的对象），
+  一个是 `new ProfileData()`（构造即 `InitPerKeyColors`），一个是 `LoadProfile`（1923/1929 补调）。
+- **字符串反射查找全仓 5 处**：第 98 轮已逐一核实，无新增。
+
+本轮的**实际产出**是把一条「靠继承而非断言」的正确性钉住：
+
+- `EditorApplyPreset`（`KeyViewerEditor.cs:436-450`）把 `Settings.Data` 换成**实时配置的重新
+  反序列化副本**，且**从不**调 `EnsureSettingsArrays`——只跑 `EnsureCustomNodes`，而后者只净化
+  节点表。今天之所以正确，**仅因为**该往返继承了 `EnsureSettingsArrays` 已修好的数组长度；
+  `KeyViewerSettingsGUI.cs:931-937` 早已把同一处脆弱依赖写在注释里。
+- 出错代价很具体：每键颜色数组一旦偏短，颜色页会在 `OnGUI` **内部**越界，
+  结果是**整个**设置窗口被禁用而不只是那一行（数组大小见第 94 轮；界面自身的边界守卫见第 37 轮）。
+- 现加 Harness 测试，走完编辑器那条同样的往返后，断言 8 个每键颜色数组 + `PerKeyFontSize`
+  长度仍**恰好**等于从产品反射来的 `PerKeySlotCount`（不写死 42，免得常量漂移后测试失真）。
+- **有效性已验证**：把 `PerKeyFontSize` 改成 3 元素后立刻
+  `FAIL … -- PerKeyFontSize.Length=3 (want 42)`（`156 passed, 1 failed`），恢复后 157 全绿。
+- 另注：**不要再**试图反射调 `EnsureSettingsArrays` 来测它——那会打到 Harness 里的**活**
+  `KeyViewer.Settings` 静态字段，Harness 中它很可能是 null，异常会被 `Invoke` 包成
+  `TargetInvocationException`。测它的契约要通过**产物本身**（字段/常量反射），不是通过调用。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
