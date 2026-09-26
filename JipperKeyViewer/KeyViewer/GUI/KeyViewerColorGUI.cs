@@ -348,23 +348,30 @@ namespace JipperKeyViewer.KeyViewer
                 ctrlHex = prefix + (++colorPickerFieldSeq);
             }
 
-            void DrawChannel(string ctrl, string name, ref float channel)
+            // `label` arrives already suffixed so the four call sites hand over interned literals
+            // ("R:", "G:", …) instead of concatenating `name + ":"` on every IMGUI event — a
+            // parameter is never constant-folded, so the old form allocated a string per channel,
+            // per picker, per event.
+            // `label` 传进来时**已带冒号**，故四个调用点直接给 interned 字面量（"R:"、"G:"…），
+            // 而不再在每个 IMGUI 事件里拼 `name + ":"`——参数不会被常量折叠，旧写法等于每通道、
+            // 每取色器、每事件分配一个字符串。
+            void DrawChannel(string ctrl, string label, ref float channel)
             {
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(name + ":", ChannelLabelWidth);
+                GUILayout.Label(label, ChannelLabelWidth);
                 channel = GUILayout.HorizontalSlider(channel, 0f, 1f, ChannelSliderWidth);
                 // Text input keeps Unity's 0-1 scale; use the Hex field below for precise values.
                 // 文本框保持 0-1;要精确取色时用下面的 Hex 输入。
-                string txt = TextInputField(ctrl, FormatChannel(channel), ChannelEditWidth);
+                string txt = TextInputField(ctrl, FormatChannel(ctrl, channel), ChannelEditWidth);
                 if (float.TryParse(txt, out float val) && IsFiniteFloat(val))
                     channel = Mathf.Clamp01(val);
                 GUILayout.EndHorizontal();
             }
 
-            DrawChannel(ctrlR, "R", ref currentColor.r);
-            DrawChannel(ctrlG, "G", ref currentColor.g);
-            DrawChannel(ctrlB, "B", ref currentColor.b);
-            DrawChannel(ctrlA, "A", ref currentColor.a);
+            DrawChannel(ctrlR, "R:", ref currentColor.r);
+            DrawChannel(ctrlG, "G:", ref currentColor.g);
+            DrawChannel(ctrlB, "B:", ref currentColor.b);
+            DrawChannel(ctrlA, "A:", ref currentColor.a);
 
             // Direct #RRGGBB / #RRGGBBAA hex entry. / 直接输入 #RRGGBB 或 #RRGGBBAA
             GUILayout.BeginHorizontal();
@@ -375,7 +382,12 @@ namespace JipperKeyViewer.KeyViewer
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("preview") + ":", GUILayout.Width(40));
+            if (previewLabelLang != I18n.Lang)
+            {
+                previewLabelLang = I18n.Lang;
+                previewLabel = I18n.Tr("preview") + ":";
+            }
+            GUILayout.Label(previewLabel, PreviewLabelWidth);
             Rect previewRect = GUILayoutUtility.GetRect(100, 20);
             GUIUtils.DrawRect(previewRect, currentColor);
             GUILayout.EndHorizontal();
@@ -665,8 +677,12 @@ namespace JipperKeyViewer.KeyViewer
         private readonly GUILayoutOption ChannelSliderWidth = GUILayout.Width(150f);
         private readonly GUILayoutOption ChannelEditWidth = GUILayout.Width(40f);
         private readonly GUILayoutOption HexEditWidth = GUILayout.Width(120f);
-        private float lastChannelValue = float.NaN;
-        private string lastChannelText;
+        private readonly GUILayoutOption PreviewLabelWidth = GUILayout.Width(40f);
+        // The preview caption is the same string for every picker; build it once per language
+        // instead of concatenating I18n.Tr("preview") + ":" on every picker, every event.
+        // 预览标题对每个取色器都是同一个字符串；按语言建一次，而不是每取色器每事件都拼一次。
+        private string previewLabel;
+        private string previewLabelLang;
 
         private static string[] BuildColorPickerNames(string prefix)
         {
@@ -675,17 +691,88 @@ namespace JipperKeyViewer.KeyViewer
             return names;
         }
 
-        /// <summary>Channel echo, rebuilt only when the value actually changes — the Layout and
-        /// Repaint of one frame carry the same value, and formatting it for each allocated a string
-        /// per channel per event (four per picker per event). / 通道回显，仅在值真的变化时重建
-        /// ——同一帧的 Layout 与 Repaint 带着同一个值，各格式化一次即每通道每事件分配一个字符串
-        /// （每个取色器每事件四个）。</summary>
-        private string FormatChannel(float v)
+        /// <summary>Channel echo, rebuilt only when THIS channel's value actually changes.
+        ///
+        /// This was a single shared slot — one float and one string for the whole type — while
+        /// FormatChannel runs four times per picker (R, G, B, A) with four *different* values. The
+        /// cache could therefore only ever hit when two adjacent channels happened to be exactly
+        /// equal, i.e. almost never, so the "only rebuild on change" claim never actually saved
+        /// anything: it formatted four strings per picker per event anyway. That is the third time
+        /// this codebase has shipped a one-slot cache standing in for N consumers (groupTotals in
+        /// round 46, the float-field echo in round 101, and this).
+        ///
+        /// Keyed by the field's control name, which is already unique per channel per picker
+        /// (cpi_12, cpi_13, …) and is exactly the identity TextInputField uses for its buffer. Two
+        /// pickers expanded at once therefore do not share an entry, and a value that genuinely
+        /// changes still re-formats because the comparison is on the float.
+        ///
+        /// 通道回显，仅在**本通道**的值真的变化时重建。
+        ///
+        /// 此前是**全类型共享的一个槽**（一个 float + 一个 string），而 FormatChannel 每个取色器要
+        /// 跑**四次**（R/G/B/A）且带着四个**不同**的值。故该缓存只有在相邻两通道恰好相等时才可能命中
+        /// ——几乎永不命中，即「仅在变化时重建」这个说法**从未真正省下任何东西**：它照样每取色器
+        /// 每事件格式化四个字符串。这已是本代码库第三次把「一个槽位」当成 N 个消费者来用
+        /// （第 46 轮的 groupTotals、第 101 轮的浮点回显、以及此处）。
+        ///
+        /// 以控件名为键——它本就是每通道每取色器唯一的（cpi_12、cpi_13…），且正是 TextInputField
+        /// 用来标识缓冲区的那个身份。故同时展开两个取色器不会共用同一条，且值真的变了仍会重新格式化，
+        /// 因为比较的是 float 本身。
+        /// </summary>
+        private string FormatChannel(string ctrl, float v)
         {
-            if (lastChannelText != null && lastChannelValue == v) return lastChannelText;
-            lastChannelValue = v;
-            lastChannelText = v.ToString("F2");
-            return lastChannelText;
+            int i = channelEchoIndex(ctrl);
+            if (i >= 0)
+            {
+                if (channelEchoText[i] != null && channelEchoValue[i] == v) return channelEchoText[i];
+                channelEchoValue[i] = v;
+                channelEchoText[i] = v.ToString("F2");
+                return channelEchoText[i];
+            }
+            // Control name outside the table: no cache, just format. Same fall-through the
+            // float-field echo uses for sequence numbers past its table.
+            // 控件名不在表内：不缓存，直接格式化。与浮点回显对超表长序号的处理一致。
+            return v.ToString("F2");
+        }
+
+        private static readonly float[] channelEchoValue = CreateChannelEchoValues();
+        private static readonly string[] channelEchoText = new string[ChannelEchoSlots];
+        private const int ChannelEchoSlots = 64;
+
+        private static float[] CreateChannelEchoValues()
+        {
+            float[] v = new float[ChannelEchoSlots];
+            for (int i = 0; i < v.Length; i++) v[i] = float.NaN;
+            return v;
+        }
+
+        /// <summary>Map a control name to a cache slot by its trailing integer ("cpi_12" -> 12).
+        /// A picker draws five consecutive names, so the trailing number IS the identity.
+        ///
+        /// Only the digits are parsed, so "cpi_12" and "fme_cpi_12" land on the SAME slot and the
+        /// two windows share an entry. That is deliberate and harmless: the cached text is a pure
+        /// function of the float, and the float is what gets compared before the cache is trusted, so
+        /// a shared slot can only ever hand back the correct string. Separating the prefixes would
+        /// buy nothing and cost a second table.
+        /// 把控件名按其结尾整数映射到缓存槽（"cpi_12" -> 12）。一个取色器连画五个连续名字，
+        /// 故结尾数字**就是**身份。
+        ///
+        /// 只解析数字，故 "cpi_12" 与 "fme_cpi_12" 落在**同一个**槽、两个窗口共用一条。这是**刻意**
+        /// 且无害的：缓存里的文本是那个 float 的纯函数，而取用前比较的正是 float，故共用只可能交出
+        /// 正确的字符串。按前缀分开既没收益，又要多一张表。
+        /// </summary>
+        private static int channelEchoIndex(string ctrl)
+        {
+            if (ctrl == null) return -1;
+            int end = ctrl.Length - 1;
+            while (end >= 0 && ctrl[end] >= '0' && ctrl[end] <= '9') end--;
+            if (end == ctrl.Length - 1 || end < 0) return -1;
+            int n = 0;
+            for (int i = end + 1; i < ctrl.Length; i++)
+            {
+                n = n * 10 + (ctrl[i] - '0');
+                if (n >= ChannelEchoSlots) return -1;
+            }
+            return n;
         }
 
         private static void SetPerKeyColor(int s, int t, Color color)

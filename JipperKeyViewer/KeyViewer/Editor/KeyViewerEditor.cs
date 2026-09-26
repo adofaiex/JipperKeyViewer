@@ -4482,11 +4482,26 @@ namespace JipperKeyViewer.KeyViewer
                     padding = new RectOffset(0, 0, 0, 0)
                 };
             }
-            if (GUILayout.Button("?", fmHelpButtonStyle, GUILayout.Width(18f), GUILayout.Height(18f)))
+            // GUILayoutOption is a CLASS, so Width()/Height() here allocated two of them on every
+            // call — and this runs on essentially every property row (the float/toggle/percent/text
+            // and colour field helpers all end with it), which is ~31 rows on a default selection and
+            // more once node-level overrides are switched on. The size never varies, so build them
+            // once. Instance fields, not static: a static GUILayoutOption would drag
+            // UnityEngine.IMGUIModule into this type's static ctor and make every caller that never
+            // draws the editor require it (the Harness exposes this immediately).
+            // `GUILayoutOption` 是 **class**，故这里的 Width()/Height() 每次调用分配两个——而它几乎在
+            // **每一行**属性上都会跑（浮点/toggle/百分比/文本/颜色这几个字段帮助函数都以它收尾），
+            // 默认选区即约 31 行，打开节点级覆盖项后更多。尺寸从不变化，故只建一次。
+            // 用**实例**字段而非静态：静态 GUILayoutOption 会把 UnityEngine.IMGUIModule 拖进本类型
+            // 的静态构造，使从不绘制编辑器的调用方也需要它（Harness 会立刻暴露这一点）。
+            if (GUILayout.Button("?", fmHelpButtonStyle, fmHelpMarkerWidth, fmHelpMarkerHeight))
             {
                 if (!fmOpenHelpKeys.Remove(helpKey)) fmOpenHelpKeys.Add(helpKey);
             }
         }
+
+        private readonly GUILayoutOption fmHelpMarkerWidth = GUILayout.Width(18f);
+        private readonly GUILayoutOption fmHelpMarkerHeight = GUILayout.Height(18f);
 
         /// <summary>The expanded explanation — call AFTER the row's horizontal ends. /
         /// 展开的说明文本——须在该行 horizontal 结束后调用。</summary>
