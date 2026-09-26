@@ -1683,6 +1683,26 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
 - 现加 Harness 测试钉住：8 个每键颜色数组 + `PerKeyFontSize` 在 `EnsureSettingsArrays` 之后长度
   必须**恰好**是 `PerKeySlotCount`，且 `PerKeySlotCount == MaxKeySlots + 2`。那次改动会先在这里失败。
 
+### Mod 路径兜底：日志说的目录未必是真正在用的目录（2026-09-26，第 95 轮）
+本轮做了一次**静默吞异常**的全量扫描（每个 `catch` 块是否上报了什么），绝大多数是有意的
+「best effort」且带注释。**一处不是**：`ModLoader.ResolveModPath` 里那句 `fallback = "."`
+正是第 40 轮那处**高危**修复的残留边缘。
+
+- **兜底被算了两遍，且是两条互相独立的代码路径**：
+  - 就地算一个 `fallback`（`Application.persistentDataPath` → `Path.GetTempPath()` → `"."`）
+    **只用于那条日志**；
+  - 然后 `resolvedPath = CurrentFallback();` ——**第二次**独立探测同样三级策略，
+    **这才是真正被使用的值**。
+- **后果**：在 `Application.persistentDataPath` 不稳的宿主上（正是原注释点名的场景：离线测试
+  运行器、部分 Wine/Proton），两次探测可以不一致，于是**这条链唯一发出的诊断会指向错误的
+  目录**——而那恰恰是用户发现「配置不见了」之后会去查看的地方。它给出的正是错误信息。
+- **同时是策略的重复**：第 40 轮那套「绝不能接受 `.`」的论证需要同时改**两处**才能成立，
+  而只改一处是极常见的疏漏。
+- 现**只解析一次**并使用那个确切的值；`CurrentFallback()` 成为兜底策略的**唯一一份实现**，
+  且它内部对 `persistentDataPath` 的失败**照旧上报**（此前那次上报在内联块里，一并搬过去），
+  并没有因为合并而丢失诊断。本方法仍**绝不能抛**（它是所有路径的根基，异常会在 Awake 带走
+  整个 Mod）这条约束保持不变。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些

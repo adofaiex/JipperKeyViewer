@@ -130,36 +130,41 @@ namespace JipperKeyViewer
             if (warnedMissingPath == null)
             {
                 warnedMissingPath = path ?? "(null)";
-                // Application.persistentDataPath is a Unity native call; on some hosts (and in
-                // offline test runners) it throws. This method must NEVER throw — it is the
-                // foundation every path is built on, so an exception here would take down the mod
-                // at Awake. Last resort: the temp directory.
-                // Application.persistentDataPath 是 Unity 原生调用，在某些宿主（以及离线测试
-                // 运行器）里会抛异常。本方法**绝不能**抛——它是所有路径的根基，此处异常会在
-                // Awake 就带走整个 Mod。最后手段：临时目录。
-                string fallback;
-                try { fallback = Application.persistentDataPath; }
-                catch (Exception e)
-                {
-                    fallback = null;
-                    Error($"KeyViewer: could not resolve the persistent data path: {e.Message}");
-                }
-                if (string.IsNullOrWhiteSpace(fallback))
-                {
-                    try { fallback = Path.GetTempPath(); }
-                    catch (Exception) { fallback = "."; }
-                }
+                // Resolve ONCE and use that exact value. This used to compute `fallback` inline for
+                // the log line and then assign `resolvedPath = CurrentFallback()` — a SECOND,
+                // independent probe. On a host where Application.persistentDataPath is flaky (the
+                // very case the comments here name: offline test runners, some Wine/Proton setups)
+                // the two could disagree, and the one diagnostic this whole chain exists to emit
+                // would name the wrong directory — which is exactly where the user goes looking
+                // for the settings that "disappeared". The fallback POLICY also lived in two
+                // places (this block and CurrentFallback), so the round-40 argument against ever
+                // accepting "." would have had to be made twice, and could have been made once.
+                //
+                // 只解析一次并使用那个确切的值。此前先就地算出 `fallback` 供日志、再另行
+                // `resolvedPath = CurrentFallback()` 做**第二次**独立探测。在
+                // Application.persistentDataPath 不稳的宿主上（正是这里注释点名的场景：离线测试
+                // 运行器、部分 Wine/Proton），两者可能不一致，而这条链唯一发出的诊断就会指向
+                // **错误**的目录——而那恰恰是用户去找「消失的配置」时会看的地方。兜底**策略**同样
+                // 散落两处，于是第 40 轮那套「绝不能接受 `.`」的论证得讲两遍，且可能只改一遍。
+                string fallback = CurrentFallback();
                 Error($"KeyViewer: no usable mod folder ('{warnedMissingPath}'); falling back to {fallback}. The mod's settings, images, videos and packages will live there instead of next to the game.");
                 warnedMissingPath = warnedMissingPath + "->" + fallback;
+                resolvedPath = fallback;
+                return resolvedPath;
             }
             resolvedPath = CurrentFallback();
             return resolvedPath;
         }
 
+        /// <summary>The single copy of the fallback policy: persistent data path, then the temp
+        /// directory, then the process directory. Every branch is a last resort and all of them are
+        /// reported — this is the only place the user learns where their settings went.
+        /// / 兜底策略的**唯一**一份实现：持久化路径，其次临时目录，最后进程目录。每个分支都是最后
+        /// 手段，且都会被上报——用户得知配置去了哪里的唯一途径就是这里。</summary>
         private static string CurrentFallback()
         {
             try { string p = Application.persistentDataPath; if (!string.IsNullOrWhiteSpace(p)) return p; }
-            catch (Exception) { }
+            catch (Exception e) { Error($"KeyViewer: could not resolve the persistent data path: {e.Message}"); }
             try { return Path.GetTempPath(); } catch (Exception) { return "."; }
         }
 
