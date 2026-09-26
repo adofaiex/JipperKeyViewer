@@ -380,14 +380,40 @@ namespace JipperKeyViewer.KeyViewer.Settings
             get
             {
                 if (_customNodes == null)
-                    _customNodes = new List<FmNode>(CustomNodesData ?? new FmNode[0]);
+                    _customNodes = MaterializeNodes(CustomNodesData);
                 return _customNodes;
             }
             set
             {
+                if (value != null) value.RemoveAll(n => n == null);
                 _customNodes = value ?? new List<FmNode>();
                 CustomNodesData = _customNodes.ToArray();
             }
+        }
+
+        /// <summary>Copy a persisted node array into the working list, DROPPING null entries.
+        /// Mirrors <see cref="MaterializeGroups"/> for the same reason — see that method for why
+        /// the filter belongs at this boundary rather than in each consumer.
+        ///
+        /// Unlike LayerGroups, CustomNodes is not currently *broken* by a null entry: EnsureCustomNodes
+        /// removes them at the top of its body, and every per-frame editor loop runs over
+        /// editorSelection, which is null-filtered on insert. That is exactly why the asymmetry is
+        /// worth closing — it is not obvious, it is not asserted anywhere, and the next consumer that
+        /// iterates the working list directly (rather than the selection) would inherit a crash whose
+        /// only defence is a cleanup function running somewhere else entirely.
+        ///
+        /// 与 `MaterializeGroups` 对称，理由见该方法。**当前** `CustomNodes` 并未因 null 而坏掉
+        /// （`EnsureCustomNodes` 会在函数体开头剔除，编辑器逐帧循环走的 `editorSelection` 在插入时
+        /// 就过滤了 null）——但正因如此这个不对称才值得消除：它不明显、无处断言，而下一个**直接**
+        /// 遍历工作列表（而非选区）的消费方，会继承一个仅靠「别处某个清理函数恰好跑过」兜底的崩溃。
+        /// </summary>
+        private static List<FmNode> MaterializeNodes(FmNode[] data)
+        {
+            var list = new List<FmNode>(data == null ? 0 : data.Length);
+            if (data == null) return list;
+            for (int i = 0; i < data.Length; i++)
+                if (data[i] != null) list.Add(data[i]);
+            return list;
         }
 
         /// <summary>Copy a persisted group array into the working list, DROPPING null entries.
@@ -474,7 +500,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public void SyncArraysFromLists()
         {
             ImportLegacyCarriers();
-            _customNodes = new List<FmNode>(CustomNodesData ?? new FmNode[0]);
+            _customNodes = MaterializeNodes(CustomNodesData);
             _layerGroups = MaterializeGroups(LayerGroupsData);
             // Gate the legacy repair on the profile's OWN version stamp rather than on a value
             // heuristic. The heuristic could only ever be a guess — a user who genuinely wants
