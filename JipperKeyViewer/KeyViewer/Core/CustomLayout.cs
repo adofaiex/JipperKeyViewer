@@ -466,14 +466,21 @@ namespace JipperKeyViewer.KeyViewer
                 // 加进了**旧字段默认值**修复（让旧配置不再读成 0），但 NaN 这条路从未封上：那条修复只对
                 // DataVersion 之前的配置运行，而 NaN 可能来自手改文件、`.jkv`，或当前版本配置上的
                 // DmNote 预设。
-                node.KeyTextOutlineThickness = SanitizeTextStyle(node.KeyTextOutlineThickness, 0.2f, 0f, 10f);
-                node.KeyTextShadowOffsetX = SanitizeTextStyle(node.KeyTextShadowOffsetX, 1f, -50f, 50f);
-                node.KeyTextShadowOffsetY = SanitizeTextStyle(node.KeyTextShadowOffsetY, -1f, -50f, 50f);
-                node.KeyTextShadowSoftness = SanitizeTextStyle(node.KeyTextShadowSoftness, 0f, 0f, 10f);
-                node.CountTextOutlineThickness = SanitizeTextStyle(node.CountTextOutlineThickness, 0.2f, 0f, 10f);
-                node.CountTextShadowOffsetX = SanitizeTextStyle(node.CountTextShadowOffsetX, 1f, -50f, 50f);
-                node.CountTextShadowOffsetY = SanitizeTextStyle(node.CountTextShadowOffsetY, -1f, -50f, 50f);
-                node.CountTextShadowSoftness = SanitizeTextStyle(node.CountTextShadowSoftness, 0f, 0f, 10f);
+                // The ranges MUST match the editor's own Mathf.Clamp in KeyViewerEditor (0..1 /
+                // -20..20 / 0..64) — a wider one is merely redundant, but a NARROWER one silently
+                // rewrites a value the user legally chose, on every single load. That is the same
+                // class of bug as the 0-opacity trap from round 48: sanitization that destroys data.
+                // 范围**必须**与 KeyViewerEditor 自己的 Mathf.Clamp 一致（0..1 / -20..20 / 0..64）——
+                // 更宽只是冗余，更**窄**则会在每次加载时静默改写用户合法选定的值。那与第 48 轮那条
+                // 0 不透明度陷阱是同一类 bug：净化反而毁数据。
+                node.KeyTextOutlineThickness = SanitizeTextStyle(node.KeyTextOutlineThickness, 0.2f, 0f, 1f);
+                node.KeyTextShadowOffsetX = SanitizeTextStyle(node.KeyTextShadowOffsetX, 1f, -20f, 20f);
+                node.KeyTextShadowOffsetY = SanitizeTextStyle(node.KeyTextShadowOffsetY, -1f, -20f, 20f);
+                node.KeyTextShadowSoftness = SanitizeTextStyle(node.KeyTextShadowSoftness, 0f, 0f, 64f);
+                node.CountTextOutlineThickness = SanitizeTextStyle(node.CountTextOutlineThickness, 0.2f, 0f, 1f);
+                node.CountTextShadowOffsetX = SanitizeTextStyle(node.CountTextShadowOffsetX, 1f, -20f, 20f);
+                node.CountTextShadowOffsetY = SanitizeTextStyle(node.CountTextShadowOffsetY, -1f, -20f, 20f);
+                node.CountTextShadowSoftness = SanitizeTextStyle(node.CountTextShadowSoftness, 0f, 0f, 64f);
                 node.GlowSize = float.IsNaN(node.GlowSize) || float.IsInfinity(node.GlowSize) ? 20f : Mathf.Clamp(node.GlowSize, 0f, 50f);
                 node.GlowOpacity = float.IsNaN(node.GlowOpacity) || float.IsInfinity(node.GlowOpacity) ? 0.7f : Mathf.Clamp01(node.GlowOpacity);
                 node.GlowSizePressed = float.IsNaN(node.GlowSizePressed) || float.IsInfinity(node.GlowSizePressed) ? 20f : Mathf.Clamp(node.GlowSizePressed, 0f, 50f);
@@ -1136,9 +1143,14 @@ namespace JipperKeyViewer.KeyViewer
             key.rainColor = node.UseCustomRainColor
                 ? NodeColor(node.RainColorBottom, rainSystem.GetRainColor(rainByte))
                 : rainSystem.GetRainColor(rainByte);
-            key.rainColorTop = node.UseCustomRainColor
-                ? NodeColor(node.RainColorTop, key.rainColor)
-                : key.rainColor;
+            // The TOP stop used to be mirrored into a key.rainColorTop field here, but nothing ever
+            // read it — the rain system resolves the node's top colour straight from CustomNode (see
+            // ResolveRainTopColor), precisely so a live colour edit could not go stale. Keeping the
+            // write meant a second, dead copy of the same value that the next person would assume
+            // was live and debug the wrong field.
+            // 顶色色标此前在此镜像进 key.rainColorTop 字段，但**从无任何读取点**——雨滴系统直接
+            // 从 CustomNode 解析节点顶色（见 ResolveRainTopColor），正是为了避免就地改色变陈旧。
+            // 保留那次写入等于多了一份同值的死副本，下一个人会以为它是活的、从而查错字段。
             key.rainOffsetX = Mathf.Clamp(node.RainOffsetX, -2000f, 2000f);
 
             if (node.FontSize > 0f)
@@ -1980,9 +1992,6 @@ namespace JipperKeyViewer.KeyViewer
                 key.rainColor = node.UseCustomRainColor
                     ? NodeColor(node.RainColorBottom, rainSystem.GetRainColor(rainByte))
                     : rainSystem.GetRainColor(rainByte);
-                key.rainColorTop = node.UseCustomRainColor
-                    ? NodeColor(node.RainColorTop, key.rainColor)
-                    : key.rainColor;
             }
         }
 

@@ -31,10 +31,13 @@ namespace JipperKeyViewer.KeyViewer
         public Vector2 keySize;
         /// <summary>Rain color index (0=row1, 1=row2, 3=row3) / 雨滴颜色索引（0=第1排，1=第2排，3=第3排）</summary>
         public byte color;
-        /// <summary>Pre-computed rain color for this key / 预先计算的该键雨滴颜色</summary>
+        /// <summary>Pre-computed rain color for this key. This is the BOTTOM stop of a per-node two-
+        /// colour body gradient. / 预先计算的该键雨滴颜色（按节点双色本体渐变的**底**色标）。
+        /// The top stop deliberately has no field here: the rain system reads the node's own
+        /// RainColorTop at the point of use, so a live colour edit cannot leave a stale mirror
+        /// behind. / 顶色色标刻意**不**在这里设字段：雨滴系统在用时直接读节点自己的 RainColorTop，
+        /// 故就地改色不会留下陈旧的镜像。</summary>
         public Color rainColor = Color.white;
-        /// <summary>Top end of the custom rain gradient (Custom nodes) / 自定义雨滴渐变的顶端颜色</summary>
-        public Color rainColorTop = Color.white;
         /// <summary>Counter bounce state  / 计数器弹跳状态（计数器弹跳动画）</summary>
         public bool Bouncing;
         public float BounceStart;
