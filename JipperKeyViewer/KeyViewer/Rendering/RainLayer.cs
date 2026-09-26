@@ -409,7 +409,38 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static void DrawDottedRainRect(VertexHelper vh, RawRain rain, Rect r, Color bottom, Color top, bool simple)
         {
             float dot = rain.dotLength;
-            float pattern = Mathf.Max(0.5f, dot + rain.gapLength);
+            // The per-node dot/gap values are already NaN-sanitized in EnsureCustomNodes, but this
+            // is the point that actually writes the SHARED merged rain mesh, and the obvious guard
+            // here does not work: Mathf.Max returns NaN for NaN (0.5 > NaN is false, so it picks the
+            // NaN), and neither does Mathf.Clamp. A NaN gap therefore survives the floor, makes
+            // `step` NaN, runs the segment loop exactly ONCE (y0 += NaN ends it), and — because
+            // `if (y1 <= y0) continue` is FALSE for NaN — reaches AddQuad with NaN y-coordinates,
+            // corrupting the entire rain canvas rather than just this drop. Same shared-mesh
+            // failure mode as the per-node rain-geometry fix; defended here one level down, at the
+            // only place that can poison every other drop's geometry.
+            //
+            // Note WHICH of the two actually needs it: the call sites gate on
+            // `rain.dotted && rain.dotLength > 0.5f`, and `NaN > 0.5f` is false, so a NaN dot is
+            // already excluded before reaching this method — gapLength is NOT part of that gate and
+            // is the live hole. The dot check is kept only so both operands of the pattern sum are
+            // known finite at the one place that writes shared geometry.
+            //
+            // 每节点点长/间距在 EnsureCustomNodes 里已做 NaN 净化，但这里才是真正写入**共享**雨滴
+            // mesh 的地方，而此处最顺手的守卫并不管用：Mathf.Max 对 NaN 返回 NaN（0.5 > NaN 为假，
+            // 于是它选中 NaN），Mathf.Clamp 同样如此。NaN 间距因此能穿过这个下限、令 `step` 变
+            // NaN、让分段循环**只跑一次**（y0 += NaN 即终止），而 `if (y1 <= y0) continue` 对 NaN
+            // 为**假**，于是带着 NaN 坐标抵达 AddQuad，毁掉的是**整块**雨滴画布而不只是这一滴。与按
+            // 节点雨滴几何那条修复是同一个共享 mesh 失效形态；此处再守一层，因为只有这里能污染
+            // 所有雨滴。
+            //
+            // 两者中**究竟哪个**真的需要守：三个调用点的门是 `rain.dotted && rain.dotLength >
+            // 0.5f`，而 `NaN > 0.5f` 为假，故 NaN 点长在抵达本方法**之前**就已被排除——间距不在
+            // 那个门里，才是真正的漏洞。点长那次保留，只是为了在唯一写入共享几何的地方确保求和的
+            // 两个操作数都已知有限。
+            if (float.IsNaN(dot) || float.IsInfinity(dot)) dot = 12f;
+            float gap = rain.gapLength;
+            if (float.IsNaN(gap) || float.IsInfinity(gap)) gap = 8f;
+            float pattern = Mathf.Max(0.5f, dot + gap);
             float step = pattern;
             int maxSegments = Mathf.CeilToInt(r.height / step);
             if (maxSegments > 64)
