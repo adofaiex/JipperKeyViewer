@@ -1931,6 +1931,29 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   而**漏掉一个失效点就意味着画布按错误顺序绘制节点**：一个比掉帧更难被察觉的视觉 bug。代价与风险
   不匹配，记录在案。
 
+### 属性面板：不用动调用点就砍掉 4/10 的每字段每事件分配（2026-09-26，第 104 轮）
+上轮留下的最后一项积压（每事件 200-900 次分配、约 150 个调用点）。本轮只做**不需要改任何调用点**
+的四处，风险接近零，而每字段每事件的分配从约 10 降到约 6：
+
+- **`TextInputField` 的 `params` 数组**（全应用生效）：Unity 的 `GUILayout.TextField` 只接受
+  `params GUILayoutOption[]`，故边界上数组无法避免——但**不必每次都是新的**。新增单 option 重载，
+  内部反复填充**一张实例数组**（GUILayout 同步消费、不保留任何东西）。
+  **恰好传一个参数的调用会绑定到该重载**（精确匹配优先于 params 展开），于是**全应用**每个
+  单 option 调用点都不再分配：设置页数字字段、取色器通道、以及属性面板的每一个字段。
+- **属性面板 8 处 `GUILayout.Width(96f)` + 3 处 `GUILayout.Width(110f)`** → 两个实例字段
+  （`GUILayoutOption` 是 class，此前这约 31 行**每一行**每次 Layout/Repaint 都在分配）。
+- **`FormatFloatForDisplay` 的 `ToString("R")`**（极小值还会再分配一个 6 位小数回退串）→
+  按控件名分槽缓存。同一帧的 Layout 与 Repaint 带着**同一个**值，第二次纯属浪费。
+- 顺带：`DrawEditorHelpMarker` 的两个 option 已在上一轮处理。
+- **仍未做**：每个调用点的**控件名拼接**（`"fme_x_" + first.Id`）与**捕获 lambda**
+  （`Action<float>` + display class）。这两项合计仍占每字段约 4 次分配，但它们分散在约 150 个
+  调用点，必须逐个改，风险与收益需要另行评估——**不在本轮顺手做掉**。
+- 新增 Harness 测试钉住「不同字段必须落在不同槽」——返回常量的解析能通过冒烟测试却会**静默**
+  退回原来的抖动。**有效性已验证**：把映射改成 `return 0` 后立刻
+  `FAIL … fme_x_2 collides on slot 0`（`160 passed, 1 failed`），恢复后 161 全绿。
+- 本轮又出现一次「编辑时把方法签名和花括号并到一行」的滑手（`FormatFloatForDisplay`），
+  编译能过但格式被破坏，已当场修回多行。
+
 ### 仍待处理（每帧性能审计的积压，第 100 轮记录）
 子代理逐条量化了每帧/每事件分配，按收益排序。**均未修**，留待后续逐项处理：
 1. **编辑器属性面板每个字段每 IMGUI 事件约 10 次分配**（捕获 lambda + 控件名拼接 + 2 个

@@ -3060,7 +3060,7 @@ namespace JipperKeyViewer.KeyViewer
 
             int depth = first.Depth;
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("fm_depth"), GUILayout.Width(96f));
+            GUILayout.Label(I18n.Tr("fm_depth"), EditorFieldLabelWidth);
             DrawEditorHelpMarker("fm_help_depth");
             int newDepth = Mathf.RoundToInt(GUILayout.HorizontalSlider(depth, 0, 60));
             // Mixed depths show "—" (never parses → no accidental mass-apply); a deliberate
@@ -4096,10 +4096,10 @@ namespace JipperKeyViewer.KeyViewer
                     else if (n.Count != seedCount) countMixed = true;
                 }
                 GUILayout.BeginHorizontal();
-                GUILayout.Label(I18n.Tr("fm_count_value"), GUILayout.Width(96f));
+                GUILayout.Label(I18n.Tr("fm_count_value"), EditorFieldLabelWidth);
                 DrawEditorHelpMarker("fm_help_count_value");
                 string countText = TextInputField("fme_cnt_" + first.Id,
-                    countMixed ? "—" : seedCount.ToString(), GUILayout.Width(110f));
+                    countMixed ? "—" : seedCount.ToString(), EditorFieldEditWidth);
                 if (int.TryParse(countText.Replace("—", "").Trim(), out int typedCount) && typedCount >= 0
                     && (countMixed || typedCount != seedCount))
                 {
@@ -4180,7 +4180,7 @@ namespace JipperKeyViewer.KeyViewer
             editorNodeTypeNames[2] = I18n.Tr("fm_add_total"); editorNodeTypeNames[3] = I18n.Tr("fm_add_image");
             string[] names = editorNodeTypeNames;
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("fm_node_type"), GUILayout.Width(96f));
+            GUILayout.Label(I18n.Tr("fm_node_type"), EditorFieldLabelWidth);
             DrawEditorHelpMarker("fm_help_node_type");
             int type = node.NodeType;
             int newType = GUILayout.SelectionGrid(type, names, 4, GUILayout.Height(20f));
@@ -4339,7 +4339,7 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawEditorFontSize(FmNode first)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("key_font_size"), GUILayout.Width(96f));
+            GUILayout.Label(I18n.Tr("key_font_size"), EditorFieldLabelWidth);
             DrawEditorHelpMarker("fm_help_font_size");
             int size = Mathf.RoundToInt(GUILayout.HorizontalSlider(first.FontSize, 0f, 72f));
             // Mixed sizes show "—" (never parses → no accidental mass-apply); deliberate input
@@ -4502,6 +4502,15 @@ namespace JipperKeyViewer.KeyViewer
 
         private readonly GUILayoutOption fmHelpMarkerWidth = GUILayout.Width(18f);
         private readonly GUILayoutOption fmHelpMarkerHeight = GUILayout.Height(18f);
+        // The property panel's label and edit-field widths. GUILayoutOption is a CLASS, so these
+        // were being allocated on every one of the ~31 rows, on every Layout and every Repaint.
+        // The sizes never vary. Instance fields, not static — a static GUILayoutOption would drag
+        // UnityEngine.IMGUIModule into this type's static ctor.
+        // 属性面板的标签宽度与编辑框宽度。`GUILayoutOption` 是 **class**，故此前这约 31 行**每一行**、
+        // 每次 Layout 每次 Repaint 都在分配。尺寸从不变化。用**实例**字段而非静态——静态会把
+        // UnityEngine.IMGUIModule 拖进本类型的静态构造。
+        private readonly GUILayoutOption EditorFieldLabelWidth = GUILayout.Width(96f);
+        private readonly GUILayoutOption EditorFieldEditWidth = GUILayout.Width(110f);
 
         /// <summary>The expanded explanation — call AFTER the row's horizontal ends. /
         /// 展开的说明文本——须在该行 horizontal 结束后调用。</summary>
@@ -4559,7 +4568,7 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawEditorTextField(string label, string ctrl, string value, Action<string> apply, string helpKey = null)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(96f));
+            GUILayout.Label(label, EditorFieldLabelWidth);
             DrawEditorHelpMarker(helpKey);
             string text = TextInputField(ctrl, value ?? "", GUILayout.MinWidth(120f));
             GUILayout.EndHorizontal();
@@ -4577,7 +4586,7 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply, string helpKey = null, FmNode basis = null)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(96f));
+            GUILayout.Label(label, EditorFieldLabelWidth);
             DrawEditorHelpMarker(helpKey);
             // The display basis must match whatever the apply callback uses as its reference —
             // see the X/Y fields, which apply a delta from the ACTIVE node. / 显示基准必须与
@@ -4604,8 +4613,8 @@ namespace JipperKeyViewer.KeyViewer
             // 于是该字段在**每个** Layout/Repaint 都"提交"一次——静默截断数值，并在每次重绘中
             // 对每个此类字段跑一遍 apply 回调（压历史 + 存盘 + 整层重建），即单帧数十次完整拆解。
             // "R" 可能较长，故限制显示宽度，过长时退回较短的写法。
-            string seed = mixed ? "—" : FormatFloatForDisplay(v0);
-            string text = TextInputField(ctrl, seed, GUILayout.Width(110f));
+            string seed = mixed ? "—" : FormatFloatForDisplayCached(ctrl, v0);
+            string text = TextInputField(ctrl, seed, EditorFieldEditWidth);
             // Strip the mixed marker before parsing: clicking in and typing leaves "—60", which
             // never parsed — the primary multi-select flow (select many, type one value, all
             // apply) was dead. / 解析前剥掉混合标记：点击后直接输入会留下"—60"，此前永不解析
@@ -4625,6 +4634,72 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Shortest representation of a float that parses back to the same value, so the
         /// editor never shows a number different from the one it would commit. / 能回解为同一值的
         /// 最短浮点表示，使编辑器显示的数与它会提交的数永不不同。</summary>
+        /// <summary>Per-field cache for the float display, keyed by the field's control name.
+        ///
+        /// The pure FormatFloatForDisplay above runs v.ToString("R") and can allocate two strings
+        /// (the long form plus the 6-decimal fallback) for a tiny value. With ~31 fields on the
+        /// property panel that is ~31 strings per Layout and ~31 per Repaint, every frame the
+        /// editor is open — and the Layout and Repaint of one frame carry the SAME value, so the
+        /// second one is pure waste.
+        ///
+        /// The cache is keyed by the control name, which is already unique per field per node
+        /// ("fme_x_17") and is the identity TextInputField uses for its own buffer. Comparing the
+        /// float means a genuine edit still re-formats. As with the colour channels, a name that
+        /// cannot be numbered simply falls through to the uncached path.
+        ///
+        /// 按**每个字段**缓存的浮点显示，以该字段的控件名为键。
+        ///
+        /// 上面那个纯函数 `FormatFloatForDisplay` 会跑 `v.ToString("R")`，而极小值还可能再分配一个
+        /// 6 位小数的回退串。属性面板约 31 个字段，即编辑器开着时**每帧**每次 Layout 约 31 个、
+        /// 每次 Repaint 再约 31 个字符串——而同一帧的 Layout 与 Repaint 带着**同一个**值，第二次
+        /// 纯属浪费。
+        ///
+        /// 缓存以控件名为键——它本就是每字段每节点唯一的（"fme_x_17"），且正是 `TextInputField`
+        /// 标识自身缓冲区的那个身份。比较的是 float，故真的编辑过仍会重新格式化。与取色器的通道
+        /// 一样：无法解析出编号的名字直接落到未缓存路径。
+        /// </summary>
+        private string FormatFloatForDisplayCached(string ctrl, float v)
+        {
+            int i = editorFloatEchoIndex(ctrl);
+            if (i < 0) return FormatFloatForDisplay(v);
+            if (editorFloatEchoText[i] != null && editorFloatEchoValue[i] == v)
+                return editorFloatEchoText[i];
+            string s = FormatFloatForDisplay(v);
+            editorFloatEchoValue[i] = v;
+            editorFloatEchoText[i] = s;
+            return s;
+        }
+
+        private static readonly float[] editorFloatEchoValue = CreateFloatEchoValues();
+        private static readonly string[] editorFloatEchoText = new string[EditorFloatEchoSlots];
+        private const int EditorFloatEchoSlots = 128;
+
+        private static float[] CreateFloatEchoValues()
+        {
+            float[] v = new float[EditorFloatEchoSlots];
+            for (int i = 0; i < v.Length; i++) v[i] = float.NaN;
+            return v;
+        }
+
+        /// <summary>Take the trailing integer of a control name as the cache slot. A float can never
+        /// be NaN coming out of a slider or a parse (both are finite-checked), so NaN doubles as
+        /// "nothing cached yet". / 取控件名结尾的整数作为缓存槽。滑块或解析出来的浮点不可能是 NaN
+        /// （两者都做过有限性检查），故 NaN 兼作「尚未缓存」标记。</summary>
+        private static int editorFloatEchoIndex(string ctrl)
+        {
+            if (ctrl == null) return -1;
+            int end = ctrl.Length - 1;
+            while (end >= 0 && ctrl[end] >= '0' && ctrl[end] <= '9') end--;
+            if (end == ctrl.Length - 1 || end < 0) return -1;
+            int n = 0;
+            for (int i = end + 1; i < ctrl.Length; i++)
+            {
+                n = n * 10 + (ctrl[i] - '0');
+                if (n >= EditorFloatEchoSlots) return -1;
+            }
+            return n;
+        }
+
         private static string FormatFloatForDisplay(float v)
         {
             if (float.IsNaN(v) || float.IsInfinity(v)) return "0";
@@ -4646,7 +4721,7 @@ namespace JipperKeyViewer.KeyViewer
             Action<float> applyNormalized, string helpKey = null)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(96f));
+            GUILayout.Label(label, EditorFieldLabelWidth);
             DrawEditorHelpMarker(helpKey);
             float value = getNormalized(editorSelection[0]);
             if (float.IsNaN(value) || float.IsInfinity(value)) value = 0f;
@@ -4660,7 +4735,7 @@ namespace JipperKeyViewer.KeyViewer
                     break;
                 }
             }
-            string text = TextInputField(ctrl, mixed ? "—" : (value * 100f).ToString("0.##"), GUILayout.Width(110f));
+            string text = TextInputField(ctrl, mixed ? "—" : (value * 100f).ToString("0.##"), EditorFieldEditWidth);
             if (float.TryParse(text.Replace("—", "").Trim(), out float percent) && IsFiniteFloat(percent))
             {
                 float normalized = Mathf.Clamp01(percent / 100f);
@@ -4799,7 +4874,7 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawEditorEasingSelector(string ctrl, string current, Action<string> apply)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(96f));
+            GUILayout.Label(I18n.Tr("press_anim_easing"), EditorFieldLabelWidth);
             string shown = Util.KvEasing.Normalize(current);
             if (GUILayout.Button(shown, GUILayout.Width(140f)))
                 fmEasingPicker = fmEasingPicker == ctrl ? null : ctrl;

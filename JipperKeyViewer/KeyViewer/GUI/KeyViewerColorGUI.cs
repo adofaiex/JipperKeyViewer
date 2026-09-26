@@ -259,6 +259,34 @@ namespace JipperKeyViewer.KeyViewer
             return txt;
         }
 
+        /// <summary>Single-option overload. Unity's GUILayout.TextField only accepts
+        /// params GUILayoutOption[], so an array is unavoidable at that boundary — but it need not
+        /// be a NEW one per call. GUILayout consumes the array synchronously and retains nothing, so
+        /// one instance array can be refilled and handed over repeatedly.
+        ///
+        /// This matters because a call passing exactly one argument binds HERE (an exact match beats
+        /// params expansion), so every single-option call site in the app stops allocating: the
+        /// settings page's numeric fields, the colour channels, and every field of the FreeMake
+        /// property panel — ~31 of those on a default selection, each one previously allocating an
+        /// array on every Layout and every Repaint.
+        ///
+        /// 单 option 重载。Unity 的 `GUILayout.TextField` 只接受 `params GUILayoutOption[]`，故在那个
+        /// 边界上数组无法避免——但**不必每次都是新的**。GUILayout 同步消费该数组且不保留任何东西，
+        /// 故一张实例数组可以反复填充后交出。
+        ///
+        /// 这一点很关键：**恰好传一个参数的调用会绑定到本重载**（精确匹配优先于 params 展开），于是
+        /// 全应用每个单 option 调用点都不再分配：设置页的数字字段、取色器的通道、以及 FreeMake
+        /// 属性面板的**每一个**字段（默认选区即约 31 个），此前每个字段在每次 Layout 和每次
+        /// Repaint 都要分配一个数组。
+        /// </summary>
+        private string TextInputField(string ctrlName, string modelText, GUILayoutOption option)
+        {
+            singleOptionHolder[0] = option;
+            return TextInputField(ctrlName, modelText, singleOptionHolder);
+        }
+
+        private readonly GUILayoutOption[] singleOptionHolder = new GUILayoutOption[1];
+
         /// <summary>Color to #RRGGBB, or #RRGGBBAA when alpha &lt; 255 / 颜色转 #RRGGBB,非不透明时输出 #RRGGBBAA</summary>
         private static string ColorToHex(Color c)
         {
