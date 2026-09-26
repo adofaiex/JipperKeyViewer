@@ -604,10 +604,22 @@ namespace JipperKeyViewer.KeyViewer.Settings
             if (!(node.TextOpacity <= 0f || node.CountTextOpacity <= 0f)) return false;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
-            if (node.LabelScale <= NodeScaleFloor) node.LabelScale = 1f;
-            if (node.CountScale <= NodeScaleFloor) node.CountScale = 1f;
-            if (node.PressedLabelScale <= NodeScaleFloor) node.PressedLabelScale = 1f;
-            if (node.PressedCountScale <= NodeScaleFloor) node.PressedCountScale = 1f;
+            // The scales are DELIBERATELY left alone. An earlier version of this repair also lifted
+            // them from the 0.5 floor, on the theory that 0.5 was the clamp's fingerprint. That was a
+            // guess and it was wrong: LabelScale is a real, user-facing control, the layout may well
+            // have been authored at 0.5, and LabelScale feeds RectTransform.localScale — which
+            // interacts with the TMP auto-sizing that decides every key label's size
+            // (enableAutoSizing is on unconditionally and nothing ever sets fontSize, so the label
+            // is sized purely by the largest size that fits the rect). Halving the rect halves the
+            // result, and raising the font size does not recover it. So "fixing" the scale doubled
+            // the user's text instead of restoring it, and the honest answer to "my labels are too
+            // small" is that the value is 0.5 — a value only they can decide to change.
+            // 缩放字段**刻意不动**。本修复的早期版本还把它们从 0.5 下限提上来，理由是 0.5 是钳制的
+            // 指纹。那是**猜测**，而且是错的：LabelScale 是真实的、面向用户的控件，布局很可能就是
+            // 在 0.5 下做的；而 LabelScale 喂给 RectTransform.localScale——它与决定**每个**按键标签
+            // 尺寸的 TMP 自动缩放相互作用（enableAutoSizing 无条件开启，且从来没有设置过 fontSize，
+            // 故标签尺寸完全由「能塞进 rect 的最大尺寸」决定）。把 rect 减半，结果就减半，调大字号
+            // 也找不回来。所以「修」缩放反而把用户的文字放大了一倍，而不是恢复它。
             return true;
         }
 

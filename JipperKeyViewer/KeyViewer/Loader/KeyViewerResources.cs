@@ -410,7 +410,24 @@ namespace JipperKeyViewer.KeyViewer
                 t.fontStyle = node != null
                     ? (isCount && node.UseCustomCountFontStyle ? (FontStyles)node.CountFontStyleFlags : (FontStyles)node.FontStyleFlags)
                     : style;
-                t.fontSizeMax = Settings.Data.KeyFontSize;
+                // Key labels are sized purely by TMP auto-sizing (enableAutoSizing is on for every
+                // key text and nothing sets `fontSize`), so fontSizeMax is the CEILING the fitter
+                // works under, measured against the RectTransform — which the node's LabelScale
+                // then shrinks via localScale. Once the fitting size falls below that ceiling,
+                // raising it does nothing and the label is stuck, which is why the size control
+                // looked completely inert. Divide the ceiling by the node's scale so the number in
+                // the field is the number on screen. Fixed-layout keys have no such scale, and a
+                // scale of 1 is a no-op, so neither is affected.
+                // 按键标签纯粹由 TMP 自动缩放决定（每个按键文字都开着 enableAutoSizing，且没有任何地方
+                // 设置 `fontSize`），故 fontSizeMax 是适配器工作的**上限**，且是相对 RectTransform
+                // 量出来的——而节点的 LabelScale 又通过 localScale 把那个 transform 缩小。一旦适配
+                // 尺寸低于该上限，调高它就不起作用、标签被卡死，这正是字号控件看起来完全失灵的原因。
+                // 故把上限除以节点缩放，使字段里的数字就是屏幕上的数字。固定布局按键没有这个缩放，
+                // 缩放为 1 时也是空操作，故两者都不受影响。
+                float sizeScale = node != null
+                    ? (isCount ? (node.CountScale > 0f ? node.CountScale : 1f) : (node.LabelScale > 0f ? node.LabelScale : 1f))
+                    : 1f;
+                t.fontSizeMax = Settings.Data.KeyFontSize / sizeScale;
             }
             // Per-key text size only exists for the FIXED layouts. In FreeMake the loop index is a
             // custom node slot, so a leftover PerKeyFontSize entry (e.g. slot 0 = 24) would silently
@@ -423,7 +440,15 @@ namespace JipperKeyViewer.KeyViewer
                 float size = isCount
                     ? (node.CountFontSize > 0f ? node.CountFontSize : node.FontSize)
                     : node.FontSize;
-                if (size > 0f) t.fontSizeMax = size;
+                // Same ceiling-vs-scale division as the global write above: a node's own size has to
+                // be divided by the scale its RectTransform will be shrunk by, or the control is
+                // inert for exactly the nodes that use it.
+                // 与上面全局那次写入同样的「上限 ÷ 缩放」：节点自己的字号必须除以它那个将被缩小的
+                // RectTransform 的缩放，否则**恰恰是**使用该控件的那些节点上它完全失灵。
+                float nodeScale = isCount
+                    ? (node.CountScale > 0f ? node.CountScale : 1f)
+                    : (node.LabelScale > 0f ? node.LabelScale : 1f);
+                if (size > 0f) t.fontSizeMax = size / nodeScale;
             }
             void ApplyPerKeyOverride(TMP_Text t, int pi)
             {

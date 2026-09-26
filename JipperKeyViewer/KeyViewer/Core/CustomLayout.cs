@@ -1165,12 +1165,43 @@ namespace JipperKeyViewer.KeyViewer
             // 保留那次写入等于多了一份同值的死副本，下一个人会以为它是活的、从而查错字段。
             key.rainOffsetX = Mathf.Clamp(node.RainOffsetX, -2000f, 2000f);
 
+            // Key labels are sized ENTIRELY by TMP auto-sizing: enableAutoSizing is turned on
+            // unconditionally for every key text and nothing anywhere sets `fontSize`, so
+            // `fontSizeMax` is not a requested size — it is the CEILING auto-sizing picks the
+            // largest fitting size under.
+            //
+            // That ceiling is measured against the RectTransform, and ApplyCustomTextOffsets then
+            // puts the node's LabelScale on that transform's localScale. So a node scaled to 0.5
+            // auto-sizes against a half-size rect: once the fitting size drops below the ceiling,
+            // raising the ceiling changes nothing at all and the label stays at whatever the rect
+            // allows, forever. That is why the font-size control appeared completely inert — no
+            // matter how far it was turned up, the text never changed.
+            //
+            // Divide the ceiling by the scale so the number in the field is the number on screen.
+            // Dividing (not multiplying) is the whole fix: a shrunken rect needs a proportionally
+            // LARGER ceiling for the same final size, which is exactly what makes the control do
+            // something again. Scales of 1 are untouched, so nothing changes for unscaled nodes.
+            //
+            // 按键标签的尺寸**完全**由 TMP 自动缩放决定：每个按键文字都无条件开启
+            // enableAutoSizing，且任何地方都没有设置过 `fontSize`，所以 `fontSizeMax` 不是「请求的
+            // 尺寸」，而是自动缩放在其下挑选的最大适配尺寸的**上限**。
+            //
+            // 而该上限是相对 RectTransform 量出来的，ApplyCustomTextOffsets 随后又把节点的
+            // LabelScale 放到那个 transform 的 localScale 上。于是缩到 0.5 的节点是在**半尺寸**的
+            // rect 上做适配：一旦适配尺寸低于上限，调高上限就完全不起作用，标签永远停在 rect 允许的
+            // 那个大小。**这正是字号控件看起来完全失灵的原因**——无论调到多大，文字都不变。
+            //
+            // 故把上限除以缩放，使字段里的数字就是屏幕上的数字。是**除**不是乘：缩小的 rect 需要
+            // 成比例**更大**的上限才能得到同样的最终尺寸，而这正是让该控件重新起作用的关键。
+            // 缩放为 1 的节点完全不受影响，故未缩放的节点行为不变。
+            float labelScale = node.LabelScale > 0f ? node.LabelScale : 1f;
+            float countScale = node.CountScale > 0f ? node.CountScale : 1f;
             if (node.FontSize > 0f)
-                key.text.fontSizeMax = node.FontSize;
+                key.text.fontSizeMax = node.FontSize / labelScale;
             if (key.value != null)
                 key.value.fontSizeMax = node.CountFontSize > 0f
-                    ? node.CountFontSize
-                    : (node.FontSize > 0f ? node.FontSize : key.text.fontSizeMax);
+                    ? node.CountFontSize / countScale
+                    : (node.FontSize > 0f ? node.FontSize / labelScale : key.text.fontSizeMax);
             FontStyles nodeFontStyle = (FontStyles)node.FontStyleFlags;
             key.text.fontStyle = nodeFontStyle;
             if (key.value != null)
