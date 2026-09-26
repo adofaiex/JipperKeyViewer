@@ -2825,6 +2825,19 @@ namespace JipperKeyViewer.KeyViewer
         // 漏掉任何一个前缀都会把普通输入变成数据丢失。取色器（cpi_）与设置页字段共用同一 IMGUI
         // 焦点空间。
         private static readonly string[] EditorTextPrefixes = { "fme_", "cpi_", "fsf_", "kte_", "kfte_", "kv_" };
+        // Scratch label tables for the property panel's SelectionGrids. Refilled per event (the
+        // labels follow the language) instead of allocating a literal each time. One table per site
+        // even though two of them hold the same three labels: a shared table would be safe only
+        // because each is assigned and consumed before the next is filled, and "safe only because"
+        // is exactly the kind of coupling that breaks the moment someone reorders two rows.
+        // 属性面板 SelectionGrid 的标签暂存表。每事件重填（标签随语言变化），而不是每次分配一个字面量。
+        // **每个位置一张表**，尽管其中两张装的是同样的三个标签：共用只有在「每张赋值后都被消费完、
+        // 下一张才填」的前提下才安全，而这种「仅当……才安全」正是别人调整两行顺序就会踩塌的耦合。
+        private readonly string[] editorRainRowNames = new string[3];
+        private readonly string[] editorRainAlignNames = new string[3];
+        private readonly string[] editorBorderSideNames = new string[3];
+        private readonly string[] editorGhostSideNames = new string[3];
+        private readonly string[] editorNodeTypeNames = new string[4];
 
         private static bool EditorHasFocusedTextField()
         {
@@ -3224,13 +3237,20 @@ namespace JipperKeyViewer.KeyViewer
             {
                 GUILayout.Label(I18n.Tr("fm_rain_row"));
                 GUILayout.BeginHorizontal();
-                string[] rainRowNames = { I18n.Tr("rain_row1"), I18n.Tr("rain_row2"), I18n.Tr("rain_row3") };
+                // Refill the scratch rather than allocating a literal per event. The labels are
+            // language-dependent, so they cannot be hoisted outright; a 3-element array reallocated
+            // on every IMGUI event of an open editor window is pure waste.
+            // 改为填充暂存而非每事件分配字面量。标签随语言变化故无法直接提上去；而在编辑器窗口
+            // 开着时每 IMGUI 事件重新分配一个 3 元素数组纯属浪费。
+            editorRainRowNames[0] = I18n.Tr("rain_row1"); editorRainRowNames[1] = I18n.Tr("rain_row2"); editorRainRowNames[2] = I18n.Tr("rain_row3");
+            string[] rainRowNames = editorRainRowNames;
                 int rainRow = GUILayout.SelectionGrid(Mathf.Clamp(first.RainRow, 0, 2), rainRowNames, 3, GUILayout.Height(20f));
                 DrawEditorHelpMarker("fm_help_rain_row");
                 GUILayout.EndHorizontal();
                 DrawEditorHelpBox("fm_help_rain_row");
                 GUILayout.Label(I18n.Tr("fm_rain_alignment"));
-                string[] rainAlignments = { I18n.Tr("fm_rain_align_left"), I18n.Tr("fm_rain_align_center"), I18n.Tr("fm_rain_align_right") };
+                editorRainAlignNames[0] = I18n.Tr("fm_rain_align_left"); editorRainAlignNames[1] = I18n.Tr("fm_rain_align_center"); editorRainAlignNames[2] = I18n.Tr("fm_rain_align_right");
+            string[] rainAlignments = editorRainAlignNames;
                 int rainAlignment = GUILayout.SelectionGrid(Mathf.Clamp(first.RainAlignment, 0, 2), rainAlignments, 3);
                 if (rainAlignment != first.RainAlignment)
                 {
@@ -3376,7 +3396,8 @@ namespace JipperKeyViewer.KeyViewer
                 if (first.UseCustomRainBorderSides)
                 {
                     GUILayout.Label(I18n.Tr("rain_outline_sides"));
-                    string[] sides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+                    editorBorderSideNames[0] = I18n.Tr("rain_side_all"); editorBorderSideNames[1] = I18n.Tr("rain_side_vertical"); editorBorderSideNames[2] = I18n.Tr("rain_side_horizontal");
+            string[] sides = editorBorderSideNames;
                     int selectedSides = GUILayout.SelectionGrid(Mathf.Clamp(first.RainBorderSides, 0, 2), sides, 3);
                     if (selectedSides != first.RainBorderSides)
                     {
@@ -3512,7 +3533,8 @@ namespace JipperKeyViewer.KeyViewer
                     if (first.UseCustomGhostRainBorderSides)
                     {
                         GUILayout.Label(I18n.Tr("rain_outline_sides"));
-                        string[] ghostSides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+                        editorGhostSideNames[0] = I18n.Tr("rain_side_all"); editorGhostSideNames[1] = I18n.Tr("rain_side_vertical"); editorGhostSideNames[2] = I18n.Tr("rain_side_horizontal");
+            string[] ghostSides = editorGhostSideNames;
                         int ghostSelected = GUILayout.SelectionGrid(Mathf.Clamp(first.GhostRainBorderSides, 0, 2), ghostSides, 3);
                         if (ghostSelected != first.GhostRainBorderSides)
                         {
@@ -4154,7 +4176,9 @@ namespace JipperKeyViewer.KeyViewer
 
         private void DrawEditorNodeTypeCombo(FmNode node)
         {
-            string[] names = { I18n.Tr("fm_add_key"), I18n.Tr("fm_add_kps"), I18n.Tr("fm_add_total"), I18n.Tr("fm_add_image") };
+            editorNodeTypeNames[0] = I18n.Tr("fm_add_key"); editorNodeTypeNames[1] = I18n.Tr("fm_add_kps");
+            editorNodeTypeNames[2] = I18n.Tr("fm_add_total"); editorNodeTypeNames[3] = I18n.Tr("fm_add_image");
+            string[] names = editorNodeTypeNames;
             GUILayout.BeginHorizontal();
             GUILayout.Label(I18n.Tr("fm_node_type"), GUILayout.Width(96f));
             DrawEditorHelpMarker("fm_help_node_type");

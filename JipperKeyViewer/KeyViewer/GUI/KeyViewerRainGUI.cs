@@ -129,6 +129,8 @@ namespace JipperKeyViewer.KeyViewer
         /// Draw one row-based section among rain shadow / rain outline / ghost shadow / ghost outline. / 绘制四类行效果段之一(普通阴影/普通描边/鬼键阴影/鬼键描边)。
         /// Replaces the four former copy-paste drawers; draw order and SaveSettings/ClearActiveDrops timing match the originals. / 替代原四个复制粘贴段;绘制顺序与保存/清雨滴时机与原实现一致。
         /// </summary>
+        private readonly string[] rainOutlineSideNames = new string[3];
+
         private void DrawRainRowEffectSection(bool ghost, bool isOutline)
         {
             string title = (ghost ? I18n.Tr("ghost_rain") + " " : "") + I18n.Tr(isOutline ? "rain_outline" : "rain_shadow");
@@ -316,7 +318,15 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
             GUILayout.Label(I18n.Tr("rain_outline_sides") + ":");
-            string[] outlineSides = { I18n.Tr("rain_side_all"), I18n.Tr("rain_side_vertical"), I18n.Tr("rain_side_horizontal") };
+            // Scratch, refilled per event: the labels are language-dependent so they cannot simply
+            // be hoisted, but reallocating a 3-element array on every event of the rain page — the
+            // page people leave open while tuning — is pure waste.
+            // 暂存并每事件重填：标签随语言变化故不能单纯提上去，但在雨滴页（人们一直开着调的那一页）
+            // 每事件重新分配一个 3 元素数组纯属浪费。
+            rainOutlineSideNames[0] = I18n.Tr("rain_side_all");
+            rainOutlineSideNames[1] = I18n.Tr("rain_side_vertical");
+            rainOutlineSideNames[2] = I18n.Tr("rain_side_horizontal");
+            string[] outlineSides = rainOutlineSideNames;
             int newSides = GUILayout.SelectionGrid(Mathf.Clamp(Settings.Data.RainOutlineSides, 0, 2), outlineSides, 3);
             if (newSides != Settings.Data.RainOutlineSides)
             {

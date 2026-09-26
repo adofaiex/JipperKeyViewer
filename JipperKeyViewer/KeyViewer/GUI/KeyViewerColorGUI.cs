@@ -29,25 +29,39 @@ namespace JipperKeyViewer.KeyViewer
         /// </summary>
         private string[] ColorNames = new string[12];
         private string colorLabelLang;
+        // Scratch tables for the per-event default colours. They read LIVE settings, so they must be
+        // refilled every event — but the array itself does not have to be reallocated.
+        // 每事件默认色的暂存表。它们读的是**实时**设置，故每事件都要重填，但数组本身不必重新分配。
+        private readonly Color[] globalColorDefaults = new Color[12];
+        private readonly Color[] kpsTotalDefaults = new Color[3];
+        private readonly Color[] fullKeyboardDefaults = new Color[6];
 
         private void DrawColorSettings()
         {
             GUILayout.BeginVertical("box");
-            Color[] defaultColors = {
-                Background, BackgroundClicked, Outline, OutlineClicked,
-                Text, TextClicked,
-                RainColor, RainColor2, RainColor3,
-                GhostRainColorDefault, GhostRainColor2Default, GhostRainColor3Default
-            };
-            // Hoisted to static readonly: the Colors tab is the one people leave open, and these
-            // two array literals were rebuilt on EVERY IMGUI event (IMGUI fires Layout + Repaint
-            // per frame). I18n.Tr does not allocate, so the keys can be resolved once per language
-            // and the label table rebuilt only when the language changes — the same caching
-            // DrawTabBar already uses. Must stay non-GUI types: a static GUIContent/GUILayoutOption
-            // would drag UnityEngine.IMGUIModule into this type's static ctor.
-            // 提为 static readonly：颜色页正是人们一直开着的那一页，而这两个数组字面量此前在
-            // **每个** IMGUI 事件（每帧 Layout + Repaint）都重建一次。I18n.Tr 本身不分配，故键可
-            // 按语言解析一次、标签表只在语言变化时重建——与 DrawTabBar 同一套缓存。
+            // The LABEL table below is the one that actually got hoisted; this default-colour table
+            // did not, even though the note claimed "these two array literals" had both been hoisted.
+            // A comment promising a fix that is not in the code is worse than no comment — it stops
+            // the next reader from looking. Fill a shared table instead.
+            // 下方真正被提上去的是**标签表**；这张默认色表**并没有**，而注释却声称「这两个数组
+            // 字面量」都已提为静态。**承诺了代码里并不存在的修复的注释比没有注释更糟**——它会让下一个
+            // 读者不再去查。改为填充共享表。
+            globalColorDefaults[0] = Background; globalColorDefaults[1] = BackgroundClicked;
+            globalColorDefaults[2] = Outline; globalColorDefaults[3] = OutlineClicked;
+            globalColorDefaults[4] = Text; globalColorDefaults[5] = TextClicked;
+            globalColorDefaults[6] = RainColor; globalColorDefaults[7] = RainColor2; globalColorDefaults[8] = RainColor3;
+            globalColorDefaults[9] = GhostRainColorDefault; globalColorDefaults[10] = GhostRainColor2Default;
+            globalColorDefaults[11] = GhostRainColor3Default;
+            Color[] defaultColors = globalColorDefaults;
+            // Hoisted: the Colors tab is the one people leave open, and this array literal was
+            // rebuilt on EVERY IMGUI event (IMGUI fires Layout + Repaint per frame). I18n.Tr does
+            // not allocate, so the keys can be resolved once per language and the label table
+            // rebuilt only when the language changes — the same caching DrawTabBar already uses.
+            // Must stay non-GUI types: a static GUIContent/GUILayoutOption would drag
+            // UnityEngine.IMGUIModule into this type's static ctor.
+            // 提为缓存：颜色页正是人们一直开着的那一页，而这个数组字面量此前在**每个** IMGUI 事件
+            // （每帧 Layout + Repaint）都重建一次。I18n.Tr 本身不分配，故键可按语言解析一次、
+            // 标签表只在语言变化时重建——与 DrawTabBar 同一套缓存。
             // 必须保持非 GUI 类型：静态 GUIContent/GUILayoutOption 会把 UnityEngine.IMGUIModule
             // 拖进本类型的静态构造。
             if (colorLabelLang != I18n.Lang)
@@ -149,7 +163,8 @@ namespace JipperKeyViewer.KeyViewer
             kpsTotalTypeNames[1] = I18n.Tr("color_outline");
             kpsTotalTypeNames[2] = I18n.Tr("color_text");
             string[] typeNames = kpsTotalTypeNames;
-            Color[] defaults = { Background, Outline, Text };
+            kpsTotalDefaults[0] = Background; kpsTotalDefaults[1] = Outline; kpsTotalDefaults[2] = Text;
+            Color[] defaults = kpsTotalDefaults;
 
             for (int t = 0; t < 3; t++)
             {
@@ -806,9 +821,10 @@ namespace JipperKeyViewer.KeyViewer
             fkColorNames[4] = I18n.Tr("color_text");
             fkColorNames[5] = I18n.Tr("color_text_clicked");
             string[] names = fkColorNames;
-            Color[] defaults = {
-                Background, BackgroundClicked, Outline, OutlineClicked, Text, TextClicked
-            };
+            fullKeyboardDefaults[0] = Background; fullKeyboardDefaults[1] = BackgroundClicked;
+            fullKeyboardDefaults[2] = Outline; fullKeyboardDefaults[3] = OutlineClicked;
+            fullKeyboardDefaults[4] = Text; fullKeyboardDefaults[5] = TextClicked;
+            Color[] defaults = fullKeyboardDefaults;
             for (int i = 0; i < 6; i++)
             {
                 GUILayout.BeginHorizontal();

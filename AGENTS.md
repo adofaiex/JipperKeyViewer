@@ -1879,6 +1879,31 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
 - 未动的剩余分配：`TextInputField(ctrl, modelText, option)` 的 `params GUILayoutOption[]`
   数组，以及 `slid.ToString(format)` 在值真变时的那一次（这个无法避免）。
 
+### 9 处每事件数组字面量 + 一条**说谎的注释**（2026-09-26，第 102 轮）
+继续消化第 100 轮记下的性能积压第 5 项。子代理说这些数组「注释声称已提为静态、其实没提」，
+**核实属实，而且注释是双重错误**。
+
+- `KeyViewerColorGUI.cs` 原注释写着「Hoisted to static readonly: … **these two array literals**
+  were rebuilt on EVERY IMGUI event」。实际上：(1) 那个方法里有**两个**数组字面量，只有**标签**那个
+  被提了（且提上去的是**实例**字段、按语言变化重建，**不是** `static readonly`）；(2) 紧挨着的
+  12 元素 `Color[] defaultColors` **仍然是每事件的局部字面量**。
+  这是第 90 轮那一类缺陷：**承诺了代码里并不存在的修复的注释，比没有注释更糟**——它会让下一个
+  读者以为已经查过、不再去看。注释已改写成陈述**实际**做了什么。
+- 共 **9 处**每 IMGUI 事件重新分配的数组字面量，全部改为「复用实例暂存 + 每事件重填」：
+  - `KeyViewerColorGUI.cs`：12 元默认色（颜色页）、3 元（KPS/Total，每事件调**两次**）、6 元（全键盘）
+  - `KeyViewerRainGUI.cs`：描边方向 3 元
+  - `KeyViewerEditor.cs`：雨排 3、雨对齐 3、描边方向 3、鬼雨描边方向 3、节点类型 4
+- 这些标签**随语言变化**，故不能直接提为静态，只能每事件重填——重填 3-4 个元素远比重新分配数组便宜。
+- **刻意每个位置一张表**，尽管有两张装的是同样的三个标签：共用只有在「每张赋值后都被消费完、
+  下一张才填」的前提下才安全，而这种「仅当……才安全」正是别人调整两行顺序就会踩塌的耦合。
+  （我第一版注释写的是「这些位置可以共用表」，而代码实际给每处各配一张——**注释和代码不一致**，
+  正是本轮要修的那一类，已改。）
+- 仍按既有约束用**实例**字段而非静态 GUI 类型缓存（静态 `GUIContent`/`GUILayoutOption` 会把
+  `UnityEngine.IMGUIModule` 拖进类型静态构造，Harness 会当场暴露）。`Color[]`/`string[]` 本身是
+  CoreModule 类型，静态也安全，但沿用**本文件既有**的实例写法（`fkColorNames`/`kpsTotalTypeNames`）。
+- 顺带自查：编辑注释时打进去一个 U+FFFD 乱码字符（`编辑���窗口`），当场发现并修掉；三个被改文件
+  的 U+FFFD 计数现均为 0。
+
 ### 仍待处理（每帧性能审计的积压，第 100 轮记录）
 子代理逐条量化了每帧/每事件分配，按收益排序。**均未修**，留待后续逐项处理：
 1. **编辑器属性面板每个字段每 IMGUI 事件约 10 次分配**（捕获 lambda + 控件名拼接 + 2 个
