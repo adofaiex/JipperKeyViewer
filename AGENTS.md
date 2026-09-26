@@ -1703,6 +1703,33 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   并没有因为合并而丢失诊断。本方法仍**绝不能抛**（它是所有路径的根基，异常会在 Awake 带走
   整个 Mod）这条约束保持不变。
 
+### `SyncListsToArrays` 那条 MUST：无处强制，但已被往返测试钉住（2026-09-26，第 96 轮）
+本轮先重扫**写盘调用点**（第 47 轮枚举过 `GuardedSave` 的名单，列出后新增的调用点），
+再查一条代码里明写的 MUST。三处都是**核实为干净**：
+
+- **写盘点全部受保护**：要么是自带 try/catch + 横幅的 `SaveSettings()`，要么走 `GuardedSave`，
+  要么在带回滚的事务 try 里（`DeleteProfile` / `RenameProfile` / `SyncProfilesWithDisk` /
+  两个导入器）。`.jkv` 导入尤其完整：主 catch 上报、回滚里对 meta 写失败**也**上报并置横幅，
+  连 `finally` 块自身都包了 try（否则会掩盖原始异常）。
+- **`RainRow` / `RainAlignment`**：**每一处**使用都带 `Mathf.Clamp(…, 0, 2)`，含
+  `EnsureCustomNodes` 存值时的钳制。
+- **雨滴池 vs 每键存活上限**：`GetRawRain` 在池空时落到 `new RawRain()`，所以
+  `MAX_RAWRAIN_POOL_SIZE = 60` 是**缓存不是上限**——不会静默不生成雨滴。
+
+然后钉住一条**代码里明写为 MUST、却无任何机制强制**的不变量：
+
+- `ProfileData` 以 **list** 为工作形态、**array** 为持久化形态（第 38 轮的重构），其文档写着
+  「序列化前**必须**先 `SyncListsToArrays()`」。array 就是普通字段，所以**过期的镜像会顺利序列化**，
+  产出一个单纯「少了某些内容」的文件——**静默**。`.jkv` 导出正是因此走了一次
+  「序列化 → 反序列化 → `SyncArraysFromLists` → 改副本 → 再序列化」的往返，
+  且其前面紧邻的 `SaveCurrentProfile()` 负责刷数组，故那条 MUST 目前是**传递地**满足的。
+- 现加 Harness 测试把该往返钉成**无损**：节点的非默认值（`Count=31337`、非 ASCII 的
+  `CustomText`/`Name`、`GroupId`、`RainRow`、`Opacity`、阴影柔和度）、`Visible=false`、
+  以及 array 形态本身都是镜像，逐项断言。
+- **该测试的有效性已验证**：把期望的 `Count` 改成别的值后立刻
+  `FAIL … -- Count=31337`（`154 passed, 1 failed`），恢复后重新 155 全绿。
+  断言的都是**非默认**值，故它不是那种「怎么都过」的测试。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
