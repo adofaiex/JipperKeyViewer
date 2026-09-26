@@ -364,6 +364,14 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>Drop a malformed node colour array (wrong length or NaN/Inf component) so the
         /// callers fall back to their global default instead of writing bad vertex colours.
         /// 丢弃格式错误的节点颜色数组（长度不对或含 NaN/Inf），让调用方回退全局默认色。</summary>
+        /// <summary>Scrub one per-node text outline/shadow scalar. Non-finite values fall back to the
+        /// field's own initializer (so a bad file renders like a fresh node rather than like a
+        /// broken one) and the rest are clamped into the slider's range.
+        /// / 净化单个按节点文字描边/阴影标量。非有限值回退到该字段**自身的初始值**（故坏文件渲染起来
+        /// 像一个全新节点，而不是像一个坏掉的节点），其余值钳进滑杆区间。</summary>
+        private static float SanitizeTextStyle(float v, float fallback, float min, float max)
+            => float.IsNaN(v) || float.IsInfinity(v) ? fallback : Mathf.Clamp(v, min, max);
+
         private static float[] SanitizeNodeColor(float[] color)
         {
             if (color == null) return null;
@@ -433,6 +441,39 @@ namespace JipperKeyViewer.KeyViewer
                 node.Width = float.IsNaN(node.Width) || float.IsInfinity(node.Width) ? 60f : Mathf.Clamp(node.Width, 10f, 2000f);
                 node.Height = float.IsNaN(node.Height) || float.IsInfinity(node.Height) ? 60f : Mathf.Clamp(node.Height, 10f, 2000f);
                 node.Opacity = float.IsNaN(node.Opacity) ? 1f : Mathf.Clamp01(node.Opacity);
+                // These two reach KeyShapeLayer's SHARED merged mesh through
+                // SetCornerRadius/SetBorderThickness, so a NaN here writes NaN vertices that corrupt
+                // every key box on the canvas, not just this node — the same shared-mesh failure the
+                // rain geometry and rain start-Y fixes were about. BorderThickness has a second
+                // symptom: SetBorderThickness short-circuits on `borderThicknesses[slot] ==
+                // thickness`, which is never true for NaN, so the layer also re-dirties every frame.
+                // 这两个经 SetCornerRadius/SetBorderThickness 进入 KeyShapeLayer 的**共享**合并 mesh，
+                // 故此处的 NaN 会写入 NaN 顶点、毁掉画布上**每一个**按键框而不只是这个节点——与雨滴
+                // 几何、雨滴起始 Y 那两条修复是同一个共享 mesh 失效形态。BorderThickness 还有第二个
+                // 症状：SetBorderThickness 以 `borderThicknesses[slot] == thickness` 提前返回，而它对
+                // NaN 永不成立，于是该层还会每帧重新标脏。
+                node.CornerRadius = float.IsNaN(node.CornerRadius) || float.IsInfinity(node.CornerRadius) ? 0f : Mathf.Max(0f, node.CornerRadius);
+                node.BorderThickness = float.IsNaN(node.BorderThickness) || float.IsInfinity(node.BorderThickness) ? 0f : Mathf.Max(0f, node.BorderThickness);
+                // The 1.7.2 text outline/shadow block. These are per-node overrides of the GLOBAL
+                // text style, pushed into the cached font material by ApplyFontMaterial — a NaN
+                // outline width or shadow offset reaches the material properties and the glyph
+                // geometry. Round 48 added these to the LEGACY-defaults repair (so old profiles stop
+                // reading them as 0) but the NaN path was never closed, because the repair only runs
+                // on pre-DataVersion profiles and a NaN can arrive from a hand-edited file, a `.jkv`,
+                // or a DmNote preset on a current-version profile.
+                // 1.7.2 的文字描边/阴影整块。它们是全局文字样式的**按节点覆盖**，由 ApplyFontMaterial
+                // 推入缓存字体材质——NaN 的描边宽度或阴影偏移会进入材质属性与字形几何。第 48 轮把它们
+                // 加进了**旧字段默认值**修复（让旧配置不再读成 0），但 NaN 这条路从未封上：那条修复只对
+                // DataVersion 之前的配置运行，而 NaN 可能来自手改文件、`.jkv`，或当前版本配置上的
+                // DmNote 预设。
+                node.KeyTextOutlineThickness = SanitizeTextStyle(node.KeyTextOutlineThickness, 0.2f, 0f, 10f);
+                node.KeyTextShadowOffsetX = SanitizeTextStyle(node.KeyTextShadowOffsetX, 1f, -50f, 50f);
+                node.KeyTextShadowOffsetY = SanitizeTextStyle(node.KeyTextShadowOffsetY, -1f, -50f, 50f);
+                node.KeyTextShadowSoftness = SanitizeTextStyle(node.KeyTextShadowSoftness, 0f, 0f, 10f);
+                node.CountTextOutlineThickness = SanitizeTextStyle(node.CountTextOutlineThickness, 0.2f, 0f, 10f);
+                node.CountTextShadowOffsetX = SanitizeTextStyle(node.CountTextShadowOffsetX, 1f, -50f, 50f);
+                node.CountTextShadowOffsetY = SanitizeTextStyle(node.CountTextShadowOffsetY, -1f, -50f, 50f);
+                node.CountTextShadowSoftness = SanitizeTextStyle(node.CountTextShadowSoftness, 0f, 0f, 10f);
                 node.GlowSize = float.IsNaN(node.GlowSize) || float.IsInfinity(node.GlowSize) ? 20f : Mathf.Clamp(node.GlowSize, 0f, 50f);
                 node.GlowOpacity = float.IsNaN(node.GlowOpacity) || float.IsInfinity(node.GlowOpacity) ? 0.7f : Mathf.Clamp01(node.GlowOpacity);
                 node.GlowSizePressed = float.IsNaN(node.GlowSizePressed) || float.IsInfinity(node.GlowSizePressed) ? 20f : Mathf.Clamp(node.GlowSizePressed, 0f, 50f);
@@ -474,6 +515,12 @@ namespace JipperKeyViewer.KeyViewer
                 node.GhostRainDotLength = float.IsNaN(node.GhostRainDotLength) || float.IsInfinity(node.GhostRainDotLength) ? 12f : Mathf.Clamp(node.GhostRainDotLength, 0f, 100f);
                 node.GhostRainGapLength = float.IsNaN(node.GhostRainGapLength) || float.IsInfinity(node.GhostRainGapLength) ? 8f : Mathf.Clamp(node.GhostRainGapLength, 0f, 100f);
                 node.CounterAnimScale = float.IsNaN(node.CounterAnimScale) ? 1.1f : Mathf.Clamp(node.CounterAnimScale, 1f, 2f);
+            // Same divisor pattern as CounterAnimDurationMs below, on the press animation's own
+            // duration — a zero/NaN here is a divide-by-zero in the press tick.
+            // 与下方 CounterAnimDurationMs 同样的除数形态，作用于按下动画自身的时长——此处的 0/NaN
+            // 就是按下 tick 里的一次除零。
+            node.PressAnimDurationMs = float.IsNaN(node.PressAnimDurationMs) || node.PressAnimDurationMs <= 0f
+                ? 80f : Mathf.Min(node.PressAnimDurationMs, 5000f);
                 node.CounterAnimDurationMs = node.CounterAnimDurationMs <= 0f || float.IsNaN(node.CounterAnimDurationMs)
                     ? 300f
                     : Mathf.Min(node.CounterAnimDurationMs, 5000f);

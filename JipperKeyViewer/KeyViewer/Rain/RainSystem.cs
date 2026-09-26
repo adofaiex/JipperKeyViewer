@@ -475,6 +475,51 @@ namespace JipperKeyViewer.KeyViewer.Rain
             rawRainPool.Clear();
         }
 
+        /// <summary>The BOTTOM colour stop for a key's rain, resolved from the NODE at the point of
+        /// use rather than from the build-time key.rainColor cache. That cache is written in only two
+        /// places — CreateCustomKey (build) and ApplyCustomAllColors — but the FreeMake editor
+        /// refreshes colours IN PLACE instead of rebuilding (the round-36 per-drag-rebuild fix), so
+        /// its node rain-bottom picker left the cache stale. Both this class's readers consumed it:
+        /// in-flight drops (RefreshDropColors) and drops born after the edit (CreateRainDropForKey).
+        /// The visible result was the exact "the colour control does nothing" symptom — the swatch
+        /// updated and the value saved, yet not a single drop changed colour until an unrelated
+        /// action (dragging the node, toggling another property, a profile switch) happened to force
+        /// a full rebuild. Resolving here makes the invariant local instead of dependent on every
+        /// live-edit path remembering to refresh a derived cache.
+        /// / 某键雨滴的**底**色色标，在**用时**从**节点**解析，而不是取构建期的 key.rainColor 缓存。
+        /// 该缓存只有两处会写——CreateCustomKey（构建）与 ApplyCustomAllColors——而 FreeMake 编辑器
+        /// 刻意**就地**重绘而非重建（第 36 轮修掉每次拖动都整层重建那条），于是节点的雨滴底色控件
+        /// 把缓存留在了旧值上。本类的两个读取点都吃这个缓存：在飞的雨滴（RefreshDropColors）与编辑
+        /// 之后新生的雨滴（CreateRainDropForKey）。可见后果正是「颜色控件点了没反应」：色块更新、
+        /// 值也存盘了，却没有一滴雨滴变色，直到某个无关动作（拖动节点、切换别的属性、切配置）
+        /// 碰巧触发整层重建。在此处解析让该不变量变成局部的，而不再依赖每条就地编辑路径都记得刷新
+        /// 一个派生缓存。
+        ///
+        /// `fallback` is the row's global rain colour, and is returned unchanged when the node opts out
+        /// of per-node colour — matching what CreateCustomKey baked in that case.
+        /// `fallback` 是该排的全局雨滴色；节点未启用按节点颜色时原样返回，与 CreateCustomKey 在该
+        /// 情况下烘焙的值一致。
+        /// </summary>
+        private static Color ResolveRainMainColor(Key key, Color fallback)
+        {
+            return key.CustomNode != null && key.CustomNode.UseCustomRainColor
+                && key.CustomNode.RainColorBottom != null
+                ? KeyViewer.NodeColor(key.CustomNode.RainColorBottom, fallback)
+                : fallback;
+        }
+
+        /// <summary>The TOP colour stop. Mirrors CreateRainDropForKey's assignment exactly: the
+        /// node's own top colour when it has a two-colour body gradient, otherwise the bottom stop
+        /// (so a flat drop stays flat). / **顶**色色标。与 CreateRainDropForKey 的赋值完全一致：
+        /// 节点有双色本体渐变时用节点顶色，否则用底色（故单色雨滴保持单色）。</summary>
+        private static Color ResolveRainTopColor(Key key, Color main)
+        {
+            return key.CustomNode != null && key.CustomNode.UseCustomRainColor
+                && key.CustomNode.RainColorTop != null
+                ? KeyViewer.NodeColor(key.CustomNode.RainColorTop, main)
+                : main;
+        }
+
         public Color GetRainColor(byte color) => RainColor(color, false);
 
         public Color GetGhostRainColor(byte color) => RainColor(color, true);
@@ -525,20 +570,32 @@ namespace JipperKeyViewer.KeyViewer.Rain
                                 && perKeyGhost != null && i >= 0 && i < perKeyGhost.Length
                                 ? perKeyGhost[i]
                                 : GetGhostRainColor(key.color)))
-                        : key.rainColor;
+                        : ResolveRainMainColor(key, key.rainColor);
+                    // The top stop is the same value the drop was born with when the node has no
+                    // gradient of its own, so repainting never invents a second colour.
+                    // 节点自身没有渐变时，顶色就是雨滴出生时那个值，故重绘不会凭空造出第二种颜色。
+                    Color top = resolved;
                     // The per-node two-colour body gradient is resolved against the colour the drop
                     // was born with, so a node using it must be repainted from the node's own
                     // gradient rather than from the global colour.
-                    // 每节点双色本体渐变是相对雨滴出生时的颜色解析的，故用了它的节点必须从节点自身
-                    // 的渐变重绘，而不是从全局颜色。
+                    //
+                    // `main` and `top` are SEPARATE stops: rain.mainColor is the bottom stop and
+                    // rain.ColorTop the top one (RainLayer maps cb = mainColor, ct = ColorTop).
+                    // This used to reuse one local, so reading the node's top colour OVERWROTE the
+                    // bottom before it was written — and every per-node rain gradient collapsed to a
+                    // flat top colour the moment any colour was edited. / 每节点双色本体渐变是相对
+                    // 雨滴出生时的颜色解析的，故用了它的节点必须从节点自身渐变重绘，而非从全局颜色。
+                    //
+                    // `main` 与 `top` 是**两个独立**色标：rain.mainColor 是底色、rain.ColorTop 是
+                    // 顶色（RainLayer 里 cb = mainColor、ct = ColorTop）。此前复用同一个局部变量，
+                    // 于是读节点顶色时**覆盖掉**了底色再写回——任何一次颜色编辑都会让每个用了双色
+                    // 渐变的节点塌成一个纯顶色。
                     if (!rain.isGhost && key.CustomNode != null
                         && key.CustomNode.UseCustomRainColor && key.CustomNode.RainColorTop != null)
-                    {
-                        resolved = KeyViewer.NodeColor(key.CustomNode.RainColorTop, resolved);
-                        rain.ColorTop = resolved;
-                    }
-                    if (rain.mainColor == resolved) continue;
+                        top = KeyViewer.NodeColor(key.CustomNode.RainColorTop, resolved);
+                    if (rain.mainColor == resolved && rain.ColorTop == top) continue;
                     rain.mainColor = resolved;
+                    rain.ColorTop = top;
                     touched = true;
                 }
             }
@@ -716,7 +773,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             }
             else
             {
-                rawRain.mainColor = key.rainColor;
+                rawRain.mainColor = ResolveRainMainColor(key, key.rainColor);
 
                 rawRain.shadowEnabled = row == 1 ? settings.Data.EnableRainShadowRow1
                     : row == 2 ? settings.Data.EnableRainShadowRow2
@@ -818,9 +875,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // nodes. / 节点级顶端颜色与起始 Y 偏移（雨滴双色渐变与起始偏移），
             // 以及 锚定节点顶边的轨道模型：自定义雨滴从节点顶边出发——275px 容器常量是为
             // 50px 键调校的，较高的节点会让轨迹从按键内部冒出来。
-            rawRain.ColorTop = key.CustomNode != null && key.CustomNode.UseCustomRainColor && key.CustomNode.RainColorTop != null
-                ? KeyViewer.NodeColor(key.CustomNode.RainColorTop, rawRain.mainColor)
-                : rawRain.mainColor;
+            rawRain.ColorTop = ResolveRainTopColor(key, rawRain.mainColor);
             if (key.CustomNode != null)
             {
                 rawRain.HasTrackBase = true;

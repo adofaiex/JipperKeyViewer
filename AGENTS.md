@@ -1408,6 +1408,63 @@ AGENTS.md 顶部那份「绝不重新引入」清单是历轮积累的成果，�
   在唯一写共享几何的地方都已知有限。**教训**：读到一个「看起来没兜住」的除法时，先把上游的**门**也读
   一遍——门可能已经用「NaN 比较恒为假」这条特性顺手挡掉了半个问题，而注释若照抄直觉就会写错。
 
+### 雨滴双色渐变的两个「颜色控件点了没反应」（2026-09-26，第 84 轮）
+子代理把 32 个按节点颜色字段逐条追了「写入者 → `Use*` 门 → 读取点 → 像素」，报 4 条 SUSPECT。
+**我逐条读码核实**：第 1、2 条**成立**，第 3、4 条本轮未处理（见下）。这正是用户明确反馈过的
+「颜色控件点了没反应」那一类。
+
+- **【CRITICAL】`RainColorBottom` 控件完全无效**：`key.rainColor` **只有两处**会写——构建期的
+  `CreateCustomKey`（`CustomLayout.cs:1089`）与 `ApplyCustomAllColors`（:1933）。而编辑器的
+  `EditorColorPropertyChanged`（`KeyViewerEditor.cs:4892`）**两者都不调**——它刻意就地重绘
+  （第 36 轮修掉「每次拖色滑杆都整层重建」那条），只调 `RefreshDropColors`。而
+  `RefreshDropColors`（`RainSystem.cs:528`）与 `CreateRainDropForKey`（:719）**都**读这个陈旧缓存。
+  症状：拖节点的「雨滴底色」→ 色块更新、值也存盘了，但**没有一滴雨滴变色**——在飞的不变、编辑后新生的
+  也不变；只有某个无关动作（拖动节点、切别的属性、切配置）碰巧触发整层重建后才生效。
+  对照：全局颜色页**做对了**（`KeyViewerColorGUI.cs:81` 先调 `UpdateAllKeyColors()` 再
+  `RefreshRainDropColors()`），编辑器这条路缺的正是前半截。
+  **修法不是补一次刷新，而是让读取点不再依赖派生缓存**：新增 `ResolveRainMainColor(key, fallback)`，
+  在**用时**从 `key.CustomNode` 解析底色；`CreateRainDropForKey` 与 `RefreshDropColors` 共同走它。
+  这与第 46 轮 `groupTotals`「缓存自愈、不再依赖枚举调用点」是同一条路子——把不变量变局部，
+  而不是指望每条就地编辑路径都记得刷新。
+- **【HIGH】`RefreshDropColors` 用顶色覆盖底色**：`resolved` 在 :528 是**底**色，:537 被
+  `RainColorTop` 覆盖成顶色，然后 :541 写进 `rain.mainColor`——而 `mainColor` 是**底**色标
+  （`RainLayer.cs:239-244` 的 `cb = mainColor` / `ct = ColorTop`）。于是**任何一次颜色编辑**都会让
+  每个用了双色渐变的节点**塌成一个纯顶色**。现拆成独立的 `main` / `top` 两个局部量，并新增
+  `ResolveRainTopColor` 与创建路径共用，创建与重绘从此一致。
+  （改这段时我自己先写错了一版：先赋值 `rain.ColorTop` 再拿它做 `continue` 判据，判据恒真、
+  底色永远写不进去。写完立刻复查发现，已改正。）
+
+### 穷举 NaN 测试当场查出 11 个漏净化字段（第 84 轮）
+- **既有测试覆盖不到的地方**：第 48 轮那条「清零 + 修复 + EnsureCustomNodes」的覆盖测试要求每个
+  **带非零初始值**的字段最终非零——而**初始值为 0 的字段清零等于没做**，它对它**完全失明**。
+  于是新增一个「初始值为 0、却会流向几何」的 float 会被全绿放行。现新增**穷举**测试：反射取出
+  `FmNode` 全部 67 个 `float` 字段，**逐个**注入 NaN、跑 `EnsureCustomNodes`、断言不再是 NaN。
+  该不变量从此自我强制：将来新增任何未净化的 float 都会让测试失败。
+- **当场查出 11 个漏网**：`CornerRadius`、`BorderThickness`、`PressAnimDurationMs`，以及 1.7.2
+  文字描边/阴影整块 8 个（`KeyText`/`CountText` 的 `OutlineThickness`、`ShadowOffsetX/Y`、
+  `ShadowSoftness`）。
+  - **`CornerRadius` / `BorderThickness` 最严重**：经 `KeyShapeLayer.SetCornerRadius`/
+    `SetBorderThickness` 直接进入**共享**合并 mesh——与第 35/42/47 轮那几条同一个失效形态（一个坏
+    值毁掉整块画布）。且 `SetBorderThickness` 以 `borderThicknesses[slot] == thickness` 提前返回，
+    对 NaN 永不成立，于是该层还会**每帧**重新标脏。
+  - **8 个文字字段**：第 48 轮把它们加进了**旧字段默认值**修复（让旧配置不再读成 0），但**没封
+    NaN 这条路**——那条修复只对 `DataVersion` 之前的配置运行，而 NaN 可以来自手改文件、`.jkv`，
+    或**当前版本**配置上的 DmNote 预设。现统一走新增的 `SanitizeTextStyle(v, fallback, min, max)`，
+    非有限值回退到该字段**自身的初始值**（坏文件渲染得像全新节点，而非像坏掉的节点）。
+- Harness 增至 **149** 项。
+
+### 子代理报告里本轮**未**处理的两条（已读码确认，暂缓）
+- **【HIGH】4 个按节点雨滴阴影/描边颜色到不了在飞的雨滴**：`RainShadowColor`/`RainOutlineColor`/
+  `GhostRainShadowColor`/`GhostRainOutlineColor` 只在 `CreateRainDropForKey`（`RainSystem.cs:756/
+  763/772/779`）烙入，`RefreshDropColors` 只碰 `mainColor`/`ColorTop`。全局雨滴页有现成修法
+  （`KeyViewerGUI.cs:198` 的 `RefreshInFlightDrops`），但**编辑器没有任何调用点**。修法与本轮第 1 条
+  同型（让读取点自己解析），但涉及清空在飞雨滴，需权衡「拖色滑杆时轨迹反复弹出」那个已被第 36 轮
+  修掉的现象，故**不在本轮顺手改**。
+- **【MEDIUM】`TextColorPressed` 少了一次门检查**：`KvTextGradient.cs:332` 读它时没查
+  `node.UseCustomColor`，而同组 :330 有、计数分支 :322-326 两个读都在门内。后果是**用户没开**
+  「自定义颜色」时，一次仍持有旧值的取消勾选/撤销会让节点**本该用全局 `TextClicked`** 的按下色
+  改用旧节点色——「该不生效却生效」。需手动构造，故优先级低。
+
 ### 仍待处理（有意未修）
 - **【多秒冻结，非玩法期】每次加载器开关都重烘 58 张字形图集**：`fontList` 是**静态**而重载闸门
   `keyBackgroundSprite != null` 是**实例**字段。`Main.DisableKeyViewer` 销毁整个 GameObject，故下次
