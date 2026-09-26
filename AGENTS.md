@@ -1660,6 +1660,29 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   两次都是靠读代码而不是靠类比纠正的。第 92 轮我夸大了（说 `EnsureCustomNodes` 的 `Exists` 会
   NRE，其实前一行已剔除），本轮我又反向假设错了。**并排的兄弟代码必须逐个读，不能类推。**
 
+### 每键颜色数组长度：承重但不变量，从未被断言（2026-09-26，第 94 轮）
+承第 93 轮「不变量要断言、不要靠读代码推断」，把 `ProfileData` 里所有数组→列表的物化点清点了一遍
+（只有 `CustomNodesData` / `LayerGroupsData` 两个持久化数组，第 92/93 轮已覆盖），转而去查
+**固定布局**的每键颜色数组。
+
+- **三处「看起来未加守卫」的索引，逐一核实后确认都是安全的**（**又是一次靠类推就会报错的判断**）：
+  - `KeyViewerLayout:1164` 由 `PerKeyColorsCoverSlot(pi)` 守着——该判据同时检查 4 个数组的非空与
+    上界，**有守卫**；
+  - `ApplyPerKeyColorsToAll()`（:1677-1683）循环 `i < Keys.Length` 且裸索引四个数组，
+    **看起来**会在 108K 上越界（`Keys.Length` 108+ ≫ 42）。**但不可达**：`UpdateAllKeyColors`
+    先 `if (IsFullKeyboard) { ApplyFullKeyboardColors(); return; }` 返回，故它只在非 108K 布局上
+    运行，而那时 `Keys.Length` 最大约 34（24 主键 + 16 脚键折算后更小）；
+  - 颜色页的 `PerKeyTypeValues[...] = ...[s]` 与 `SetPerKeyColor`（`KeyViewerColorGUI:537/656`）
+    同样裸索引，但界面的 `s` 止于 `PerKeySlotCount`。
+- **它们安全的原因只有一个，且无处断言**：数组长度是 `PerKeySlotCount` = `MaxKeySlots + 2` = 42，
+  大于任何消费方能产生的索引。`CreateKey` 处那段注释已经写明「两个同族读取点都有守卫」——
+  但它指的是 `ApplyColorToKey` 与 `PerKeyColorArraysValid`，**不包括** `ApplyPerKeyColorsToAll`，
+  说明这条不变量当时就只在一处被意识到。
+- **风险是具体的**：新增一个每键界面行、或有人把「每键颜色」也应用到 108K，都会立刻变成
+  `IndexOutOfRangeException`；而颜色页那两处在 `OnGUI` 内，**会连整个窗口一起带走**。
+- 现加 Harness 测试钉住：8 个每键颜色数组 + `PerKeyFontSize` 在 `EnsureSettingsArrays` 之后长度
+  必须**恰好**是 `PerKeySlotCount`，且 `PerKeySlotCount == MaxKeySlots + 2`。那次改动会先在这里失败。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
