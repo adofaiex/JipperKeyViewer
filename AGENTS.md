@@ -1730,6 +1730,29 @@ dotnet build Harness\Harness.csproj --configuration Debug --no-restore --no-incr
   `FAIL … -- Count=31337`（`154 passed, 1 failed`），恢复后重新 155 全绿。
   断言的都是**非默认**值，故它不是那种「怎么都过」的测试。
 
+### TGT 回放垫片：跨程序集反射契约，此前无人检查（2026-09-26，第 97 轮）
+本轮起因是一个**核查**：「我 97 轮是否漏建了哪个工程」。
+
+- **我自己的推断是错的**：看到仓库里有 5 个 `.csproj`、而我的例行只建 3 个，且 `TgtCompat` 是
+  git 跟踪的 5 个文件、**从未**被我单独构建过——我据此判断它「97 轮没被编译过」。
+  **读 csproj 后结论推翻**：`JipperKeyViewer.csproj` 里有
+  `<ProjectReference Include="..\TgtCompat\KeyViewer.csproj" ReferenceOutputAssembly="false" />`，
+  故例行构建**本来就会先建它**。我此前把主工程那次「两个输出路径」的构建日志误读成了
+  TgtCompat 未被纳入。**这是连续第四轮「靠推断下结论、靠读代码纠正」**（第 92、93、94、97 轮），
+  教训不变：**并排的兄弟代码/工程必须逐个读，不能类推**。
+- **但真正的缺口在别处，而且更严重**：垫片与本体之间是**跨程序集反射**绑定，编译器完全看不见——
+  `TgtCompat` 产出一个名为 `KeyViewer` 的程序集、以内嵌资源
+  `JipperKeyViewer.TgtCompat.KeyViewer.dll` 打进本体，而 `KeySource` 用**字符串**查找
+  「`KeyViewer.Core.Input.KeyInput` 的**静态** `GetKey(KeyCode)`，返回 `bool`」。
+  **任一侧改名，两个工程都照常编译、资源照常内嵌、`Assembly.Load` 照常成功**——然后
+  `_shimGetKey` 保持 null，**TGT 回放按键静默失效**，只剩一行日志。今天要发现这件事，
+  唯一办法是进游戏跑一次 TGT。
+- 现加 Harness 测试**按游戏的做法对实际内嵌的字节做反射**：资源存在、程序集名是 `KeyViewer`、
+  类型名、方法名、`IsStatic`、返回类型，逐项断言。
+- **有效性已验证**：把类型名改成 `KeyInputRenamed` 后立刻
+  `FAIL … -- shim has no type KeyViewer.Core.Input.KeyInput`（`155 passed, 1 failed`），
+  恢复后 156 全绿。
+
 ### 仍待处理（有意未修）
 - **按节点的雨滴圆角/描边方向/点状参数同样到不了在飞的雨滴**：与第 85 轮那条同型——它们在
   `CreateRainDropForKey` 里烙入 `RawRain`，而就地重绘只覆盖颜色与阴影/描边。**有意不修**：改这些
