@@ -370,9 +370,60 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>
         /// Get the currently selected font from the font list / 从字体列表中获取当前选中的字体
         /// </summary>
+        /// <remarks>
+        /// Resolve by NAME, and only fall back to the index for a profile that never stored one.
+        ///
+        /// FontIndex is a POSITION, and positions in this list are not identities: entries with a
+        /// null asset are pruned with RemoveAt (shifting everything after them down), and each CJK
+        /// font is Insert(0) at the FRONT, so every one of them reverses the custom fonts ahead of
+        /// it. FontName, by contrast, is written on every font change and is the only stable handle
+        /// the profile has. RestoreFontOnce re-maps the name to an index exactly once, behind
+        /// `fontRestored`; after that, any list change left FontIndex pointing at whatever font
+        /// happened to slide into that slot — the profile still said "LexendDeca" while the overlay
+        /// drew a different face, and switching fonts appeared to do nothing.
+        ///
+        /// The index is still honoured when FontName is empty (a legacy profile that never stored
+        /// one) or when the name is genuinely gone from the list, so nothing that used to work stops
+        /// working — the name simply wins whenever both are present and consistent.
+        ///
+        /// 按**名字**解析，只在从未存过名字的配置上才回退到索引。
+        ///
+        /// FontIndex 是**位置**，而这个列表里的位置不是身份：资产为 null 的条目会被 `RemoveAt`
+        /// 剪掉（其后所有条目整体前移），而每个 CJK 字体都被 `Insert(0)` 插在**最前面**，等于把它
+        /// 前面所有自定义字体都反转一次。相比之下 FontName 每次换字体都会写入，是配置唯一稳定的
+        /// 句柄。RestoreFontOnce 只在 `fontRestored` 之后第一次做名字→索引的重映射；此后列表一有
+        /// 变化，FontIndex 就指向了恰好滑进那个槽位的别的字体——配置里仍写着「LexendDeca」，画面上
+        /// 却是另一张脸，而切换字体看上去毫无作用。
+        ///
+        /// FontName 为空（从未存过名字的旧配置）或名字确实已不在列表中时，仍然沿用索引，故原本可用
+        /// 的行为不会失效——两者都存在且一致时，名字优先。
+        /// </remarks>
         private TMP_FontAsset GetCurrentFont()
+            => GetCurrentFontEntry()?.font;
+
+        /// <summary>The entry the profile actually points at, resolved by name first. Exposed so the
+        /// settings page can LABEL the current font from the same source the renderer uses — it used
+        /// to read FontIndex itself, so after a list change the page highlighted one font while the
+        /// overlay drew another, and the two disagreed about what "current" even meant. / 配置实际
+        /// 指向的条目，按名字优先解析。暴露出来是为了让设置页**用渲染器同一来源**标注当前字体——
+        /// 它此前自己读 FontIndex，故列表一变化，设置页高亮的字体与画面上画出的字体就不同，
+        /// 两者对「当前」的定义都不一致了。
+        /// </summary>
+        internal FontEntry GetCurrentFontEntry()
         {
-            return fontList.Count > 0 ? fontList[Mathf.Clamp(Settings.Data.FontIndex, 0, fontList.Count - 1)].font : null;
+            if (fontList.Count == 0) return null;
+            if (!string.IsNullOrEmpty(Settings.Data.FontName))
+            {
+                for (int i = 0; i < fontList.Count; i++)
+                {
+                    FontEntry entry = fontList[i];
+                    if (entry != null && entry.font != null
+                        && string.Equals(entry.name, Settings.Data.FontName, StringComparison.OrdinalIgnoreCase))
+                        return entry;
+                }
+            }
+            int idx = Mathf.Clamp(Settings.Data.FontIndex, 0, fontList.Count - 1);
+            return fontList[idx];
         }
 
         /// <summary>

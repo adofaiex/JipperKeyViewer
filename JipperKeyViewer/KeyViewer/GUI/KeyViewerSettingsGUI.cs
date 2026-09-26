@@ -635,7 +635,13 @@ namespace JipperKeyViewer.KeyViewer
         private void DrawFontSection()
         {
             GUILayout.Label(I18n.Tr("font_style") + ":");
-            string curFont = fontList.Count > 0 ? fontList[Mathf.Clamp(Settings.Data.FontIndex, 0, fontList.Count - 1)].name : "None";
+            // Same resolution the renderer uses (name first, index as the legacy fallback), so the
+            // label here cannot disagree with what is actually drawn. Reading FontIndex directly
+            // made the page show one font while the overlay drew another.
+            // 用**渲染器同一套**解析（名字优先，索引只作旧配置回退），故这里的标注不可能与实际绘制
+            // 的字体不一致。此前直接读 FontIndex，于是设置页显示一个字体、覆盖层画出另一个。
+            FontEntry curEntry = GetCurrentFontEntry();
+            string curFont = curEntry != null ? curEntry.name : "None";
             if (GUILayout.Button((fontListExpanded ? "◢ " : "▶ ") + curFont, GUILayout.MinWidth(200)))
                 fontListExpanded = !fontListExpanded;
             if (fontListExpanded)
