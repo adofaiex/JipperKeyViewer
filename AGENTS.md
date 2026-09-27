@@ -2300,3 +2300,33 @@ try/catch，故某个阶段抛异常**不会中断**后面的链——`UpdateCus
 1. **文件为准**：行号/内容对不上时相信工具读取结果，不要判定为"乱码"后反复重读。
 2. 会话被压缩或换模型后：先重读本文件定位任务再继续。
 3. 用中文回复用户。
+
+### DmNote 导入：主题、键名与雨滴几何（2026-09-27，第 114 轮）
+- **CSS 来源弄反了**：DM Note 的导入是**两步**——先导入 JSON 拿布局，再右键「当前标签页 CSS 设置」
+  单独导入 `.css`。所以预设自带的 `customCSS.content` **从来不是**用户最终看到的主题：用户这份里它
+  指向 `C:\Users\user\Downloads\glassic.css`，而实际在用的是 `xnoronly.css`。我此前让内嵌副本优先，
+  等于每次都套错主题。现改为「同名兄弟 `.css` → 目录里唯一的其他 `.css` → 内嵌副本」，并在导入提示里
+  写明用了哪个来源；目录里有多个 `.css` 时不猜，标记为 `ambiguous`。
+- **数字键 `"1"`/`"2"` 解析成空**：`int.TryParse("1")` → `1` = `0x01`，在虚拟键码表里不匹配任何键 →
+  `None` → 空，**所有主键盘数字键导入后都没有绑定**。单个数字是 DM Note 对 Digit1..9 的标签，现改为
+  先于虚拟键码表处理。另 `NUMPAD RETURN` 原本解析成**主**回车，Unity 有独立的 `KeypadEnter`。
+- **我自己编造过一套映射**并写进测试：`"21"` 当成小键盘「第2排第1列」。`D:\Projects\DmNote\src-tauri\src\keyboard\labels.rs`
+  已经写明 `VK 0xA5/0x15`（右 Alt／한영）→ `"21"`。**那份源码一开始就在机器上。**
+- **边框宽度字段名错**：只读 `noteBorderWidth`（雨滴作用域），而预设写的是按键作用域的
+  `borderWidth` → 宽度恒为 0，`borderColor`/`activeBorderColor` 有值却永远画不出来。两种拼写都读。
+- **雨高**：`noteSettings.trackHeight` 从未读取，而真实预设每个节点的 `noteHeight` 都是 `null`，
+  于是静默用全局默认值。
+- **雨速**（单位不同，直接抄错）：DM Note 在 `(trackHeight * 1000) / speed` 毫秒后回收音符
+  （`useNoteSystem.ts:344`），本 Mod 是 `RainHeight * 300 / RainSpeed`。要**时长**一致，解得
+  `RainSpeed = speed × 0.3`。此前把 `500` 直接写进 `RainSpeed`，雨滴快 3.3 倍，而且是**同时写三排**，
+  抹平了逐排速度差。
+- **雨滴轨道原点**（反复错了五次的地方）：`D:\Projects\Quartz\modules\KeyViewer\KeyViewerOverlay.DmNoteParsing.cs`
+  只有七行——`spec.TrackBottomY = (spec.NoteAutoYCorrection ? topMostY : spec.Y) + spec.NoteOffsetY;`
+  真实预设每个节点都带 `noteAutoYCorrection: true`，故原点是**布局最上方的按键**（`topMostY`）而非各节点
+  自己的 Y，且 `TrackHeight` 是**单一全局值**。所以起始高度**依赖最上排按键的高度**：正确的
+  `RainStartY = topMostY − keyY + 键高/2 − 275`，三排共用（排间错位交给 `RainOffsetY`）。
+  我先前用的固定 `−275` **正好差半个键高**。
+- **本轮真正的教训**：同一个「第二排雨滴偏移」的问题我改了五次，其中四次是用户**没要求**的改动——
+  抱怨是按**外观**描述的（「看起来偏了」），我先后理解成「起始高度」「排数」「偏移」，每次都编出一个
+  看起来合理的新数值。答案从头到尾就在 Quartz 那七行里。**动手前先读参考实现；答案只有几行，
+  往往正说明它不难找。**

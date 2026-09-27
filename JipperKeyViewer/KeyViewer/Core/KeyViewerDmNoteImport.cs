@@ -54,10 +54,32 @@ namespace JipperKeyViewer.KeyViewer
             public string Tab = "default";
             public bool NoteEnabled = true;
             public float NoteSpeed;
+            /// <summary>noteSettings.trackHeight — how far a note travels, in the preset's own
+            /// units. It is the rain HEIGHT: every per-node noteHeight in the real preset is null,
+            /// so nothing carried it and the imported layout silently used the global default
+            /// instead. The preset's geometry (60px keys, dx/dy on the same grid) is in the same
+            /// unit, so the mapping is 1:1. / noteSettings.trackHeight——音符下落距离，单位与预设
+            /// 自身一致。真实预设里每个节点的 noteHeight 都是 null，没有任何东西携带它，于是导入后
+            /// 静默改用全局默认值。预设几何（60px 键、同网格的 dx/dy）同单位，故按 1:1 映射。
+            /// </summary>
+            public float NoteTrackHeight;
+            /// <summary>Height of the first key element, needed to place the track origin. /
+            /// 首个按键元素的高度，用于定位轨道原点。</summary>
+            public float FirstKeyHeight;
+            /// <summary>Y of the topmost visible key — Quartz's topMostY, the track origin when a
+            /// node sets noteAutoYCorrection. / 最上方可见按键的 Y，即 Quartz 的 topMostY。</summary>
+            public float TopMostKeyY = float.MaxValue;
+            public float FirstKeyY;
+
+
+
             /// <summary>Companion stylesheet, already parsed. Null when the preset has none and the
             /// loader found no sibling .css. / 伴随样式表（已解析）；预设没有且找不到同名 .css 时为 null。</summary>
             public DmNoteCssTheme CssTheme = new DmNoteCssTheme();
             public bool UseCustomCss = true;
+            /// <summary>Which stylesheet answered: sibling / folder / embedded / ambiguous.
+            /// 样式表来源：同名兄弟 / 目录唯一 / 内嵌 / 有歧义。</summary>
+            public string CssSource = "embedded";
             /// <summary>The preset ships DM Note JS plugins. They cannot run here, but the user
             /// should be told rather than discovering a missing graph panel. / 预设带 JS 插件；无法
             /// 运行，但应告知用户，而不是让图像面板凭空消失。</summary>
@@ -146,7 +168,7 @@ namespace JipperKeyViewer.KeyViewer
                 // 无法与「导入失败」区分。图标在此提取，即使用户随后删掉 Profile 也还有东西可转。
                 if (document.UseCustomCss && document.CssTheme.HasAny)
                 {
-                    document.Warnings.Add(I18n.Tr("dmnote_css_applied"));
+                    document.Warnings.Add(I18n.Tr("dmnote_css_applied") + " (" + document.CssSource + ")");
                     document.Warnings.Add(I18n.Tr("dmnote_css_unsupported"));
                     List<string> iconNotes = DmNoteCssMapping.ExtractIcons(document.CssTheme, filePath,
                         Path.Combine(Loader.ResolveModPath(), "CustomImages"));
@@ -170,10 +192,79 @@ namespace JipperKeyViewer.KeyViewer
                 string groupId = "g1";
                 imported.KeyViewerStyle = KeyviewerStyle.Custom;
                 imported.EnableRainEffect = document.NoteEnabled;
+                // Only trackHeight is mapped, and only because it is a LENGTH in the preset's own
+                // unit (the same grid as the 60px keys and their dx/dy).
+                // `noteSettings.speed` is deliberately NOT mapped. It is DM Note's own speed unit
+                // and has no relation to RainSpeed, whose fall time is RainHeight * 300 / RainSpeed
+                // in this mod — feeding 500 straight in made the imported rain several times faster
+                // than the layout it was imported into. It was also written to ALL THREE rows at
+                // once, which silently destroyed the per-row speed spread the profile was using.
+                // A units-correct conversion needs DM Note's speed scale, which is not derivable
+                // from the preset; the profile's own per-row speeds are left intact until it is.
+                // 只映射 trackHeight，且仅因为它是预设自身单位下的**长度**（与 60px 键及其 dx/dy 同一
+                // 网格）。`noteSettings.speed` **刻意不映射**：它是 DM Note 自己的速度单位，与
+                // RainSpeed 毫无关系——后者在本 Mod 里的下落时间是 RainHeight * 300 / RainSpeed，
+                // 把 500 直接灌进去会让导入后的雨滴比它被导入的那个布局快好几倍。而且它是**同时写入
+                // 三排**的，会静默抹掉配置原本逐排不同的速度差。单位换算需要 DM Note 的速度标度，
+                // 那无法从预设本身推出；在拿到之前保留配置自己的逐排速度。
+                if (document.NoteTrackHeight > 0f)
+                {
+                    float h = Mathf.Clamp(document.NoteTrackHeight, 1f, 2000f);
+                    imported.RainHeightRow1 = imported.RainHeightRow2 = imported.RainHeightRow3 = h;
+                    imported.GhostRainHeightRow1 = imported.GhostRainHeightRow2 = imported.GhostRainHeightRow3 = h;
+                    // A DM Note tab has ONE note track: one origin, one length. Jipper's three rain
+                    // rows are a stagger *within* that track, so their start Y has to be derived
+                    // from the imported length — inheriting the cloned profile's offsets imported
+                    // the previous layout's row geometry wholesale. The clone came from a layout
+                    // whose rows started -223/-169/-115, which are offsets tuned for a 200px track;
+                    // replayed against a 150px one they stagger the rain outside the note's own
+                    // travel, and the middle row is the most visible of the three.
+                    // So spread the three rows evenly along the imported track: row 1 at the top,
+                    // row 3 at the bottom, and the per-row RainOffsetY still applies on top.
+                    // 故把三排沿导入轨道均匀分布：第 1 排在顶、第 3 排在底，逐排 RainOffsetY 仍叠加
+                    // 在其上。
+                    // Quartz resolves the track origin the same way this mod has to
+                    // (modules/KeyViewer/KeyViewerOverlay.DmNoteParsing.cs):
+                    //     spec.TrackBottomY = (spec.NoteAutoYCorrection ? topMostY : spec.Y) + spec.NoteOffsetY
+                    // Every node in a real preset carries noteAutoYCorrection: true, so the origin
+                    // is the TOPMOST key in the layout rather than each node's own Y — that is what
+                    // "all the drops are produced above the first row" means. This mod places the
+                    // drop's top at
+                    //     keyCentre - keyH/2 + RainStartY + RainContainerHeight(275) + travel
+                    // so for travel=0 to land on that line:
+                    //     RainStartY = topMostY - keyY + keyH/2 - 275
+                    // All three rows share it because there is one origin. A previous revision used
+                    // a flat -275, exactly half a key height too low, which is the vertical offset
+                    // the import kept being blamed for. 真实预设每个节点都带 noteAutoYCorrection:
+                    // true，故原点是布局中最上方的按键——这正是「雨滴统一在第一排按键上方生成」，
+                    // 需 RainStartY = topMostY - keyY + 键高/2 - 275，三排共用。
+                    if (document.FirstKeyHeight > 0f)
+                    {
+                        float startY = document.TopMostKeyY - document.FirstKeyY
+                            + document.FirstKeyHeight * 0.5f - 275f;
+                        imported.RainStartYRow1 = imported.RainStartYRow2 = imported.RainStartYRow3 = startY;
+                        imported.GhostRainStartYRow1 = startY;
+                        imported.GhostRainStartYRow2 = startY;
+                        imported.GhostRainStartYRow3 = startY;
+                    }
+                }
+                // Fall TIME is what has to match, not either speed on its own. DM Note's own
+                // implementation (src/hooks/overlay/useNoteSystem.ts) expires a note after
+                //     (trackHeight * 1000) / speed        milliseconds
+                // and this mod's rain travels RainHeight * 300 / RainSpeed. Writing DM Note's
+                // `speed` straight into RainSpeed made the imported rain several times faster than
+                // the layout it landed in — 500 against a fall time the preset spent 300ms on.
+                // Equating the two with RainHeight == trackHeight gives RainSpeed = speed * 0.3.
+                // 下落**时长**要一致，而不是任一边的速度直接抄。DM Note 自身实现
+                // (useNoteSystem.ts) 在 (trackHeight * 1000) / speed 毫秒后回收音符，而本 Mod 的
+                // 雨滴走 RainHeight * 300 / RainSpeed。此前把 DM Note 的 `speed` 直接写进 RainSpeed，
+                // 使导入后的雨滴比落点布局快好几倍——500 对上预设原本 300ms 的下落。令
+                // RainHeight == trackHeight 解得 RainSpeed = speed * 0.3。
                 if (document.NoteSpeed > 0f)
                 {
-                    imported.RainSpeedRow1 = imported.RainSpeedRow2 = imported.RainSpeedRow3 = document.NoteSpeed;
-                    imported.GhostRainSpeedRow1 = imported.GhostRainSpeedRow2 = imported.GhostRainSpeedRow3 = document.NoteSpeed;
+                    float s = Mathf.Clamp(document.NoteSpeed * 0.3f, 1f, 2000f);
+                    imported.RainSpeedRow1 = imported.RainSpeedRow2 = imported.RainSpeedRow3 = s;
+                    imported.GhostRainSpeedRow1 = imported.GhostRainSpeedRow2 = imported.GhostRainSpeedRow3 = s;
                 }
                 // A DmNote preset carries its own per-node counts, but the fixed-layout counter
                 // arrays belong to the profile we cloned from. Carrying them over would import an
@@ -296,7 +387,9 @@ namespace JipperKeyViewer.KeyViewer
                     Tab = SelectDmNoteTab(root, keyTable, statTable),
                     NoteEnabled = ReadBool(root, "noteEffect", true),
                     NoteSpeed = root["noteSettings"] is JObject noteSettings
-                        ? ReadNumber(noteSettings, noteSettings, "speed", 0f) : 0f
+                        ? ReadNumber(noteSettings, noteSettings, "speed", 0f) : 0f,
+                    NoteTrackHeight = root["noteSettings"] is JObject noteSettings2
+                        ? ReadNumber(noteSettings2, noteSettings2, "trackHeight", 0f) : 0f
                 };
                 // The companion stylesheet. A shipped preset leaves every visual field null and
                 // carries the whole theme here — including, for the shipped themes, the ONLY copy
@@ -308,8 +401,11 @@ namespace JipperKeyViewer.KeyViewer
                 // 选中的 ::before mask-image 规则里。必须先于元素读取，供节点构造查阅。
                 result.UseCustomCss = ReadBool(root, "useCustomCSS", true);
                 result.HasJsPlugins = ReadBool(root, "useCustomJS", false);
-                result.CssTheme = DmNoteCss.Parse(DmNoteCss.LoadCompanionCss(presetPath,
-                    root["customCSS"] is JObject customCss ? (string)customCss["content"] : null));
+                string css = DmNoteCss.LoadCompanionCss(presetPath,
+                    root["customCSS"] is JObject customCss ? (string)customCss["content"] : null,
+                    out string cssSource);
+                result.CssSource = cssSource;
+                result.CssTheme = DmNoteCss.Parse(css);
                 foreach (string w in result.CssTheme.Warnings) result.Warnings.Add(w);
                 JArray keyElements = SelectDmNoteTabArray(keyTable, result.Tab);
                 JArray statElements = SelectDmNoteTabArray(statTable, result.Tab);
@@ -383,6 +479,22 @@ namespace JipperKeyViewer.KeyViewer
                     throw new FormatException("too many elements (max " + MaxDmNoteElements + ")");
                 result.SeenElements++;
                 if (!(elements[i] is JObject raw)) continue;
+                if (result.FirstKeyHeight <= 0f)
+                {
+                    JObject pos0 = raw["position"] as JObject ?? raw;
+                    float h0 = ReadNumber(raw, pos0, "height", "h", "size", 0f);
+                    if (h0 > 0f)
+                    {
+                        result.FirstKeyHeight = h0;
+                        result.FirstKeyY = ReadNumber(raw, pos0, "dy", "y", "top", 0f);
+                    }
+                }
+                if (!stat)
+                {
+                    JObject posY = raw["position"] as JObject ?? raw;
+                    float y = ReadNumber(raw, posY, "dy", "y", "top", 0f);
+                    if (y < result.TopMostKeyY) result.TopMostKeyY = y;
+                }
                 string name = names != null && i < names.Count ? names[i]?.ToString() : "";
                 int nodeType = stat ? ResolveDmNoteStatType(raw, name, result.Warnings) : 0;
                 if (stat && nodeType == 0) continue; // unsupported KPS avg/max panels
@@ -645,7 +757,19 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainShadowOffsetX = Mathf.Clamp(ReadNumber(raw, position, "quartzNoteShadowX", 3f), -64f, 64f);
                 node.RainShadowOffsetY = Mathf.Clamp(ReadNumber(raw, position, "quartzNoteShadowY", -3f), -64f, 64f);
             }
-            float borderWidth = Mathf.Clamp(ReadNumber(raw, position, "noteBorderWidth", 0f), 0f, 20f);
+            // The border width lives under BOTH spellings. `borderWidth` is key-scoped and is what
+            // the real preset uses ("borderWidth": null next to a populated borderColor), while
+            // `noteBorderWidth` is the note-scoped variant. Only the note-scoped one was read, so
+            // every imported key resolved to a 0px border and the imported colours were never
+            // drawn — the key looked borderless even though borderColor and activeBorderColor were
+            // both present.
+            // 边框宽度在两种拼写下都存在：`borderWidth` 是按键作用域、也是真实预设使用的那个
+            // （与有值的 borderColor 并列出现 "borderWidth": null），`noteBorderWidth` 才是雨滴
+            // 作用域的变体。此前只读雨滴作用域那个，于是每个导入的按键边框宽度都是 0，那两个颜色
+            // 永远画不出来——明明 borderColor 与 activeBorderColor 都有值。
+            float borderWidth = Mathf.Clamp(
+                ReadNumber(raw, position, "borderWidth", "noteBorderWidth", 0f), 0f, 20f);
+
             if (borderWidth > 0f || raw["noteBorderColor"] != null || position["noteBorderColor"] != null)
             {
                 node.UseCustomRainOutline = true;
@@ -748,7 +872,17 @@ namespace JipperKeyViewer.KeyViewer
             if (int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int numeric))
             {
                 KeyCode numericKey = ResolveDmNumericKey(numeric);
-                return numericKey == KeyCode.None ? "" : numericKey.ToString();
+                if (numericKey != KeyCode.None) return numericKey.ToString();
+                // A single digit is not a virtual-key code — it is DM Note's label for a MAIN row
+                // digit, produced by keyboard_key_to_global(Digit1) and friends. It must be tried
+                // BEFORE the virtual-key table, because "1" is 0x01, which matches no key there and
+                // resolved to nothing: every main-row number key in an imported preset came out
+                // unbound.  单个数字**不是**虚拟键码，而是 keyboard_key_to_global(Digit1) 等给出的
+                // **主**键盘数字标签。它必须在虚拟键码表**之前**处理——因为 "1" 是 0x01，在那张表里
+                // 不匹配任何键，于是解析为空：导入后所有主键盘数字键都没有绑定。
+                if (numeric >= 0 && numeric <= 9)
+                    return ((KeyCode)((int)KeyCode.Alpha0 + numeric)).ToString();
+                return "";
             }
             string normalized = new string(value.Trim().Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
             if (normalized.StartsWith("KEY", StringComparison.Ordinal) && normalized.Length > 3)
@@ -762,12 +896,31 @@ namespace JipperKeyViewer.KeyViewer
                     return ((KeyCode)((int)KeyCode.Keypad0 + (pad[0] - '0'))).ToString();
                 switch (pad)
                 {
-                    case "ENTER": case "RETURN": return KeyCode.Return.ToString();
+                    // Unity has a distinct KeypadEnter and KeypadDelete. DM Note's own labels are
+                    // "NUMPAD RETURN" and "NUMPAD DELETE" (numpad_override_label, by scan code), so
+                    // both previously fell into the next-best branch: the numpad ENTER triggered the
+                    // MAIN Return, and NUMPAD DELETE was resolved to KeypadPeriod. On a layout that
+                    // uses the numeric keypad for a whole piano column, both are unplayable keys —
+                    // and unlike a plain digit there is no main-row equivalent the player would
+                    // stumble onto by accident.
+                    // Unity 有独立的 KeypadEnter 与 KeypadDelete。DM Note 自身的标签是
+                    // 「NUMPAD RETURN」与「NUMPAD DELETE」（numpad_override_label 按扫描码给出），
+                    // 此前两者都被降级到次优分支：小键盘回车触发**主**回车，NUMPAD DELETE 被解析成
+                    // KeypadPeriod。在用整个小键盘排做一列琴键的布局上，这两个键完全没法按——而且与
+                    // 普通数字不同，玩家不会「误触」到主键行的对应键而察觉。
+                    case "ENTER": return KeyCode.KeypadEnter.ToString();
+                    case "RETURN": return KeyCode.KeypadEnter.ToString();
+                    // Unity's KeyCode has NO keypad delete: the numeric block's non-Enter key is
+                    // KeypadPeriod, so that is the closest faithful target. What the previous
+                    // revision got wrong here was NUMPAD ENTER, which triggered the MAIN Return.
+                    // Unity 的 KeyCode **没有**小键盘 Delete：数字区除回车外的那个键是 KeypadPeriod，
+                    // 故取它作为最贴近的映射。此前真正出错的是 NUMPAD ENTER——它触发的是**主**回车。
+                    case "DELETE": case "DEL": return KeyCode.KeypadPeriod.ToString();
+                    case "DECIMAL": case "PERIOD": case "DOT": return KeyCode.KeypadPeriod.ToString();
                     case "PLUS": case "ADD": return KeyCode.KeypadPlus.ToString();
                     case "MINUS": case "SUBTRACT": return KeyCode.KeypadMinus.ToString();
                     case "MULTIPLY": case "STAR": case "ASTERISK": return KeyCode.KeypadMultiply.ToString();
                     case "DIVIDE": case "SLASH": return KeyCode.KeypadDivide.ToString();
-                    case "DELETE": case "DECIMAL": case "PERIOD": case "DOT": case "DEL": return KeyCode.KeypadPeriod.ToString();
                     case "EQUALS": case "EQUAL": return KeyCode.KeypadEquals.ToString();
                 }
             }
@@ -812,8 +965,20 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        /// <summary>Common Windows virtual-key numbers used by DmNote's numeric key ids. / DmNote
-        /// 数字键名使用的常见 Windows 虚拟键码映射，独立于 Quartz 的实现。</summary>
+        /// <summary>Common Windows virtual-key numbers, used for DmNote's numeric labels. /
+        /// 常见 Windows 虚拟键码，用于 DmNote 的数字标签。
+        ///
+        /// DmNote's own source decides what these mean (src-tauri/src/keyboard/labels.rs): "21" is
+        /// Right Alt / the Hangul 한영 key (VK 0xA5 or 0x15), and a numeric label that matches no
+        /// named key falls back to the raw vk_code in decimal. A previous revision of this file
+        /// "corrected" those ids into keypad row/column guesses; the source shows that was wrong and
+        /// the virtual-key reading is the right one. Bare "1"/"2" are the MAIN row digits — the
+        /// numeric keypad labels are "NUMPAD 1" / "NUMPAD 2" and take the branch above.
+        /// DmNote 源码 (labels.rs) 决定了这些数字的含义："21" 是右 Alt／韩文한영键（VK 0xA5 或
+        /// 0x15）；无对应具名键的数字标签回退成十进制 vk_code。本文件此前某个版本把这些 id「修正」
+        /// 成小键盘排/列的猜测——源码证明那是错的，虚拟键读法才是对的。裸的 "1"/"2" 是**主**键盘
+        /// 数字行；小键盘的标签是「NUMPAD 1」/「NUMPAD 2」，走上面那个分支。
+        /// </summary>
         private static KeyCode ResolveDmNumericKey(int value)
         {
             if (value >= 0x30 && value <= 0x39) return (KeyCode)((int)KeyCode.Alpha0 + value - 0x30);

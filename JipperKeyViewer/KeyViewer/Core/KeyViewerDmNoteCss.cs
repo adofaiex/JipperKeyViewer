@@ -681,20 +681,57 @@ namespace JipperKeyViewer.KeyViewer
                 : Uri.UnescapeDataString(payload);
         }
 
-        /// <summary>Read the stylesheet for a preset: the embedded copy wins (it is what the
-        /// author actually had loaded), and a sibling .css of the same base name is the fallback.
-        /// 读取预设的样式表：内嵌副本优先（那才是作者真正加载的），同名兄弟 .css 为后备。</summary>
-        public static string LoadCompanionCss(string presetPath, string embedded)
+        /// <summary>Resolve the stylesheet for a preset, in the order DM Note itself uses.
+        ///
+        /// DM Note's own import is TWO steps: load the JSON for the layout, then right-click the
+        /// canvas and import a .css for THAT TAB. So a preset's own `customCSS.content` is never
+        /// the theme the user ends up looking at — it is merely whatever stylesheet the author had
+        /// loaded at save time, often from another machine's Downloads folder (`customCSS.path`
+        /// pointed at C:\Users\user\Downloads\glassic.css in the preset on this machine). Trusting
+        /// it first is how a preset imported as the wrong theme.
+        ///
+        /// Order: a same-base-name sibling .css, else the folder's only .css, else the embedded
+        /// copy. That covers the two ways these folders are actually organised — `x.json` next to
+        /// `x.css`, and one preset plus one theme under different names — while still falling back
+        /// to the embedded copy for a preset shipped on its own.
+        ///
+        /// 按 DM Note 自身的两步导入顺序解析样式表。预设自带的 `customCSS.content` **不是**用户最终
+        /// 看到的主题——它只是作者保存时碰巧加载的那份，常常来自另一台机器的下载目录。因此优先信任
+        /// 外部 .css：先找同名兄弟文件，其次取该目录下唯一的 .css，最后才回退内嵌副本。
+        /// </summary>
+        public static string LoadCompanionCss(string presetPath, string embedded, out string source)
         {
-            if (!string.IsNullOrWhiteSpace(embedded)) return embedded;
+            source = "embedded";
             try
             {
                 string dir = Path.GetDirectoryName(presetPath);
-                if (string.IsNullOrEmpty(dir)) return null;
-                string sibling = Path.Combine(dir, Path.GetFileNameWithoutExtension(presetPath) + ".css");
-                return File.Exists(sibling) ? File.ReadAllText(sibling) : null;
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
+                string sameName = Path.Combine(dir, Path.GetFileNameWithoutExtension(presetPath) + ".css");
+                if (File.Exists(sameName))
+                {
+                    source = "sibling";
+                    return File.ReadAllText(sameName);
+                }
+                // Not a strict "only one" rule: skip the preset's own base name, and if exactly one
+                // other .css is left take it. With several themes the choice is genuinely ambiguous,
+                // so nothing is guessed.
+                // 不是严格的「只有一个」规则：跳过预设自身的主文件名，若恰好还剩一个就采用它。
+                // 有多个主题时选择确实有歧义，故不做猜测。
+                var others = new List<string>();
+                foreach (string f in Directory.GetFiles(dir, "*.css", SearchOption.TopDirectoryOnly))
+                {
+                    if (!string.Equals(Path.GetFileName(f), Path.GetFileName(sameName),
+                            StringComparison.OrdinalIgnoreCase)) others.Add(f);
+                }
+                if (others.Count == 1)
+                {
+                    source = "folder";
+                    return File.ReadAllText(others[0]);
+                }
+                if (others.Count > 1) source = "ambiguous";
             }
-            catch (Exception) { return null; }
+            catch (Exception) { /* a missing/unreadable stylesheet must not fail the import / 缺失或不可读的样式表不得使导入失败 */ }
+            return embedded;
         }
     }
 }
