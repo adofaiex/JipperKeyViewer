@@ -1850,13 +1850,23 @@ namespace JipperKeyViewer.KeyViewer
                     {
                         // File.Replace is not implemented on some Mono/Wine/Proton and network/exFAT
                         // setups, and it fails there EVERY time — a permanent save failure that
-                        // left the user staring at the error banner forever. Fall back to
-                        // delete+move, which is still far better than never saving.
+                        // left the user staring at the error banner forever.
+                        // Overwrite-copy, NOT delete+move. The delete+move form had a window where
+                        // the live config was already gone; if the move then failed (a scanner
+                        // holding a handle, a cross-device tmp, a permission flip) the outer catch
+                        // deleted the staged copy as well, so the user's config and the new content
+                        // were BOTH lost. Copy never leaves a moment with no file at that path, and
+                        // a truncated result still trips the .corrupt recovery path, which a
+                        // missing file cannot.
                         // File.Replace 在部分 Mono/Wine/Proton 与网络盘/exFAT 上未实现，且每次都
-                        // 失败——那是让用户永远看着错误横幅的**永久性**保存失败。降级为
-                        // delete+move，仍远好过永远存不下去。
-                        File.Delete(path);
-                        File.Move(tmp, path);
+                        // 失败——那是让用户永远看着错误横幅的**永久性**保存失败。
+                        // 降级为**覆写复制**而非 delete+move：delete+move 存在一个「活配置已被删掉」
+                        // 的窗口，此刻若 move 又失败（杀软占着句柄、tmp 跨设备、权限中途变化），
+                        // 外层 catch 还会把暂存副本一并删掉，于是用户的配置**和**新内容一起丢失。
+                        // 复制不会留下「该路径上没有任何文件」的时刻，且即便结果是截断的，仍会走
+                        // .corrupt 恢复路径——而文件直接消失则不会。
+                        File.Copy(tmp, path, true);
+                        try { File.Delete(tmp); } catch { }
                     }
                 }
                 else File.Move(tmp, path);

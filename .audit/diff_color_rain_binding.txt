@@ -1,0 +1,855 @@
+diff --git a/JipperKeyViewer/KeyViewer/GUI/KeyViewerBindingGUI.cs b/JipperKeyViewer/KeyViewer/GUI/KeyViewerBindingGUI.cs
+index e722cd0..1186bac 100644
+--- a/JipperKeyViewer/KeyViewer/GUI/KeyViewerBindingGUI.cs
++++ b/JipperKeyViewer/KeyViewer/GUI/KeyViewerBindingGUI.cs
+@@ -22,6 +22,16 @@ namespace JipperKeyViewer.KeyViewer
+         {
+             GUILayout.BeginVertical("box");
+             KeyCode[] keyCodes = GetKeyCode();
++            // Arming here must DISARM the editor's node capture, the mirror of what the editor does
++            // when it arms. The editor window and the settings window can both be open (Melon
++            // drives two IMGUI passes), and ProcessKeySelection polls Input.GetKeyDown in Update —
++            // BEFORE the editor's OnGUI KeyDown handling — so a single physical press was consumed
++            // by BOTH: the fixed-layout slot binding changed and so did the FreeMake node's KeyBind.
++            // 每边武装时都必须解除另一边的武装，这与编辑器武装时的处理互为镜像。编辑器窗口与设置
++            // 窗口可同时打开（Melon 驱动两个 IMGUI pass），而 ProcessKeySelection 在 Update 里轮询
++            // Input.GetKeyDown——**早于**编辑器的 OnGUI KeyDown 处理——于是同一次物理按键被两边
++            // 同时消费：固定布局槽位绑定与 FreeMake 节点 KeyBind 一起被改。
++            CancelEditorNodeCapture();
+             DrawMainKeyRows(I18n.Tr("row1_keys"), I18n.Tr("row2_keys"), I18n.Tr("row3_keys"),
+                 keyCodes, (i, _) => { SelectedKey = i; changeState = 0; });
+             DrawFootKeyRows(I18n.Tr("foot_keys_list"), FootKeyBase,
+@@ -65,9 +75,22 @@ namespace JipperKeyViewer.KeyViewer
+             {
+                 GUILayout.Label(row3Label + ":");
+                 GUILayout.BeginHorizontal();
+-                for (int i = 8; i < backSequence.Length && backSequence[i] < keyCodes.Length; i++)
++                for (int i = 8; i < backSequence.Length; i++)
++                {
++                    // In the BODY, like the row-2 loop right above. As a for-loop CONDITION this
++                    // test does not skip the element — it TERMINATES the loop, so the first
++                    // out-of-range backSequence value made every remaining row-3 key vanish from
++                    // the panel. In this tab that means the button which opens the key-capture
++                    // prompt no longer exists, which for the user is indistinguishable from the
++                    // key being ignored.
++                    // 放在**循环体内**，与紧邻上方的第 2 排一致。作为 for 的**条件**时该检查不是
++                    // 跳过当前元素，而是**终止整个循环**，故第一个越界的 backSequence 值就让第 3 排
++                    // 剩余所有按键从面板上消失。在本标签页这意味着「打开改键捕获」的按钮根本不存在，
++                    // 对用户而言与「该键被忽略」无法区分。
++                    if (backSequence[i] >= keyCodes.Length) continue;
+                     if (GUILayout.Button(labelFunc(backSequence[i], keyCodes[backSequence[i]])))
+                         onKeyClick(backSequence[i], keyCodes[backSequence[i]]);
++                }
+                 GUILayout.EndHorizontal();
+             }
+         }
+@@ -143,8 +166,13 @@ namespace JipperKeyViewer.KeyViewer
+             {
+                 GUILayout.Label(I18n.Tr("row3_keys") + ":");
+                 GUILayout.BeginHorizontal();
+-                for (int i = 8; i < backSequence.Length && backSequence[i] < ghostKeyCodes.Length; i++)
++                for (int i = 8; i < backSequence.Length; i++)
++                {
++                    // Body, not loop condition — see the identical fix in DrawBackRowButtons.
++                    // 放在循环体而非循环条件——见 DrawBackRowButtons 中完全相同的修复。
++                    if (backSequence[i] >= ghostKeyCodes.Length) continue;
+                     DrawGhostKeyButton(backSequence[i], ghostKeyCodes);
++                }
+                 GUILayout.EndHorizontal();
+             }
+ 
+@@ -343,6 +371,7 @@ namespace JipperKeyViewer.KeyViewer
+             {
+                 Settings.Data.KpsLabel = newKpsLabel;
+                 RefreshKpsTotalLabels();
++                SaveSettingsFromGui();
+             }
+             if (GUILayout.Button(I18n.Tr("reset"), GUILayout.Width(50)))
+             {
+@@ -360,6 +389,7 @@ namespace JipperKeyViewer.KeyViewer
+             {
+                 Settings.Data.TotalLabel = newTotalLabel;
+                 RefreshKpsTotalLabels();
++                SaveSettingsFromGui();
+             }
+             if (GUILayout.Button(I18n.Tr("reset"), GUILayout.Width(50)))
+             {
+diff --git a/JipperKeyViewer/KeyViewer/GUI/KeyViewerColorGUI.cs b/JipperKeyViewer/KeyViewer/GUI/KeyViewerColorGUI.cs
+index 2fbd463..07bba93 100644
+--- a/JipperKeyViewer/KeyViewer/GUI/KeyViewerColorGUI.cs
++++ b/JipperKeyViewer/KeyViewer/GUI/KeyViewerColorGUI.cs
+@@ -11,21 +11,70 @@ namespace JipperKeyViewer.KeyViewer
+ {
+     public partial class KeyViewer : MonoBehaviour
+     {
++        /// <summary>Repaint the drops already on screen after a global rain colour change. The rain
++        /// system may not exist yet (overlay disabled), and Keys may be mid-rebuild; RefreshDropColors
++        /// handles both. / 全局雨色改动后重绘在屏雨滴。雨滴系统可能尚未创建（覆盖层关闭），Keys 也
++        /// 可能正在重建；RefreshDropColors 两者都能处理。
++        /// </summary>
++        private void RefreshRainDropColors()
++        {
++            var rain = rainSystem;
++            if (rain != null) rain.RefreshDropColors(Keys);
++        }
++
++        /// <summary>Translated colour-slot labels, rebuilt only when the language changes. Plain
++        /// strings — NOT a static GUIContent, which would drag IMGUIModule into the static ctor. /
++        /// 已翻译的颜色槽标签，仅在语言变化时重建。必须是纯字符串——静态 GUIContent 会把 IMGUIModule
++        /// 拖进静态构造。
++        /// </summary>
++        private string[] ColorNames = new string[12];
++        private string colorLabelLang;
++        // Scratch tables for the per-event default colours. They read LIVE settings, so they must be
++        // refilled every event — but the array itself does not have to be reallocated.
++        // 每事件默认色的暂存表。它们读的是**实时**设置，故每事件都要重填，但数组本身不必重新分配。
++        private readonly Color[] globalColorDefaults = new Color[12];
++        private readonly Color[] kpsTotalDefaults = new Color[3];
++        private readonly Color[] fullKeyboardDefaults = new Color[6];
++
+         private void DrawColorSettings()
+         {
+             GUILayout.BeginVertical("box");
+-            string[] colorNames = {
+-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
+-                I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
+-                I18n.Tr("color_rain1"), I18n.Tr("color_rain2"), I18n.Tr("color_rain3"),
+-                I18n.Tr("ghost_rain_color1"), I18n.Tr("ghost_rain_color2"), I18n.Tr("ghost_rain_color3")
+-            };
+-            Color[] defaultColors = {
+-                Background, BackgroundClicked, Outline, OutlineClicked,
+-                Text, TextClicked,
+-                RainColor, RainColor2, RainColor3,
+-                GhostRainColorDefault, GhostRainColor2Default, GhostRainColor3Default
+-            };
++            // The LABEL table below is the one that actually got hoisted; this default-colour table
++            // did not, even though the note claimed "these two array literals" had both been hoisted.
++            // A comment promising a fix that is not in the code is worse than no comment — it stops
++            // the next reader from looking. Fill a shared table instead.
++            // 下方真正被提上去的是**标签表**；这张默认色表**并没有**，而注释却声称「这两个数组
++            // 字面量」都已提为静态。**承诺了代码里并不存在的修复的注释比没有注释更糟**——它会让下一个
++            // 读者不再去查。改为填充共享表。
++            globalColorDefaults[0] = Background; globalColorDefaults[1] = BackgroundClicked;
++            globalColorDefaults[2] = Outline; globalColorDefaults[3] = OutlineClicked;
++            globalColorDefaults[4] = Text; globalColorDefaults[5] = TextClicked;
++            globalColorDefaults[6] = RainColor; globalColorDefaults[7] = RainColor2; globalColorDefaults[8] = RainColor3;
++            globalColorDefaults[9] = GhostRainColorDefault; globalColorDefaults[10] = GhostRainColor2Default;
++            globalColorDefaults[11] = GhostRainColor3Default;
++            Color[] defaultColors = globalColorDefaults;
++            // Hoisted: the Colors tab is the one people leave open, and this array literal was
++            // rebuilt on EVERY IMGUI event (IMGUI fires Layout + Repaint per frame). I18n.Tr does
++            // not allocate, so the keys can be resolved once per language and the label table
++            // rebuilt only when the language changes — the same caching DrawTabBar already uses.
++            // Must stay non-GUI types: a static GUIContent/GUILayoutOption would drag
++            // UnityEngine.IMGUIModule into this type's static ctor.
++            // 提为缓存：颜色页正是人们一直开着的那一页，而这个数组字面量此前在**每个** IMGUI 事件
++            // （每帧 Layout + Repaint）都重建一次。I18n.Tr 本身不分配，故键可按语言解析一次、
++            // 标签表只在语言变化时重建——与 DrawTabBar 同一套缓存。
++            // 必须保持非 GUI 类型：静态 GUIContent/GUILayoutOption 会把 UnityEngine.IMGUIModule
++            // 拖进本类型的静态构造。
++            if (colorLabelLang != I18n.Lang)
++            {
++                colorLabelLang = I18n.Lang;
++                ColorNames = new[] {
++                    I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
++                    I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
++                    I18n.Tr("color_rain1"), I18n.Tr("color_rain2"), I18n.Tr("color_rain3"),
++                    I18n.Tr("ghost_rain_color1"), I18n.Tr("ghost_rain_color2"), I18n.Tr("ghost_rain_color3")
++                };
++            }
++            string[] colorNames = ColorNames;
+             for (int i = 0; i < 12; i++)
+             {
+                 if (i >= 6 && i < 9 && !Settings.Data.EnableRainEffect)
+@@ -44,6 +93,14 @@ namespace JipperKeyViewer.KeyViewer
+                     {
+                         SetColorByIndex(i, newColor);
+                         UpdateAllKeyColors();
++                        // Indices 6..11 are the rain / ghost-rain colours. A drop's colour is baked
++                        // in at creation and UpdateAllKeyColors does not touch the rain system, so
++                        // with a tall track and a slow speed the on-screen drops kept the old
++                        // colour for seconds — the control looked broken. Repaint them in place.
++                        // 下标 6..11 是雨滴/鬼雨颜色。雨滴颜色在创建时烙入，而 UpdateAllKeyColors
++                        // 不碰雨滴系统，故高轨道配慢速度时在屏雨滴会保持旧色好几秒——控件看起来像
++                        // 坏了。现就地重绘它们。
++                        if (i >= 6) RefreshRainDropColors();
+                         SaveSettingsFromGui();
+                     }
+                     GUILayout.EndHorizontal();
+@@ -81,15 +138,33 @@ namespace JipperKeyViewer.KeyViewer
+             }
+         }
+ 
++        // Reusable scratch for the two colour tables below. Both were array literals rebuilt on
++        // EVERY IMGUI event, and both sections are on the Colors page that stays open: the KPS/Total
++        // one is drawn twice per event, the full-keyboard one six times. The i18n labels cannot be
++        // static (see the round-45 note: a static field initialiser would drag GUIContent /
++        // GUILayoutOption into the type's static constructor and make callers that never draw the
++        // settings page require UnityEngine.IMGUIModule — the Harness surfaces that as a load
++        // failure), so the tables are instance scratch filled every time the section is drawn.
++        // Colours are cheap and carry no i18n, so they stay a local.
++        // 下面两张颜色表的复用暂存。二者此前都是**每个 IMGUI 事件**重建的数组字面量，而两个区块
++        // 都在一直开着的「颜色」页上：KPS/Total 每事件画两次，全键盘六次。i18n 标签不能做成静态
++        // （见第 45 轮：静态字段初始化器会把 GUIContent / GUILayoutOption 拖进类型的静态构造，
++        // 使从不绘制设置页的调用方也需要 UnityEngine.IMGUIModule——Harness 会把它暴露成加载
++        // 失败），故两张表是每次绘制区块时填充的实例暂存。颜色便宜且不含 i18n，仍是局部变量。
++        private readonly string[] fkColorNames = new string[6];
++        private readonly string[] kpsTotalTypeNames = new string[3];
++
+         private void DrawKpsTotalColors(int pi, string label, ref int expandedType)
+         {
+             expandedType = DrawFoldoutButton(label, expandedType);
+             if (expandedType < 0) return;
+ 
+-            string[] typeNames = {
+-                I18n.Tr("color_bg"), I18n.Tr("color_outline"), I18n.Tr("color_text")
+-            };
+-            Color[] defaults = { Background, Outline, Text };
++            kpsTotalTypeNames[0] = I18n.Tr("color_bg");
++            kpsTotalTypeNames[1] = I18n.Tr("color_outline");
++            kpsTotalTypeNames[2] = I18n.Tr("color_text");
++            string[] typeNames = kpsTotalTypeNames;
++            kpsTotalDefaults[0] = Background; kpsTotalDefaults[1] = Outline; kpsTotalDefaults[2] = Text;
++            Color[] defaults = kpsTotalDefaults;
+ 
+             for (int t = 0; t < 3; t++)
+             {
+@@ -184,6 +259,34 @@ namespace JipperKeyViewer.KeyViewer
+             return txt;
+         }
+ 
++        /// <summary>Single-option overload. Unity's GUILayout.TextField only accepts
++        /// params GUILayoutOption[], so an array is unavoidable at that boundary — but it need not
++        /// be a NEW one per call. GUILayout consumes the array synchronously and retains nothing, so
++        /// one instance array can be refilled and handed over repeatedly.
++        ///
++        /// This matters because a call passing exactly one argument binds HERE (an exact match beats
++        /// params expansion), so every single-option call site in the app stops allocating: the
++        /// settings page's numeric fields, the colour channels, and every field of the FreeMake
++        /// property panel — ~31 of those on a default selection, each one previously allocating an
++        /// array on every Layout and every Repaint.
++        ///
++        /// 单 option 重载。Unity 的 `GUILayout.TextField` 只接受 `params GUILayoutOption[]`，故在那个
++        /// 边界上数组无法避免——但**不必每次都是新的**。GUILayout 同步消费该数组且不保留任何东西，
++        /// 故一张实例数组可以反复填充后交出。
++        ///
++        /// 这一点很关键：**恰好传一个参数的调用会绑定到本重载**（精确匹配优先于 params 展开），于是
++        /// 全应用每个单 option 调用点都不再分配：设置页的数字字段、取色器的通道、以及 FreeMake
++        /// 属性面板的**每一个**字段（默认选区即约 31 个），此前每个字段在每次 Layout 和每次
++        /// Repaint 都要分配一个数组。
++        /// </summary>
++        private string TextInputField(string ctrlName, string modelText, GUILayoutOption option)
++        {
++            singleOptionHolder[0] = option;
++            return TextInputField(ctrlName, modelText, singleOptionHolder);
++        }
++
++        private readonly GUILayoutOption[] singleOptionHolder = new GUILayoutOption[1];
++
+         /// <summary>Color to #RRGGBB, or #RRGGBBAA when alpha &lt; 255 / 颜色转 #RRGGBB,非不透明时输出 #RRGGBBAA</summary>
+         private static string ColorToHex(Color c)
+         {
+@@ -210,47 +313,109 @@ namespace JipperKeyViewer.KeyViewer
+             return true;
+         }
+ 
+-        private Color DrawColorPicker(string label, Color currentColor, Color defaultColor)
++        /// <summary>Hex string cached by the exact colour it renders. ColorToHex allocates on every
++        /// call, and the picker runs per colour per IMGUI event — with a per-key colour list open
++        /// that is dozens of identical strings rebuilt per event forever. / 按其渲染的确切颜色
++        /// 缓存的十六进制串。ColorToHex 每次调用都会分配，而取色器每颜色每 IMGUI 事件都跑一次
++        /// ——打开每键配色列表时即每事件重复重建几十个完全相同的字符串，永不停歇。</summary>
++        private static readonly Dictionary<int, string> hexStringCache = new Dictionary<int, string>(64);
++
++        private static string ColorToHexCached(Color c)
++        {
++            int key = ((Color32)c).GetHashCode();
++            if (hexStringCache.TryGetValue(key, out string cached)) return cached;
++            string built = ColorToHex(c);
++            // Bounded: distinct colours are few in practice, and an unbounded map keyed by hash
++            // could grow without limit on a hand-edited profile. / 有界：实践中不同颜色很少，而按
++            // 哈希的无界映射在手改配置下可能无限增长。
++            if (hexStringCache.Count > 512) hexStringCache.Clear();
++            hexStringCache[key] = built;
++            return built;
++        }
++
++        /// <summary>Colour picker. `prefix` namespaces the generated control names: the FreeMake
++        /// editor and the settings window are separate IMGUI passes that can be open at the SAME
++        /// time, and both reset the shared sequence counter — with one shared prefix their Hex/RGB
++        /// text buffers collided (typing in one window rewrote the other's field) and the settings
++        /// pass's stale-buffer sweep deleted the editor's in-progress entries.
++        /// 取色器。`prefix` 用于隔离控件名命名空间：FreeMake 编辑器与设置窗口是两个可同时打开的
++        /// IMGUI pass，且共用同一个序号计数器——若前缀相同，两个窗口的 Hex/RGB 输入缓冲会互相
++        /// 串写，设置窗口的陈旧缓冲清理还会删掉编辑器正在编辑的条目。</summary>
++        private Color DrawColorPicker(string label, Color currentColor, Color defaultColor, string prefix = "cpi_")
+         {
+             GUILayout.BeginVertical();
+             GUILayout.Label(label);
+ 
+             // Unique control names allocated up-front in draw order so focus tracking stays stable.
+             // 先按绘制顺序分配唯一的控件名,保证焦点跟踪一致。
+-            string ctrlR = "cpi_" + (++colorPickerFieldSeq);
+-            string ctrlG = "cpi_" + (++colorPickerFieldSeq);
+-            string ctrlB = "cpi_" + (++colorPickerFieldSeq);
+-            string ctrlA = "cpi_" + (++colorPickerFieldSeq);
+-            string ctrlHex = "cpi_" + (++colorPickerFieldSeq);
++            // The two prefixes are a closed set, so the per-pass sequence can be expanded once into
++            // a lookup table instead of concatenating five strings per picker per event. `prefix`
++            // selects WHICH table — indexing the table with the bare sequence (the first version
++            // of this optimisation) handed the editor "cpi_N" names too, silently undoing the
++            // fme_cpi_ namespacing this very method documents.
++            // 两个前缀是封闭集合，故每次 pass 的序号可一次性展开成查表，而不必每个取色器每事件
++            // 拼接五个字符串。`prefix` 决定用**哪一张**表——最初的优化拿裸序号去索引，于是编辑器
++            // 也拿到了 "cpi_N"，静默废掉了本方法注释里写明的那套 fme_cpi_ 隔离。
++            string[] names = string.Equals(prefix, EditorColorPickerPrefix, System.StringComparison.Ordinal)
++                ? EditorColorPickerNames
++                : SettingsColorPickerNames;
++            string ctrlR, ctrlG, ctrlB, ctrlA, ctrlHex;
++            if (colorPickerFieldSeq >= 0 && colorPickerFieldSeq + 5 <= names.Length)
++            {
++                int n = colorPickerFieldSeq;
++                ctrlR = names[n]; ctrlG = names[n + 1]; ctrlB = names[n + 2];
++                ctrlA = names[n + 3]; ctrlHex = names[n + 4];
++                colorPickerFieldSeq += 5;
++            }
++            else
++            {
++                ctrlR = prefix + (++colorPickerFieldSeq);
++                ctrlG = prefix + (++colorPickerFieldSeq);
++                ctrlB = prefix + (++colorPickerFieldSeq);
++                ctrlA = prefix + (++colorPickerFieldSeq);
++                ctrlHex = prefix + (++colorPickerFieldSeq);
++            }
+ 
+-            void DrawChannel(string ctrl, string name, ref float channel)
++            // `label` arrives already suffixed so the four call sites hand over interned literals
++            // ("R:", "G:", …) instead of concatenating `name + ":"` on every IMGUI event — a
++            // parameter is never constant-folded, so the old form allocated a string per channel,
++            // per picker, per event.
++            // `label` 传进来时**已带冒号**，故四个调用点直接给 interned 字面量（"R:"、"G:"…），
++            // 而不再在每个 IMGUI 事件里拼 `name + ":"`——参数不会被常量折叠，旧写法等于每通道、
++            // 每取色器、每事件分配一个字符串。
++            void DrawChannel(string ctrl, string label, ref float channel)
+             {
+                 GUILayout.BeginHorizontal();
+-                GUILayout.Label(name + ":", GUILayout.Width(20));
+-                channel = GUILayout.HorizontalSlider(channel, 0f, 1f, GUILayout.Width(150));
++                GUILayout.Label(label, ChannelLabelWidth);
++                channel = GUILayout.HorizontalSlider(channel, 0f, 1f, ChannelSliderWidth);
+                 // Text input keeps Unity's 0-1 scale; use the Hex field below for precise values.
+                 // 文本框保持 0-1;要精确取色时用下面的 Hex 输入。
+-                string txt = TextInputField(ctrl, channel.ToString("F2"), GUILayout.Width(40));
++                string txt = TextInputField(ctrl, FormatChannel(ctrl, channel), ChannelEditWidth);
+                 if (float.TryParse(txt, out float val) && IsFiniteFloat(val))
+                     channel = Mathf.Clamp01(val);
+                 GUILayout.EndHorizontal();
+             }
+ 
+-            DrawChannel(ctrlR, "R", ref currentColor.r);
+-            DrawChannel(ctrlG, "G", ref currentColor.g);
+-            DrawChannel(ctrlB, "B", ref currentColor.b);
+-            DrawChannel(ctrlA, "A", ref currentColor.a);
++            DrawChannel(ctrlR, "R:", ref currentColor.r);
++            DrawChannel(ctrlG, "G:", ref currentColor.g);
++            DrawChannel(ctrlB, "B:", ref currentColor.b);
++            DrawChannel(ctrlA, "A:", ref currentColor.a);
+ 
+             // Direct #RRGGBB / #RRGGBBAA hex entry. / 直接输入 #RRGGBB 或 #RRGGBBAA
+             GUILayout.BeginHorizontal();
+-            GUILayout.Label("Hex:", GUILayout.Width(20));
+-            string hex = TextInputField(ctrlHex, ColorToHex(currentColor), GUILayout.Width(120));
++            GUILayout.Label("Hex:", ChannelLabelWidth);
++            string hex = TextInputField(ctrlHex, ColorToHexCached(currentColor), HexEditWidth);
+             if (TryParseHex(hex, out Color parsed))
+                 currentColor = parsed;
+             GUILayout.EndHorizontal();
+ 
+             GUILayout.BeginHorizontal();
+-            GUILayout.Label(I18n.Tr("preview") + ":", GUILayout.Width(40));
++            if (previewLabelLang != I18n.Lang)
++            {
++                previewLabelLang = I18n.Lang;
++                previewLabel = I18n.Tr("preview") + ":";
++            }
++            GUILayout.Label(previewLabel, PreviewLabelWidth);
+             Rect previewRect = GUILayoutUtility.GetRect(100, 20);
+             GUIUtils.DrawRect(previewRect, currentColor);
+             GUILayout.EndHorizontal();
+@@ -270,6 +435,18 @@ namespace JipperKeyViewer.KeyViewer
+             GUILayout.BeginVertical("box");
+             KeyCode[] keyCodes = GetKeyCode();
+             KeyCode[] footKeyCodes = GetFootKeyCode();
++            // Every index below is driven by profile data (key arrays and the per-row back
++            // sequence). EnsureSettingsArrays currently guarantees the lengths, but a load path
++            // that bypassed it would throw IndexOutOfRange inside OnGUI — which disables the whole
++            // settings window, not just this row. Skip what is not there instead.
++            // 下面的索引全部来自配置数据（按键数组与每排序列）。EnsureSettingsArrays 目前保证了
++            // 长度，但任何绕过它的加载路径都会在 OnGUI 内抛 IndexOutOfRange——整个设置窗口会被
++            // 禁用，而不只是这一行。缺失的部分直接跳过。
++            if (keyCodes == null || keyCodes.Length < 8)
++            {
++                GUILayout.EndVertical();
++                return;
++            }
+ 
+             GUILayout.Label(I18n.Tr("row1_keys") + ":");
+             GUILayout.BeginHorizontal();
+@@ -282,7 +459,8 @@ namespace JipperKeyViewer.KeyViewer
+                 GUILayout.Label(I18n.Tr("row2_keys") + ":");
+                 GUILayout.BeginHorizontal();
+                 for (int b = 0; b < backSequence.Length && b < 8; b++)
+-                    DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                    if (backSequence[b] < keyCodes.Length)
++                        DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                 GUILayout.EndHorizontal();
+             }
+ 
+@@ -290,8 +468,15 @@ namespace JipperKeyViewer.KeyViewer
+             {
+                 GUILayout.Label(I18n.Tr("row3_keys") + ":");
+                 GUILayout.BeginHorizontal();
+-                for (int b = 8; b < backSequence.Length && backSequence[b] < keyCodes.Length; b++)
+-                    DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                for (int b = 8; b < backSequence.Length; b++)
++                {
++                    // Body, not loop condition — the row-2 loop above does the same. As a
++                    // condition this test terminates the loop, dropping every remaining row-3 key.
++                    // 放在循环体而非循环条件——上方的第 2 排循环同样如此。作为条件时该检查会终止
++                    // 循环，使第 3 排剩余所有按键一起消失。
++                    if (backSequence[b] < keyCodes.Length)
++                        DrawPerKeyColorBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                }
+                 GUILayout.EndHorizontal();
+             }
+ 
+@@ -316,7 +501,7 @@ namespace JipperKeyViewer.KeyViewer
+             DrawPerKeyColorBtn(MaxKeySlots + 1, "Total");
+             GUILayout.EndHorizontal();
+ 
+-            if (perKeyColorSelected >= 0 && perKeyColorSelected < MaxKeySlots + 2)
++            if (perKeyColorSelected >= 0 && perKeyColorSelected < PerKeySlotCount)
+                 DrawPerKeyColorEditor(perKeyColorSelected);
+ 
+             if (GUILayout.Button(I18n.Tr("per_key_color_reset")))
+@@ -337,7 +522,13 @@ namespace JipperKeyViewer.KeyViewer
+ 
+         private void DrawPerKeyColorBtn(int idx, string label)
+         {
+-            Color c = Settings.Data.PerKeyBackground[idx];
++            // PerKeyBackground is populated by the ProfileData constructor, which FromJsonOverwrite
++            // can bypass; a null/short array here would throw inside OnGUI and disable the whole
++            // settings window. / PerKeyBackground 由 ProfileData 构造函数填充，而 FromJsonOverwrite
++            // 可绕过构造函数；数组为 null 或过短会在 OnGUI 内抛异常并禁用整个设置窗口。
++            Color c = idx >= 0 && Settings.Data.PerKeyBackground != null && idx < Settings.Data.PerKeyBackground.Length
++                ? Settings.Data.PerKeyBackground[idx]
++                : Color.white;
+             if (perKeyBtnStyle == null) perKeyBtnStyle = new GUIStyle(GUI.skin.button);
+             perKeyBtnStyle.normal.textColor = c.grayscale > 0.5f ? Color.black : Color.white;
+             if (perKeyColorSelected == idx)
+@@ -384,22 +575,40 @@ namespace JipperKeyViewer.KeyViewer
+             // 脚键不提供雨滴配色(6,7);PerKeyTypeOrder 已排除
+             string rainKey = s < 8 ? "color_rain1" : s < 16 ? "color_rain2" : s < FootKeyBase ? "color_rain3" : "";
+ 
+-            string[] typeNames = {
+-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"),
+-                I18n.Tr("color_outline"), I18n.Tr("color_outline_clicked"),
+-                I18n.Tr("color_text"), I18n.Tr("color_text_clicked"),
+-                I18n.Tr(rainKey), "Ghost " + I18n.Tr(rainKey)
+-            };
+-            Color[] values = {
+-                Settings.Data.PerKeyBackground[s], Settings.Data.PerKeyBackgroundClicked[s],
+-                Settings.Data.PerKeyOutline[s], Settings.Data.PerKeyOutlineClicked[s],
+-                Settings.Data.PerKeyText[s], Settings.Data.PerKeyTextClicked[s],
+-                Settings.Data.PerKeyRainColor[s], Settings.Data.PerKeyGhostRainColor[s]
+-            };
+-            Color[] defaults = {
+-                Background, BackgroundClicked, Outline, OutlineClicked, Text, TextClicked,
+-                RainColor, GhostRainColorDefault
+-            };
++            // Reused scratch arrays. This method runs for EVERY key on EVERY IMGUI event, and the
++            // three literal arrays below were three fresh allocations per key per event — with 24
++            // keys and the ≥2 events per frame that is 150+ objects per frame, forever, on the
++            // Colors tab. / 复用暂存数组。该方法对**每个**按键在**每个** IMGUI 事件里都跑，而下面
++            // 三个数组字面量是每按键每事件三次新分配——24 个按键、每帧 ≥2 个事件即每帧 150+ 个
++            // 对象，永不停歇，且就在 Colors 页上。
++            PerKeyTypeNames[0] = I18n.Tr("color_bg"); PerKeyTypeNames[1] = I18n.Tr("color_bg_clicked");
++            PerKeyTypeNames[2] = I18n.Tr("color_outline"); PerKeyTypeNames[3] = I18n.Tr("color_outline_clicked");
++            PerKeyTypeNames[4] = I18n.Tr("color_text"); PerKeyTypeNames[5] = I18n.Tr("color_text_clicked");
++            PerKeyTypeNames[6] = I18n.Tr(rainKey);
++            PerKeyTypeNames[7] = rainKey.Length > 0 ? "Ghost " + PerKeyTypeNames[6] : PerKeyTypeNames[6];
++            PerKeyTypeValues[0] = Settings.Data.PerKeyBackground[s]; PerKeyTypeValues[1] = Settings.Data.PerKeyBackgroundClicked[s];
++            PerKeyTypeValues[2] = Settings.Data.PerKeyOutline[s]; PerKeyTypeValues[3] = Settings.Data.PerKeyOutlineClicked[s];
++            PerKeyTypeValues[4] = Settings.Data.PerKeyText[s]; PerKeyTypeValues[5] = Settings.Data.PerKeyTextClicked[s];
++            PerKeyTypeValues[6] = Settings.Data.PerKeyRainColor[s]; PerKeyTypeValues[7] = Settings.Data.PerKeyGhostRainColor[s];
++            PerKeyTypeDefaults[0] = Background; PerKeyTypeDefaults[1] = BackgroundClicked;
++            PerKeyTypeDefaults[2] = Outline; PerKeyTypeDefaults[3] = OutlineClicked;
++            PerKeyTypeDefaults[4] = Text; PerKeyTypeDefaults[5] = TextClicked;
++            // The rain default is PER ROW, not one global colour. The ProfileData ctor,
++            // InitPerKeyColors, SafeEnsureRain and the v4->v5 migration all resolve slot i through
++            // ProfileData.DefaultPerKeyRainColor(i), which maps slots 0-7/8-15/16-23 onto rain row
++            // 1/2/3. Using the row-1 global here meant "reset default" on a row-2 or row-3 key wrote
++            // a colour no other path would ever produce for that slot — so the picker's default
++            // disagreed with what the same slot receives from a profile reset.
++            // 雨色默认值是**按排**的，不是某一个全局色。ProfileData 构造函数、`InitPerKeyColors`、
++            // `SafeEnsureRain` 与 v4→v5 迁移全都用 `ProfileData.DefaultPerKeyRainColor(i)` 解析槽位 i
++            // （0-7/8-15/16-23 → 第 1/2/3 排）。此处用第 1 排的全局色，意味着对第 2、3 排的按键点
++            // 「恢复默认」会写入一个**其它任何路径都不会为该槽位产生**的颜色——于是取色器的默认值与
++            // 同一槽位在「重置配置」时得到的值互相矛盾。
++            PerKeyTypeDefaults[6] = ProfileData.DefaultPerKeyRainColor(s);
++            PerKeyTypeDefaults[7] = GhostRainColorDefault;
++            string[] typeNames = PerKeyTypeNames;
++            Color[] values = PerKeyTypeValues;
++            Color[] defaults = PerKeyTypeDefaults;
+ 
+             int[] typeOrder = PerKeyTypeOrder(s);
+             for (int ti = 0; ti < typeOrder.Length; ti++)
+@@ -415,6 +624,24 @@ namespace JipperKeyViewer.KeyViewer
+                 {
+                     SetPerKeyColor(s, t, newColor);
+                     UpdateAllKeyColors();
++                    // Types 6 and 7 are the per-key rain / ghost-rain colours, and they are the
++                    // per-key counterpart of the global list's own `if (i >= 6) RefreshRainDropColors()`
++                    // at the top of this file. A drop's colour is baked in at creation, and
++                    // UpdateAllKeyColors only writes Keys[i].rainColor for the NEXT drop — so without
++                    // this the drops already on screen kept the old colour. With a tall track and a
++                    // slow speed (the rain page allows height up to 2000) that lasts many seconds,
++                    // which is exactly the reported "the colour control does nothing". Ghost rain is
++                    // the worst case: PerKeyGhostRainColor is read for LIVE drops in exactly one
++                    // place in the whole codebase, RefreshDropColors, so without this call the
++                    // per-key ghost-rain colour was effectively dead.
++                    // 类型 6/7 是每键雨色/鬼雨色，与本文件顶部全局列表自己的
++                    // `if (i >= 6) RefreshRainDropColors()` 恰好是一对。雨滴颜色在创建时烙入，而
++                    // `UpdateAllKeyColors` 只写 `Keys[i].rainColor` 供**下一滴**使用——故缺了这一句，
++                    // 已经在屏的雨滴就会保持旧色。高轨道配慢速度（雨滴页高度上限 2000）能持续数秒，
++                    // 正是「颜色控件点了没反应」那条反馈。鬼雨最糟：`PerKeyGhostRainColor` 对
++                    // **在飞**雨滴的读取点全仓**只有** `RefreshDropColors` 一处，缺了这一句，
++                    // 每键鬼雨色基本等于死的。
++                    if (t >= 6) RefreshRainDropColors();
+                     SaveSettingsFromGui();
+                 }
+                 GUILayout.EndVertical();
+@@ -425,6 +652,157 @@ namespace JipperKeyViewer.KeyViewer
+                 DrawPerKeyCountReset(s);
+         }
+ 
++        private static readonly string[] PerKeyTypeNames = new string[8];
++        private static readonly Color[] PerKeyTypeValues = new Color[8];
++        private static readonly Color[] PerKeyTypeDefaults = new Color[8];
++
++        /// <summary>Per-slot caches for the count row: control name, button label, and the count
++        /// that label was built for. Sized for the widest slot count the fixed layouts use. The
++        /// width option is an INSTANCE field: a static one would run the partial class's static
++        /// constructor on first touch, pulling GUIContent/GUILayoutOption into type load and making
++        /// every caller require UnityEngine.IMGUIModule — even ones that never draw a GUI. /
++        /// 计数行按槽位的缓存：控件名、按钮文本、以及该文本所对应的计数。尺寸覆盖固定布局用到的
++        /// 最大槽位数。宽度选项是**实例**字段：静态的会在该分部类首次被触碰时运行静态构造，
++        /// 把 GUIContent/GUILayoutOption 拖进类型加载，使所有调用方都需要
++        /// UnityEngine.IMGUIModule——包括从不绘制界面的那些。
++        /// </summary>
++        private static readonly string[] PerKeyCountCtrlNames = BuildPerKeyCountCtrlNames(MaxKeySlots);
++        private static readonly string[] perKeyResetLabelText = new string[MaxKeySlots];
++        private static readonly int[] perKeyResetLabelCache = new int[MaxKeySlots];
++        private static readonly System.Text.StringBuilder perKeyCtrlBuilder = new System.Text.StringBuilder(24);
++        private readonly GUILayoutOption perKeyCountWidth = GUILayout.Width(64f);
++
++        private static string[] BuildPerKeyCountCtrlNames(int count)
++        {
++            var names = new string[count];
++            for (int i = 0; i < count; i++) names[i] = "perkey_cnt_" + i;
++            return names;
++        }
++
++        private static string PerKeyCountCtrl(int slot)
++        {
++            if (slot < 0 || slot >= PerKeyCountCtrlNames.Length)
++            {
++                perKeyCtrlBuilder.Length = 0;
++                perKeyCtrlBuilder.Append("perkey_cnt_").Append(slot);
++                return perKeyCtrlBuilder.ToString();
++            }
++            return PerKeyCountCtrlNames[slot];
++        }
++
++        /// <summary>Pre-expanded "<prefix><n>" control names, one table per window. The prefixes
++        /// are a closed set ("cpi_" for the settings window, "fme_cpi_" for the FreeMake editor)
++        /// and the per-pass sequence counter only ever grows from 0, so every name a pass can
++        /// produce is known up front. Falls back to concatenation if a pass ever exceeds the
++        /// table. / 每个窗口一张「前缀 + 序号」控件名预展开表。前缀是封闭集合（设置窗口 "cpi_"、
++        /// FreeMake 编辑器 "fme_cpi_"），且每次 pass 的序号只会从 0 递增，故某个 pass 可能产生的
++        /// 每个名字都是预先已知的。若某个 pass 超出表长则退回拼接。</summary>
++        private const int ColorPickerNameCount = 512;
++        private const string EditorColorPickerPrefix = "fme_cpi_";
++        private static readonly string[] SettingsColorPickerNames = BuildColorPickerNames("cpi_");
++        private static readonly string[] EditorColorPickerNames = BuildColorPickerNames(EditorColorPickerPrefix);
++        private readonly GUILayoutOption ChannelLabelWidth = GUILayout.Width(20f);
++        private readonly GUILayoutOption ChannelSliderWidth = GUILayout.Width(150f);
++        private readonly GUILayoutOption ChannelEditWidth = GUILayout.Width(40f);
++        private readonly GUILayoutOption HexEditWidth = GUILayout.Width(120f);
++        private readonly GUILayoutOption PreviewLabelWidth = GUILayout.Width(40f);
++        // The preview caption is the same string for every picker; build it once per language
++        // instead of concatenating I18n.Tr("preview") + ":" on every picker, every event.
++        // 预览标题对每个取色器都是同一个字符串；按语言建一次，而不是每取色器每事件都拼一次。
++        private string previewLabel;
++        private string previewLabelLang;
++
++        private static string[] BuildColorPickerNames(string prefix)
++        {
++            var names = new string[ColorPickerNameCount];
++            for (int i = 0; i < ColorPickerNameCount; i++) names[i] = prefix + i;
++            return names;
++        }
++
++        /// <summary>Channel echo, rebuilt only when THIS channel's value actually changes.
++        ///
++        /// This was a single shared slot — one float and one string for the whole type — while
++        /// FormatChannel runs four times per picker (R, G, B, A) with four *different* values. The
++        /// cache could therefore only ever hit when two adjacent channels happened to be exactly
++        /// equal, i.e. almost never, so the "only rebuild on change" claim never actually saved
++        /// anything: it formatted four strings per picker per event anyway. That is the third time
++        /// this codebase has shipped a one-slot cache standing in for N consumers (groupTotals in
++        /// round 46, the float-field echo in round 101, and this).
++        ///
++        /// Keyed by the field's control name, which is already unique per channel per picker
++        /// (cpi_12, cpi_13, …) and is exactly the identity TextInputField uses for its buffer. Two
++        /// pickers expanded at once therefore do not share an entry, and a value that genuinely
++        /// changes still re-formats because the comparison is on the float.
++        ///
++        /// 通道回显，仅在**本通道**的值真的变化时重建。
++        ///
++        /// 此前是**全类型共享的一个槽**（一个 float + 一个 string），而 FormatChannel 每个取色器要
++        /// 跑**四次**（R/G/B/A）且带着四个**不同**的值。故该缓存只有在相邻两通道恰好相等时才可能命中
++        /// ——几乎永不命中，即「仅在变化时重建」这个说法**从未真正省下任何东西**：它照样每取色器
++        /// 每事件格式化四个字符串。这已是本代码库第三次把「一个槽位」当成 N 个消费者来用
++        /// （第 46 轮的 groupTotals、第 101 轮的浮点回显、以及此处）。
++        ///
++        /// 以控件名为键——它本就是每通道每取色器唯一的（cpi_12、cpi_13…），且正是 TextInputField
++        /// 用来标识缓冲区的那个身份。故同时展开两个取色器不会共用同一条，且值真的变了仍会重新格式化，
++        /// 因为比较的是 float 本身。
++        /// </summary>
++        private string FormatChannel(string ctrl, float v)
++        {
++            int i = channelEchoIndex(ctrl);
++            if (i >= 0)
++            {
++                if (channelEchoText[i] != null && channelEchoValue[i] == v) return channelEchoText[i];
++                channelEchoValue[i] = v;
++                channelEchoText[i] = v.ToString("F2");
++                return channelEchoText[i];
++            }
++            // Control name outside the table: no cache, just format. Same fall-through the
++            // float-field echo uses for sequence numbers past its table.
++            // 控件名不在表内：不缓存，直接格式化。与浮点回显对超表长序号的处理一致。
++            return v.ToString("F2");
++        }
++
++        private static readonly float[] channelEchoValue = CreateChannelEchoValues();
++        private static readonly string[] channelEchoText = new string[ChannelEchoSlots];
++        private const int ChannelEchoSlots = 64;
++
++        private static float[] CreateChannelEchoValues()
++        {
++            float[] v = new float[ChannelEchoSlots];
++            for (int i = 0; i < v.Length; i++) v[i] = float.NaN;
++            return v;
++        }
++
++        /// <summary>Map a control name to a cache slot by its trailing integer ("cpi_12" -> 12).
++        /// A picker draws five consecutive names, so the trailing number IS the identity.
++        ///
++        /// Only the digits are parsed, so "cpi_12" and "fme_cpi_12" land on the SAME slot and the
++        /// two windows share an entry. That is deliberate and harmless: the cached text is a pure
++        /// function of the float, and the float is what gets compared before the cache is trusted, so
++        /// a shared slot can only ever hand back the correct string. Separating the prefixes would
++        /// buy nothing and cost a second table.
++        /// 把控件名按其结尾整数映射到缓存槽（"cpi_12" -> 12）。一个取色器连画五个连续名字，
++        /// 故结尾数字**就是**身份。
++        ///
++        /// 只解析数字，故 "cpi_12" 与 "fme_cpi_12" 落在**同一个**槽、两个窗口共用一条。这是**刻意**
++        /// 且无害的：缓存里的文本是那个 float 的纯函数，而取用前比较的正是 float，故共用只可能交出
++        /// 正确的字符串。按前缀分开既没收益，又要多一张表。
++        /// </summary>
++        private static int channelEchoIndex(string ctrl)
++        {
++            if (ctrl == null) return -1;
++            int end = ctrl.Length - 1;
++            while (end >= 0 && ctrl[end] >= '0' && ctrl[end] <= '9') end--;
++            if (end == ctrl.Length - 1 || end < 0) return -1;
++            int n = 0;
++            for (int i = end + 1; i < ctrl.Length; i++)
++            {
++                n = n * 10 + (ctrl[i] - '0');
++                if (n >= ChannelEchoSlots) return -1;
++            }
++            return n;
++        }
++
+         private static void SetPerKeyColor(int s, int t, Color color)
+         {
+             switch (t)
+@@ -451,7 +829,18 @@ namespace JipperKeyViewer.KeyViewer
+             // the Total panel stays truthful. Parses live while typing (same as the editor).
+             // 手动输入计数——FreeMake 编辑器同款功能在固定布局这边的镜像：把该键计数设为
+             // 任意值，全局 TotalCount 按差额同步。输入即解析（与编辑器一致）。
+-            string typed = TextInputField("perkey_cnt_" + s, Settings.Data.Count[s].ToString(), GUILayout.Width(64f));
++            // Both ToString calls and the two string concatenations ran for EVERY key on EVERY
++            // IMGUI event, including the ones the user never scrolled to. Cache the button label
++            // against the count it displays, and reuse one control name per slot.
++            // 两次 ToString 与两处字符串拼接此前对**每个**按键在**每个** IMGUI 事件都执行，包括
++            // 用户根本没滚到的那些。现把按钮文本按其显示的计数缓存，并为每个槽位复用一个控件名。
++            int displayedCount = Settings.Data.Count[s];
++            if (perKeyResetLabelCache[s] != displayedCount)
++            {
++                perKeyResetLabelCache[s] = displayedCount;
++                perKeyResetLabelText[s] = I18n.Tr("reset_counts") + " (" + displayedCount.ToString() + ")";
++            }
++            string typed = TextInputField(PerKeyCountCtrl(s), displayedCount.ToString(), perKeyCountWidth);
+             if (int.TryParse((typed ?? "").Replace("—", "").Trim(), out int newCount)
+                 && newCount >= 0 && newCount != Settings.Data.Count[s])
+             {
+@@ -462,7 +851,7 @@ namespace JipperKeyViewer.KeyViewer
+                     Keys[s].value.text = newCount.ToString();
+                 SaveSettingsFromGui();
+             }
+-            if (GUILayout.Button(I18n.Tr("reset_counts") + " (" + Settings.Data.Count[s] + ")", redBtnStyle))
++            if (GUILayout.Button(perKeyResetLabelText[s], redBtnStyle))
+             {
+                 // Give this key's presses back to the Total, mirroring the FreeMake reset —
+                 // previously the per-key reset zeroed the count but left the Total counting
+@@ -540,13 +929,17 @@ namespace JipperKeyViewer.KeyViewer
+                 SaveSettingsFromGui();
+             }
+ 
+-            string[] names = {
+-                I18n.Tr("color_bg"), I18n.Tr("color_bg_clicked"), I18n.Tr("color_outline"),
+-                I18n.Tr("color_outline_clicked"), I18n.Tr("color_text"), I18n.Tr("color_text_clicked")
+-            };
+-            Color[] defaults = {
+-                Background, BackgroundClicked, Outline, OutlineClicked, Text, TextClicked
+-            };
++            fkColorNames[0] = I18n.Tr("color_bg");
++            fkColorNames[1] = I18n.Tr("color_bg_clicked");
++            fkColorNames[2] = I18n.Tr("color_outline");
++            fkColorNames[3] = I18n.Tr("color_outline_clicked");
++            fkColorNames[4] = I18n.Tr("color_text");
++            fkColorNames[5] = I18n.Tr("color_text_clicked");
++            string[] names = fkColorNames;
++            fullKeyboardDefaults[0] = Background; fullKeyboardDefaults[1] = BackgroundClicked;
++            fullKeyboardDefaults[2] = Outline; fullKeyboardDefaults[3] = OutlineClicked;
++            fullKeyboardDefaults[4] = Text; fullKeyboardDefaults[5] = TextClicked;
++            Color[] defaults = fullKeyboardDefaults;
+             for (int i = 0; i < 6; i++)
+             {
+                 GUILayout.BeginHorizontal();
+diff --git a/JipperKeyViewer/KeyViewer/GUI/KeyViewerRainGUI.cs b/JipperKeyViewer/KeyViewer/GUI/KeyViewerRainGUI.cs
+index 6be3a28..d30d64e 100644
+--- a/JipperKeyViewer/KeyViewer/GUI/KeyViewerRainGUI.cs
++++ b/JipperKeyViewer/KeyViewer/GUI/KeyViewerRainGUI.cs
+@@ -129,6 +129,8 @@ namespace JipperKeyViewer.KeyViewer
+         /// Draw one row-based section among rain shadow / rain outline / ghost shadow / ghost outline. / 绘制四类行效果段之一(普通阴影/普通描边/鬼键阴影/鬼键描边)。
+         /// Replaces the four former copy-paste drawers; draw order and SaveSettings/ClearActiveDrops timing match the originals. / 替代原四个复制粘贴段;绘制顺序与保存/清雨滴时机与原实现一致。
+         /// </summary>
++        private readonly string[] rainOutlineSideNames = new string[3];
++
+         private void DrawRainRowEffectSection(bool ghost, bool isOutline)
+         {
+             string title = (ghost ? I18n.Tr("ghost_rain") + " " : "") + I18n.Tr(isOutline ? "rain_outline" : "rain_shadow");
+@@ -173,6 +175,7 @@ namespace JipperKeyViewer.KeyViewer
+                     if (newCol != curCol)
+                     {
+                         SetRowEffect(ghost, isOutline, r, null, newCol, null, null);
++                        RefreshInFlightDrops();
+                         SaveSettingsFromGui();
+                     }
+                 }
+@@ -184,6 +187,7 @@ namespace JipperKeyViewer.KeyViewer
+                     if (newW != curW)
+                     {
+                         SetRowEffect(ghost, isOutline, r, null, null, newW, null);
++                        RefreshInFlightDrops();
+                         SaveSettingsFromGui();
+                     }
+                 }
+@@ -194,6 +198,7 @@ namespace JipperKeyViewer.KeyViewer
+                     if (newX != curX)
+                     {
+                         SetRowEffect(ghost, isOutline, r, null, null, newX, null);
++                        RefreshInFlightDrops();
+                         SaveSettingsFromGui();
+                     }
+                     float curY = v2;
+@@ -201,6 +206,7 @@ namespace JipperKeyViewer.KeyViewer
+                     if (newY != curY)
+                     {
+                         SetRowEffect(ghost, isOutline, r, null, null, null, newY);
++                        RefreshInFlightDrops();
+                         SaveSettingsFromGui();
+                     }
+                 }
+@@ -294,6 +300,66 @@ namespace JipperKeyViewer.KeyViewer
+                 if (!Mathf.Approximately(newW3, Settings.Data.RainWidthRow3)) { Settings.Data.RainWidthRow3 = newW3; SaveSettingsFromGui(); }
+             }
+ 
++            bool newRoundedOutline = GUILayout.Toggle(Settings.Data.EnableRainRoundedOutline, I18n.Tr("rain_rounded_outline"));
++            if (newRoundedOutline != Settings.Data.EnableRainRoundedOutline)
++            {
++                Settings.Data.EnableRainRoundedOutline = newRoundedOutline;
++                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                SaveSettingsFromGui();
++            }
++            if (Settings.Data.EnableRainRoundedOutline)
++            {
++                float newCornerRadius = FloatSliderField(I18n.Tr("rain_rounded_outline_radius"), Settings.Data.RainOutlineCornerRadius, 0f, 20f, "F0");
++                if (!Mathf.Approximately(newCornerRadius, Settings.Data.RainOutlineCornerRadius))
++                {
++                    Settings.Data.RainOutlineCornerRadius = newCornerRadius;
++                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                    SaveSettingsFromGui();
++                }
++            }
++            GUILayout.Label(I18n.Tr("rain_outline_sides") + ":");
++            // Scratch, refilled per event: the labels are language-dependent so they cannot simply
++            // be hoisted, but reallocating a 3-element array on every event of the rain page — the
++            // page people leave open while tuning — is pure waste.
++            // 暂存并每事件重填：标签随语言变化故不能单纯提上去，但在雨滴页（人们一直开着调的那一页）
++            // 每事件重新分配一个 3 元素数组纯属浪费。
++            rainOutlineSideNames[0] = I18n.Tr("rain_side_all");
++            rainOutlineSideNames[1] = I18n.Tr("rain_side_vertical");
++            rainOutlineSideNames[2] = I18n.Tr("rain_side_horizontal");
++            string[] outlineSides = rainOutlineSideNames;
++            int newSides = GUILayout.SelectionGrid(Mathf.Clamp(Settings.Data.RainOutlineSides, 0, 2), outlineSides, 3);
++            if (newSides != Settings.Data.RainOutlineSides)
++            {
++                Settings.Data.RainOutlineSides = newSides;
++                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                SaveSettingsFromGui();
++            }
++
++            bool newDottedRain = GUILayout.Toggle(Settings.Data.EnableRainDotted, I18n.Tr("rain_dotted"));
++            if (newDottedRain != Settings.Data.EnableRainDotted)
++            {
++                Settings.Data.EnableRainDotted = newDottedRain;
++                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                SaveSettingsFromGui();
++            }
++            if (Settings.Data.EnableRainDotted)
++            {
++                float newDotLength = FloatSliderField(I18n.Tr("rain_dot_length"), Settings.Data.RainDotLength, 1f, 100f, "F0");
++                if (!Mathf.Approximately(newDotLength, Settings.Data.RainDotLength))
++                {
++                    Settings.Data.RainDotLength = newDotLength;
++                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                    SaveSettingsFromGui();
++                }
++                float newGapLength = FloatSliderField(I18n.Tr("rain_gap_length"), Settings.Data.RainGapLength, 0f, 100f, "F0");
++                if (!Mathf.Approximately(newGapLength, Settings.Data.RainGapLength))
++                {
++                    Settings.Data.RainGapLength = newGapLength;
++                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++                    SaveSettingsFromGui();
++                }
++            }
++
+             GUILayout.Label(I18n.Tr("rain_start_y") + ":");
+             // Start-Y is read live at render time — sliders apply to existing drops directly. It
+             // still persists through the debounced save like every other slider on this page: the

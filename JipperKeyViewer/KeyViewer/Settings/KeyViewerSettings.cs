@@ -601,7 +601,15 @@ namespace JipperKeyViewer.KeyViewer.Settings
         internal static bool RepairLegacyScaledTextPoison(FmNode node)
         {
             if (node == null) return false;
-            if (!(node.TextOpacity <= 0f || node.CountTextOpacity <= 0f)) return false;
+            // The clamp this repair exists to undo produced BOTH opacities at 0 together, so the
+            // fingerprint is `&&`. It was `||`, which also matches a node where the user
+            // deliberately hid ONE of the two texts — "show the label but not the count" is a
+            // perfectly ordinary node, and the repair then lifted the other opacity back to 1 on
+            // every load and persisted it.
+            // 这个修复要抵消的钳制把**两个**不透明度**同时**压成 0，故特征是 `&&`。此前写成 `||`，
+            // 于是也匹配「用户只把其中一个文字藏起来」的节点——「要标签不要计数」是完全正常的节点
+            // 配方，而修复会在每次加载时把另一个不透明度拉回 1 并落盘。
+            if (!(node.TextOpacity <= 0f && node.CountTextOpacity <= 0f)) return false;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
             // The scales are DELIBERATELY left alone. An earlier version of this repair also lifted

@@ -119,6 +119,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return c;
         }
 
+        /// <summary>Clamp a style float that goes straight into mat.SetFloat. The colour paths
+        /// above were scrubbed and the widths were not, so a shared .jkv or a hand-edited
+        /// settings.json could put NaN into _OutlineWidth / the underlay offsets — NaN in a shader
+        /// uniform is not clamped by the GPU, it propagates into the vertex/fragment maths and the
+        /// text collapses to nothing (or the whole material goes degenerate) with no log line.
+        /// This is the same class of input the rest of the codebase scrubs at every boundary.
+        /// 钳制直接进入 mat.SetFloat 的样式浮点。上面的颜色路径已清洗，而宽度没有——于是他人分享的
+        /// .jkv 或手改的 settings.json 能把 NaN 送进 _OutlineWidth／底衬偏移。着色器 uniform 里的
+        /// NaN 不会被 GPU 钳制，它会传播进顶点／片元运算，文字直接塌掉（或整个材质退化），且无任何
+        /// 日志。与本代码库其它位置在每个边界清洗输入的是同一类问题。
+        /// </summary>
+        private static float SafeFloat(float v, float lo, float hi, float fallback)
+        {
+            if (float.IsNaN(v) || float.IsInfinity(v)) return fallback;
+            return v < lo ? lo : (v > hi ? hi : v);
+        }
+
         private static long Color32(Color c)
         {
             Color32 q = c;
@@ -137,24 +154,24 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 if (key)
                 {
                     s.Outline = node.KeyTextOutlineEnabled;
-                    s.OutlineColor = ColorOf(node.KeyTextOutlineColor, d.KeyTextOutlineColor);
-                    s.OutlineWidth = node.KeyTextOutlineThickness;
+                    s.OutlineColor = ColorOf(node.KeyTextOutlineColor, SafeColor(d?.KeyTextOutlineColor ?? Color.black, Color.black));
+                    s.OutlineWidth = SafeFloat(node.KeyTextOutlineThickness, 0f, 1f, 0f);
                     s.Shadow = node.KeyTextShadowEnabled;
-                    s.ShadowColor = ColorOf(node.KeyTextShadowColor, d.KeyTextShadowColor);
-                    s.ShadowOffsetX = node.KeyTextShadowOffsetX;
-                    s.ShadowOffsetY = node.KeyTextShadowOffsetY;
-                    s.ShadowSoftness = node.KeyTextShadowSoftness;
+                    s.ShadowColor = ColorOf(node.KeyTextShadowColor, SafeColor(d?.KeyTextShadowColor ?? Color.black, Color.black));
+                    s.ShadowOffsetX = SafeFloat(node.KeyTextShadowOffsetX, -50f, 50f, 1f);
+                    s.ShadowOffsetY = SafeFloat(node.KeyTextShadowOffsetY, -50f, 50f, -1f);
+                    s.ShadowSoftness = SafeFloat(node.KeyTextShadowSoftness, 0f, 1f, 0f);
                 }
                 else
                 {
                     s.Outline = node.CountTextOutlineEnabled;
-                    s.OutlineColor = ColorOf(node.CountTextOutlineColor, d.CountTextOutlineColor);
-                    s.OutlineWidth = node.CountTextOutlineThickness;
+                    s.OutlineColor = ColorOf(node.CountTextOutlineColor, SafeColor(d?.CountTextOutlineColor ?? Color.black, Color.black));
+                    s.OutlineWidth = SafeFloat(node.CountTextOutlineThickness, 0f, 1f, 0f);
                     s.Shadow = node.CountTextShadowEnabled;
-                    s.ShadowColor = ColorOf(node.CountTextShadowColor, d.CountTextShadowColor);
-                    s.ShadowOffsetX = node.CountTextShadowOffsetX;
-                    s.ShadowOffsetY = node.CountTextShadowOffsetY;
-                    s.ShadowSoftness = node.CountTextShadowSoftness;
+                    s.ShadowColor = ColorOf(node.CountTextShadowColor, SafeColor(d?.CountTextShadowColor ?? Color.black, Color.black));
+                    s.ShadowOffsetX = SafeFloat(node.CountTextShadowOffsetX, -50f, 50f, 1f);
+                    s.ShadowOffsetY = SafeFloat(node.CountTextShadowOffsetY, -50f, 50f, -1f);
+                    s.ShadowSoftness = SafeFloat(node.CountTextShadowSoftness, 0f, 1f, 0f);
                 }
             }
             else if (d != null)
@@ -163,23 +180,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 {
                     s.Outline = d.EnableKeyTextOutline;
                     s.OutlineColor = SafeColor(d.KeyTextOutlineColor, Color.black);
-                    s.OutlineWidth = d.KeyTextOutlineThickness;
+                    s.OutlineWidth = SafeFloat(d.KeyTextOutlineThickness, 0f, 1f, 0f);
                     s.Shadow = d.EnableKeyTextShadow;
                     s.ShadowColor = SafeColor(d.KeyTextShadowColor, Color.black);
-                    s.ShadowOffsetX = d.KeyTextShadowOffsetX;
-                    s.ShadowOffsetY = d.KeyTextShadowOffsetY;
-                    s.ShadowSoftness = d.KeyTextShadowSoftness;
+                    s.ShadowOffsetX = SafeFloat(d.KeyTextShadowOffsetX, -50f, 50f, 1f);
+                    s.ShadowOffsetY = SafeFloat(d.KeyTextShadowOffsetY, -50f, 50f, -1f);
+                    s.ShadowSoftness = SafeFloat(d.KeyTextShadowSoftness, 0f, 1f, 0f);
                 }
                 else
                 {
                     s.Outline = d.EnableCountTextOutline;
                     s.OutlineColor = SafeColor(d.CountTextOutlineColor, Color.black);
-                    s.OutlineWidth = d.CountTextOutlineThickness;
+                    s.OutlineWidth = SafeFloat(d.CountTextOutlineThickness, 0f, 1f, 0f);
                     s.Shadow = d.EnableCountTextShadow;
                     s.ShadowColor = SafeColor(d.CountTextShadowColor, Color.black);
-                    s.ShadowOffsetX = d.CountTextShadowOffsetX;
-                    s.ShadowOffsetY = d.CountTextShadowOffsetY;
-                    s.ShadowSoftness = d.CountTextShadowSoftness;
+                    s.ShadowOffsetX = SafeFloat(d.CountTextShadowOffsetX, -50f, 50f, 1f);
+                    s.ShadowOffsetY = SafeFloat(d.CountTextShadowOffsetY, -50f, 50f, -1f);
+                    s.ShadowSoftness = SafeFloat(d.CountTextShadowSoftness, 0f, 1f, 0f);
                 }
             }
             // A zero/negative outline width renders nothing while still costing a material, so a

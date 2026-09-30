@@ -1,0 +1,1167 @@
+diff --git a/JipperKeyViewer/KeyViewer/GUI/KeyViewerGUI.cs b/JipperKeyViewer/KeyViewer/GUI/KeyViewerGUI.cs
+index 96c7771..7b760cd 100644
+--- a/JipperKeyViewer/KeyViewer/GUI/KeyViewerGUI.cs
++++ b/JipperKeyViewer/KeyViewer/GUI/KeyViewerGUI.cs
+@@ -38,6 +38,7 @@ namespace JipperKeyViewer.KeyViewer
+             BeginTextInputPass();
+             GUILayout.BeginVertical();
+             DrawHeaderBar();
++            DrawSaveFailureBanner();
+             DrawTabBar();
+             switch (settingsGuiTab)
+             {
+@@ -72,6 +73,23 @@ namespace JipperKeyViewer.KeyViewer
+             EndTextInputPass();
+         }
+ 
++        /// <summary>Persistent red banner while the last settings write failed. Without it a full
++        /// disk, a read-only profile folder or a file locked by a sync client silently discarded
++        /// every change since the last successful save — the GUI looked completely normal. Stays up
++        /// until a save succeeds. / 最近一次写盘失败时持续显示红色横幅。没有它，磁盘写满、目录
++        /// 只读或被同步软件占用时，自上次成功保存以来的所有改动静默丢失，而界面看起来完全正常。
++        /// 直到某次保存成功才消失。</summary>
++        private static GUIStyle saveErrorStyle;
++
++        private void DrawSaveFailureBanner()
++        {
++            string error = LastSaveError;
++            if (string.IsNullOrEmpty(error)) return;
++            if (saveErrorStyle == null)
++                saveErrorStyle = new GUIStyle(GUI.skin.box) { normal = { textColor = new Color(1f, 0.45f, 0.45f) } };
++            GUILayout.Label(I18n.Tr("save_failed") + " " + error, saveErrorStyle);
++        }
++
+         /// <summary>
+         /// Always-visible top bar: master key-display toggle, reset-counts button, current profile / 常驻顶部栏:密钥显示总开关、重置计数按钮、当前配置名
+         /// </summary>
+@@ -108,14 +126,30 @@ namespace JipperKeyViewer.KeyViewer
+         /// Category tab bar (3-column grid so it wraps cleanly on narrow UMM panels) / 分类标签栏(3 列网格,窄面板下自动换行)
+         /// Active tab persists across sessions via Settings.UiTab / 当前标签跨会话记忆(通过 Settings.UiTab)
+         /// </summary>
++        /// <summary>Stable i18n keys per tab, in tab order / 每个标签页的固定 i18n 键（按标签顺序）
++        /// </summary>
++        private static readonly string[] TabKeys = { "general", "layout", "display", "rain", "keys", "colors" };
++
++        /// <summary>Translated tab labels, rebuilt only when the UI language changes. The old code
++        /// allocated a string[6] plus six "tab_" + key concatenations on EVERY IMGUI event, i.e.
++        /// seven objects per event, every event, for the whole session — on the window that is
++        /// always open. / 已翻译的标签文本，仅在界面语言变化时重建。旧代码在**每个** IMGUI 事件
++        /// 都分配一个 string[6] 加六次「"tab_" + 键」拼接，即每事件 7 个对象，整个会话持续不断
++        /// ——而这个窗口一直是开着的。</summary>
++        private string[] cachedTabLabels;
++        private string cachedTabLang;
++
+         private void DrawTabBar()
+         {
+-            string[] keys = { "general", "layout", "display", "rain", "keys", "colors" };
+-            string[] labels = new string[TabCount];
+-            for (int i = 0; i < TabCount; i++)
+-                labels[i] = I18n.Tr("tab_" + keys[i]);
++            if (cachedTabLabels == null || cachedTabLang != I18n.Lang)
++            {
++                cachedTabLang = I18n.Lang;
++                cachedTabLabels = new string[TabCount];
++                for (int i = 0; i < TabCount; i++)
++                    cachedTabLabels[i] = I18n.Tr("tab_" + TabKeys[i]);
++            }
+ 
+-            int newTab = GUILayout.SelectionGrid(settingsGuiTab, labels, 3);
++            int newTab = GUILayout.SelectionGrid(settingsGuiTab, cachedTabLabels, 3);
+             if (newTab != settingsGuiTab)
+             {
+                 // Cancel an armed rebind when leaving the Keys tab — the capture gate alone
+@@ -125,9 +159,45 @@ namespace JipperKeyViewer.KeyViewer
+                 changeState = 0;
+                 settingsGuiTab = newTab;
+                 Settings.UiTab = newTab;
+-                SaveMetaOnly();
++                // Guarded: this is the single widest trigger for a storage failure (every tab
++                // click), and an IOException escaping a GUILayout callback breaks this window's
++                // layout permanently. Full SaveSettings also re-persists the profile, so the
++                // per-tab click did more work than it needed to.
++                // 加保护：这是写盘失败触发面最广的一处（每次点标签），而从 GUILayout 回调抛出的
++                // IOException 会**永久**破坏本窗口布局。
++                GuardedSave("the tab selection", () => SaveMetaOnly());
+             }
+             GUILayout.Space(5);
+         }
++
++        /// <summary>Re-apply the current rain style to the drops that are already falling, after a
++        /// shadow/outline colour, width or offset was edited.
++        ///
++        /// A drop's shadow/outline state is baked in by CreateRainDropForKey and never re-read per
++        /// frame, so without this every drop already on screen kept the old values and only newly
++        /// spawned ones (one per key press) picked up the change — a visibly two-tone trail, for
++        /// up to ~40 s at height 2000 / speed 50.
++        ///
++        /// Clearing (rather than repainting in place, as RefreshDropColors does for the body colour)
++        /// is the deliberate choice here: the shadow/outline resolution is ~60 lines of row-indexed
++        /// settings reads inside CreateRainDropForKey, and re-implementing it in a second place
++        /// would let the two drift — a divergence that shows up as drops rendering a shadow the
++        /// settings page says is disabled. Every other effect control on the same rain page already
++        /// clears. Both handle a null rain system (overlay disabled) and a null Keys (mid-rebuild).
++        /// 雨排阴影/描边的颜色、宽度、偏移被改动后，让**已在下落**的雨滴套用新样式。
++        ///
++        /// 雨滴的阴影/描边状态由 CreateRainDropForKey 烙入、且从不逐帧重读，故若不做这件事，
++        /// 屏幕上每一滴都保持旧值，只有新生成的（每次按压一滴）才用新值——于是轨迹明显双色，
++        /// 在高度 2000 / 速度 50 下可持续约 40 秒。
++        ///
++        /// 此处刻意**清空**（而非像 RefreshDropColors 对本体色那样就地重绘）：阴影/描边的解析是
++        /// CreateRainDropForKey 里约 60 行按排索引的设置读取，在第二处重新实现会让两者漂移——
++        /// 而漂移的症状正是雨滴渲染出设置页声称已关闭的阴影。同一雨排页上的其它效果控件本来就
++        /// 都清空。两者都能处理雨滴系统为 null（覆盖层关闭）与 Keys 为 null（正在重建）。
++        /// </summary>
++        private void RefreshInFlightDrops()
++        {
++            if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
++        }
+     }
+ }
+\ No newline at end of file
+diff --git a/JipperKeyViewer/KeyViewer/GUI/KeyViewerSettingsGUI.cs b/JipperKeyViewer/KeyViewer/GUI/KeyViewerSettingsGUI.cs
+index 78e7b0c..9f5a034 100644
+--- a/JipperKeyViewer/KeyViewer/GUI/KeyViewerSettingsGUI.cs
++++ b/JipperKeyViewer/KeyViewer/GUI/KeyViewerSettingsGUI.cs
+@@ -34,11 +34,54 @@ namespace JipperKeyViewer.KeyViewer
+         private static bool IsFiniteFloat(float v)
+             => !float.IsNaN(v) && !float.IsInfinity(v);
+ 
++        /// <summary>Width options for the float rows. GUILayoutOption is a CLASS, so passing a
++        /// constant width allocated one per field per IMGUI event — the rain page alone has 30 of
++        /// these, i.e. 30 objects per event, every event, for the whole session. /
++        /// 浮点行的宽度选项。GUILayoutOption 是**类**，故传常量宽度会每字段每 IMGUI 事件分配
++        /// 一个——仅雨滴页就有 30 处，即每事件 30 个对象，整个会话持续不断。
++        /// Instance fields, not static ones: a STATIC initializer runs when the partial class is
++        /// first touched, which would drag GUIContent/GUILayoutOption into the type's static
++        /// construction and require UnityEngine.IMGUIModule even for callers that never draw a
++        /// settings page. / 实例字段而非静态：静态初始化器会在该分部类首次被触碰时运行，从而把
++        /// GUIContent/GUILayoutOption 拖进类型的静态构造，让从不绘制设置页的调用方也需要
++        /// UnityEngine.IMGUIModule。</summary>
++        private readonly GUILayoutOption floatLabelWidth = GUILayout.Width(100f);
++        private readonly GUILayoutOption floatSliderWidth = GUILayout.Width(120f);
++
++        /// <summary>Pre-generated control names for the float rows. The name only has to be unique
++        /// WITHIN one pass, and the pass draws the same fields in the same order every event — so
++        /// the strings can be built once instead of concatenated per field per event. /
++        /// 浮点行的预生成控件名。该名字只需在**单次** pass 内唯一，而每个 pass 都以相同顺序绘制
++        /// 相同字段——故字符串只需构建一次，而非每字段每事件拼接一次。</summary>
++        private static readonly string[] FloatCtrlNames = BuildFloatCtrlNames(256);
++
++        private static string[] BuildFloatCtrlNames(int count)
++        {
++            var names = new string[count];
++            for (int i = 0; i < count; i++) names[i] = "fsf_" + i;
++            return names;
++        }
++
++        /// <summary>Label GUIContent cache, keyed by the label string. A dictionary lookup replaces
++        /// a `new GUIContent` per field per event. / 按标签字符串缓存的 Label GUIContent。一次
++        /// 字典查找取代每字段每事件一个 new GUIContent。</summary>
++        private readonly Dictionary<string, GUIContent> floatLabelCache = new Dictionary<string, GUIContent>(StringComparer.Ordinal);
++
++        private GUIContent CachedFloatLabel(string label)
++        {
++            if (!floatLabelCache.TryGetValue(label, out GUIContent content))
++            {
++                content = new GUIContent(label);
++                floatLabelCache[label] = content;
++            }
++            return content;
++        }
++
+         private float FloatSliderField(GUIContent label, float value, float min, float max, string format = "F2")
+         {
+             GUILayout.BeginHorizontal();
+-            GUILayout.Label(label, GUILayout.Width(100));
+-            float slid = GUILayout.HorizontalSlider(value, min, max, GUILayout.Width(120));
++            GUILayout.Label(label, floatLabelWidth);
++            float slid = GUILayout.HorizontalSlider(value, min, max, floatSliderWidth);
+             // Buffered text field (TextInputField): typed intermediate states ("", "-", "0.") survive
+             // until they parse, and the model only changes when the text actually differs from the
+             // model echo. The old version re-fed value.ToString every event, wiping half-typed values
+@@ -47,10 +90,38 @@ namespace JipperKeyViewer.KeyViewer
+             // 缓冲文本框（TextInputField）：输入中间态（""、"-"、"0."）保留到可解析为止；仅当文本
+             // 与模型回显不同才写回模型。旧版每事件重灌 value.ToString，半输入的值被立刻冲掉
+             // （-10..10 偏移字段无法用键盘输入负数），且存储值低于下限时打开标签页就被静默改写。
+-            string ctrl = "fsf_" + (++sliderFieldSeq);
+-            string modelText = slid.ToString(format);
++            //
++            // The formatted echo is only rebuilt when the value or the format actually changed —
++            // Layout and Repaint carry the same value, and formatting it twice per event per field
++            // allocated a string for each. / 格式化回显只在值或格式**真的**变化时重建——Layout 与
++            // Repaint 带着同一个值，每事件每字段格式化两次各自都要分配一个字符串。
++            // The formatted echo is rebuilt only when THIS field's value or format actually changed,
++            // cached per field rather than in one shared slot. See the cache fields' notes: a single
++            // slot could never hit on a page drawing dozens of these.
++            // 格式化回显只在**本字段**的值或格式真的变化时重建，按字段各自缓存而非共用一个槽。
++            // 详见缓存字段处的说明：单槽在一页画几十个这种控件时永远不可能命中。
++            int seq = ++sliderFieldSeq;
++            string modelText;
++            if (seq < FloatModelCacheSize
++                && lastFloatModelFormatBySeq[seq] == format
++                && floatModelEchoBySeq[seq] != null
++                && lastFloatModelValueBySeq[seq] == slid)
++            {
++                modelText = floatModelEchoBySeq[seq];
++            }
++            else
++            {
++                modelText = slid.ToString(format);
++                if (seq < FloatModelCacheSize)
++                {
++                    floatModelEchoBySeq[seq] = modelText;
++                    lastFloatModelValueBySeq[seq] = slid;
++                    lastFloatModelFormatBySeq[seq] = format;
++                }
++            }
++            string ctrl = seq < FloatCtrlNames.Length ? FloatCtrlNames[seq] : "fsf_" + seq;
+             if (slid != value) textInputBuffer.Remove(ctrl); // slider drag refreshes the field / 拖动滑块时刷新文本框
+-            string text = TextInputField(ctrl, modelText, FloatFieldWidth(modelText));
++            string text = TextInputField(ctrl, modelText, FloatFieldWidth(modelText.Length));
+             if (text != modelText && float.TryParse(text, out float parsed) && IsFiniteFloat(parsed))
+             {
+                 // Fully open input (extending v1.6.2's open ceiling, per user decision): typed values
+@@ -67,8 +138,49 @@ namespace JipperKeyViewer.KeyViewer
+             return slid;
+         }
+ 
++        /// <summary>Per-field model-echo caches, indexed by the field's own pass sequence number.
++        ///
++        /// This used to be ONE shared slot (a StringBuilder plus a value and a format). With a page
++        /// drawing 38 of these — the rain page does — consecutive fields almost always carry
++        /// different values and formats, so the "only rebuild when the value or format changed"
++        /// check missed on essentially every call and formatted twice per event per field anyway.
++        /// The cache existed but could never hit, which is the same "one slot, N consumers" shape
++        /// that made groupTotals wrong in the first place.
++        ///
++        /// Keying by the field's own sequence lets Layout and Repaint of the SAME field hit while
++        /// each field keeps its own echo. Sharing an entry between two different fields is still
++        /// safe: the echo is a pure function of (value, format) and both are compared, so a
++        /// different field with the same value and format gets the same correct string.
++        /// Sequence numbers past the table size simply skip the cache, exactly as the control-name
++        /// table already does.
++        /// 按**每个字段**缓存的模型回显，以该字段本趟的序号为下标。
++        ///
++        /// 此前是**一份共享槽**（StringBuilder + 值 + 格式）。一页画 38 个这种控件——雨滴页正是
++        /// 如此——相邻字段几乎总是带着不同的值与格式，于是「只在值或格式变化时重建」这个检查
++        /// **基本每次都不命中**，每事件每字段照样格式化两次。缓存存在却永远打不中，这正是当初让
++        /// `groupTotals` 出错的同一个「一个槽位、N 个消费者」形状。
++        ///
++        /// 改为按字段自身序号索引后，同一字段的 Layout 与 Repaint 能命中，各字段各留一份回显。
++        /// 两个不同字段共用同一条缓存**仍然安全**：回显是 (值, 格式) 的纯函数，两者都参与比较，
++        /// 故另一个字段若带着相同的值与格式，拿到的就是同一个正确字符串。序号超出表长则直接跳过
++        /// 缓存，与控件名表的既有做法一致。
++        /// </summary>
++        private const int FloatModelCacheSize = 256;
++        private readonly float[] lastFloatModelValueBySeq = CreateNaNArray();
++        private readonly string[] lastFloatModelFormatBySeq = new string[FloatModelCacheSize];
++        private readonly string[] floatModelEchoBySeq = new string[FloatModelCacheSize];
++        /// <summary>A slider value can never be NaN, so NaN doubles as "nothing cached yet" — the
++        /// same sentinel the single-slot cache used. / 滑块值不可能是 NaN，故 NaN 兼作「尚未缓存」
++        /// 标记，与此前单槽缓存用的是同一个哨兵。</summary>
++        private static float[] CreateNaNArray()
++        {
++            float[] s = new float[FloatModelCacheSize];
++            for (int i = 0; i < s.Length; i++) s[i] = float.NaN;
++            return s;
++        }
++
+         private float FloatSliderField(string label, float value, float min, float max, string format = "F2")
+-            => FloatSliderField(new GUIContent(label), value, min, max, format);
++            => FloatSliderField(CachedFloatLabel(label), value, min, max, format);
+ 
+         private static bool DrawFoldoutButton(string label, bool expanded)
+         {
+@@ -122,7 +234,9 @@ namespace JipperKeyViewer.KeyViewer
+                 // 展开那一刻与磁盘同步一次，而不是展开期间每个 GUI 事件都同步——IMGUI 每帧触发
+                 // Layout+Repaint 多次，旧实现等于每帧数次目录扫描。列表按钮的各种操作自身会维护
+                 // ProfileNames 的同步。
+-                if (profileExpanded) SyncProfilesWithDisk();
++                // 加保护：SyncProfilesWithDisk 内部有 CreateDirectory/GetFiles/SaveCurrentProfile
++                // /SaveMetaOnly 且原本全无 try，异常从 GUILayout 回调抛出会让整个设置窗口布局错乱。
++                if (profileExpanded) GuardedSave("the profile list", () => SyncProfilesWithDisk());
+             }
+         }
+ 
+@@ -141,23 +255,84 @@ namespace JipperKeyViewer.KeyViewer
+             }
+         }
+ 
++        /// <summary>True when the typed text cannot become a profile name at all.
++        ///
++        /// Both profile-name inputs used to guard on `!string.IsNullOrEmpty(SanitizeFileName(typed))`,
++        /// which could never be false: SanitizeFileName substitutes the "Unnamed" placeholder for
++        /// exactly those inputs, so the guard was dead in both places. The symptom differed by call
++        /// site — Save-As silently produced a profile called "Unnamed" (and every later attempt hit
++        /// the duplicate check and returned with no message, so the button looked broken), while
++        /// Rename took a REAL profile, renamed it to "Unnamed" and wrote that to disk. The predicate
++        /// belongs on the typed text, not on the sanitizer's post-condition, and it now lives in one
++        /// place so the two inputs cannot drift apart again.
++        ///
++        /// 输入完全无法成为配置名时为真（目前即：空白）。
++        ///
++        /// 两个配置名输入框此前都用 `!string.IsNullOrEmpty(SanitizeFileName(输入))` 守卫，而它**永远**
++        /// 为真：SanitizeFileName 恰恰对空白回退成 "Unnamed" 占位，故该守卫在两处都是死代码。
++        /// 症状按调用点而不同——另存为会静默产出一个叫 "Unnamed" 的配置（此后每次都被重名检查
++        /// 挡下且**毫无提示**，按钮看起来像坏了）；而重命名会把一个**真实**的配置改名成 "Unnamed"
++        /// 并落盘。判据应当落在输入文本上，而不是净化器的后置条件上；且现在只有一份实现，
++        /// 两个输入框不会再各走各的。
++        ///
++        /// **刻意不**把「全是文件系统非法字符」算作不可用：Windows 把每个非法字符替换成 '_'，
++        /// 故 "?<>|*" 会变成一个全由下划线构成的**合法**文件名，从来都是被接受的（这点未变）。
++        /// 我最初把这一档也写进判据，是 Harness 测试当场指出错的——第二段判据同样永远不会命中。
++        static bool ProfileNameUnusable(string typed) => string.IsNullOrWhiteSpace(typed);
++
+         private void DrawProfileSaveAs()
+         {
+             profileSaveAsBuffer = GUILayout.TextField(profileSaveAsBuffer, GUILayout.Width(120));
+             if (GUILayout.Button(I18n.Tr("save_as"), GUILayout.MinWidth(60)))
+             {
++                if (ProfileNameUnusable(profileSaveAsBuffer)) return;
+                 string name = SanitizeFileName(profileSaveAsBuffer.Trim());
+-                if (string.IsNullOrEmpty(name)) return;
++                bool exists = File.Exists(GetProfilePath(name));
+                 if (Settings.ProfileNames != null)
+                     // Case-insensitive: on NTFS "MyProfile"/"myprofile" are the same file / 大小写不敏感:
+                     // NTFS 上 "MyProfile"/"myprofile" 是同一个文件
+                     foreach (var p in Settings.ProfileNames)
+                         if (string.Equals(SanitizeFileName(p), name, System.StringComparison.OrdinalIgnoreCase)) return;
++                // Also refuse when the file is already on disk: ProfileNames only syncs when the
++                // list is expanded, so a manually copied (or orphaned) Profiles\*.json is invisible
++                // here and Save-As would overwrite it with the current profile's settings.
++                // 磁盘上已存在时同样拒绝：ProfileNames 只在展开列表时同步，手动拷入（或孤儿）的
++                // Profiles\*.json 在此不可见，另存为会直接用当前配置覆盖它。
++                if (exists) return;
++                // Snapshot before committing, and roll back on failure. Every other lifecycle entry
++                // point already does this — DeleteProfile captures previousNames, RenameProfile
++                // captures both previousNames and previousCurrent, and both importers capture
++                // previousData too. Save-As was the only one that mutated the identity first and had
++                // no way back, so with a read-only / full profile folder the session was left
++                // editing a profile that had no file, the old profile silently reverted to whatever
++                // it last held on disk, and the UI reported success (the buffer cleared and the
++                // foldout closed regardless of whether the write happened).
++                // 提交前先快照，失败时回滚。生命周期上其它每个入口都已这样做——DeleteProfile 快照
++                // previousNames，RenameProfile 快照 previousNames 与 previousCurrent，两个导入器还
++                // 快照 previousData。唯独另存为先改身份且无路可退，故目录只读/磁盘满时会话会停在
++                // 「正在编辑一个并不存在的文件」的状态，旧配置静默回退到磁盘上最后的内容，而界面
++                // 报告成功（缓冲区照清、折叠照关，完全不管写盘是否发生）。
++                string[] previousNames = Settings.ProfileNames;
++                string previousCurrent = Settings.CurrentProfile;
+                 var list = new List<string>(Settings.ProfileNames ?? new string[0]) { name };
+                 Settings.ProfileNames = list.ToArray();
+                 Settings.CurrentProfile = name;
+-                SaveCurrentProfile();
+-                SaveMetaOnly();
++                // Guarded: both writes below throw on a full disk / read-only profile folder, and
++                // an exception escaping this GUILayout callback permanently corrupts the window's
++                // layout. GuardedSave also shows the red banner the plain calls never reached.
++                // 加保护：下面两次写盘在磁盘满/目录只读时会抛，而从 GUILayout 回调抛出会**永久**
++                // 破坏窗口布局；GuardedSave 还会显示此前根本到不了的红色横幅。
++                bool wroteNewProfile = false;
++                GuardedSave("the new profile",
++                    () => { SaveCurrentProfile(); SaveMetaOnly(); wroteNewProfile = true; },
++                    () =>
++                    {
++                        Settings.ProfileNames = previousNames;
++                        Settings.CurrentProfile = previousCurrent;
++                    });
++                // Only report the new profile as created when it actually reached the disk.
++                // 只有真的落到磁盘上才把新配置当作已创建。
++                if (!wroteNewProfile) return;
+                 profileSaveAsBuffer = "";
+                 profileExpanded = false;
+             }
+@@ -177,11 +352,21 @@ namespace JipperKeyViewer.KeyViewer
+             profileRenameBuffer = GUILayout.TextField(profileRenameBuffer, GUILayout.Width(100));
+             if (GUILayout.Button("✓", GUILayout.Width(24)))
+             {
+-                string newName = SanitizeFileName(profileRenameBuffer.Trim());
+-                if (!string.IsNullOrEmpty(newName) && newName != SanitizeFileName(Settings.CurrentProfile))
++                if (!ProfileNameUnusable(profileRenameBuffer)
++                    && SanitizeFileName(profileRenameBuffer.Trim()) != SanitizeFileName(Settings.CurrentProfile))
+                 {
++                    string newName = SanitizeFileName(profileRenameBuffer.Trim());
++                    // OrdinalIgnoreCase, matching RenameProfile's own duplicate check. With the
++                    // ordinal form here, "Boss" → "boss" passed this test and was then refused
++                    // inside RenameProfile, which returns silently — so the foldout closed and the
++                    // name was unchanged, making the button look broken. Two spellings of one
++                    // question in the same operation.
++                    // 用 OrdinalIgnoreCase，与 RenameProfile 自己的重名检查一致。这里用 ordinal 时，
++                    // 「Boss」→「boss」能通过本检查、随后却被 RenameProfile 拒绝，而后者是静默
++                    // return——于是折叠关闭、名字不变，按钮看起来就是坏的。同一操作里同一问题的两种
++                    // 写法。
+                     bool dup = Settings.ProfileNames != null
+-                        && Settings.ProfileNames.Any(p => SanitizeFileName(p) == newName);
++                        && Settings.ProfileNames.Any(p => string.Equals(SanitizeFileName(p), newName, System.StringComparison.OrdinalIgnoreCase));
+                     if (!dup)
+                         RenameProfile(Settings.CurrentProfile, newName);
+                 }
+@@ -195,6 +380,14 @@ namespace JipperKeyViewer.KeyViewer
+         // ===== profile packages (.jkv) / 配置包（.jkv） =====
+         private bool packageListExpanded;
+         private string packageMessage = "";
++        private bool dmNoteListExpanded;
++        private string dmNoteMessage = "";
++        // Directory listings for the two expandable lists. Rebuilt on expand and dropped on
++        // collapse/import — a directory scan on every IMGUI event was a steady frame-time cost.
++        // 两个可展开列表的目录列表结果：展开时重建，折叠/导入后丢弃——每个 IMGUI 事件都扫目录
++        // 会持续消耗帧时间。
++        private List<string> packageCache;
++        private List<string> dmNoteCache;
+ 
+         /// <summary>Export / import the current profile as a shareable .jkv archive. / 把当前配置
+         /// 导出 / 导入为可分享的 .jkv 归档。</summary>
+@@ -216,13 +409,19 @@ namespace JipperKeyViewer.KeyViewer
+                 // directory scan. / 展开时刷新而非每事件刷新：IMGUI 每帧触发 Layout+Repaint 多次，
+                 // 而这是一次目录扫描。
+                 packageListExpanded = !packageListExpanded;
+-                if (packageListExpanded) SyncProfilesWithDisk();
++                // Guarded like the other SyncProfilesWithDisk call site at :195. The bare call
++                // here let a storage exception escape into the GUILayout callback, which leaves
++                // Begin/End groups unbalanced — the settings window mislays and stops responding
++                // until restart — and never set lastSaveError, so not even the red banner appeared.
++                // 磁盘满/只读时抛出的异常会从 GUILayout 回调逃出，留下未闭合的布局组（窗口错乱直到
++                // 重启），且从不设置 lastSaveError，连红色横幅都不出现。
++                if (packageListExpanded) { packageCache = null; GuardedSave("the profile list", SyncProfilesWithDisk); }
+             }
+             if (GUILayout.Button(I18n.Tr("fm_open_dir"), GUILayout.MinWidth(90f)))
+             {
+                 try
+                 {
+-                    string dir = Path.Combine(Loader.ModPath, "Packages");
++                    string dir = Path.Combine(Loader.ResolveModPath(), "Packages");
+                     if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                     System.Diagnostics.Process.Start("explorer.exe", dir);
+                 }
+@@ -235,7 +434,15 @@ namespace JipperKeyViewer.KeyViewer
+ 
+             if (packageListExpanded)
+             {
+-                List<string> packages = ListProfilePackages();
++                // Cached for the lifetime of the expansion. Listing re-stat'ed every file on EVERY
++                // IMGUI event (Layout + Repaint + input, ~2-3 per frame) — the sort comparator alone
++                // made two GetLastWriteTimeUtc calls per comparison. The list only changes when the
++                // user edits the folder or imports, both of which drop the cache.
++                // 展开期间缓存：此前每个 IMGUI 事件都重新 stat 每个文件（仅排序比较器就每比较一次
++                // 调用两次 GetLastWriteTimeUtc），而列表只会在用户改文件夹或导入时变化——两者都会
++                // 清空缓存。
++                packageCache ??= ListProfilePackages();
++                List<string> packages = packageCache;
+                 if (packages.Count == 0)
+                 {
+                     GUILayout.Label(I18n.Tr("pkg_none"));
+@@ -248,6 +455,7 @@ namespace JipperKeyViewer.KeyViewer
+                         if (ImportProfilePackage(pkg, out string msg)) packageMessage = msg;
+                         else packageMessage = msg ?? I18n.Tr("pkg_err_failed_generic");
+                         packageListExpanded = false;
++                        packageCache = null;
+                     }
+                 }
+             }
+@@ -255,6 +463,53 @@ namespace JipperKeyViewer.KeyViewer
+             if (!string.IsNullOrEmpty(packageMessage))
+                 GUILayout.Label(packageMessage);
+             GUILayout.Label(I18n.Tr("pkg_hint"));
++
++            GUILayout.Space(6f);
++            GUILayout.Label("<b>" + I18n.Tr("dmnote_section") + "</b>");
++            GUILayout.BeginHorizontal();
++            if (GUILayout.Button(I18n.Tr("dmnote_import"), GUILayout.MinWidth(140f)))
++            {
++                dmNoteListExpanded = !dmNoteListExpanded;
++                dmNoteCache = null; // rescan on every expand / 每次展开都重新扫描
++            }
++            if (GUILayout.Button(I18n.Tr("dmnote_open_dir"), GUILayout.MinWidth(100f)))
++            {
++                try
++                {
++                    Directory.CreateDirectory(DmNotePresetDirectory);
++                    System.Diagnostics.Process.Start("explorer.exe", DmNotePresetDirectory);
++                }
++                catch (Exception e)
++                {
++                    Loader.Error($"KeyViewer: cannot open DM Note presets folder: {e.Message}");
++                }
++            }
++            GUILayout.EndHorizontal();
++            if (dmNoteListExpanded)
++            {
++                // Cached like the package list: a directory scan plus one FileInfo per file on
++                // every IMGUI event. Collapsing (the toggle below) and importing both drop it.
++                // 与包列表同样缓存：每个 IMGUI 事件都要扫目录并为每个文件建 FileInfo。
++                dmNoteCache ??= ListDmNotePresetFiles();
++                List<string> presets = dmNoteCache;
++                if (presets.Count == 0)
++                {
++                    GUILayout.Label(I18n.Tr("dmnote_none"));
++                }
++                else
++                {
++                    foreach (string preset in presets)
++                    {
++                        if (!GUILayout.Button(Path.GetFileName(preset), GUILayout.MinWidth(220f))) continue;
++                        if (ImportDmNotePresetFile(preset, out string imported)) dmNoteMessage = imported;
++                        else dmNoteMessage = imported ?? I18n.Tr("dmnote_import_failed");
++                        dmNoteListExpanded = false;
++                        dmNoteCache = null;
++                    }
++                }
++            }
++            if (!string.IsNullOrEmpty(dmNoteMessage)) GUILayout.Label(dmNoteMessage);
++            GUILayout.Label(I18n.Tr("dmnote_hint"));
+             GUILayout.EndVertical();
+         }
+ 
+@@ -270,10 +525,31 @@ namespace JipperKeyViewer.KeyViewer
+             GUI.enabled = true;
+         }
+ 
++        /// <summary>Language names are fixed literals, never translated, so a static table is safe
++        /// here — nothing IMGUI-typed is involved, which is what makes a static field legal in this
++        /// partial class (see the round-45 note about GUIContent/GUILayoutOption in static
++        /// initialisers). The per-event `string[3]` literal this replaces was pure garbage.
++        /// 语言名是固定字面量、从不翻译，故静态表在此是安全的——其中不涉及任何 IMGUI 类型，
++        /// 而这正是该分部类里静态字段合法的前提（见第 45 轮关于静态初始化器里 GUIContent/
++        /// GUILayoutOption 的说明）。被替换掉的每事件 `string[3]` 字面量纯属垃圾。
++        /// </summary>
++        private static readonly string[] LanguageLabels = { "English", "中文", "한국어" };
++
++        /// <summary>Global font-style toggles: display name, TMP mask bit, and an exclusivity
++        /// group (0 = independent, 1 = mutually exclusive with Lowercase/Uppercase/SmallCaps,
++        /// 2 = with Superscript/Subscript). Fixed tables — hoisted out of the per-event path.
++        /// 全局字体样式开关：显示名、TMP 掩码位、互斥组（0=独立，1=与 Lowercase/Uppercase/
++        /// SmallCaps 互斥，2=与 Superscript/Subscript 互斥）。固定表——已提出每事件路径。
++        /// </summary>
++        private static readonly string[] FontStyleNames =
++            { "Bold", "Italic", "Underline", "Lowercase", "Uppercase", "SmallCaps", "Strikethrough", "Superscript", "Subscript" };
++        private static readonly int[] FontStyleFlagValues = { 1, 2, 4, 8, 16, 32, 64, 128, 256 };
++        private static readonly int[] FontStyleGroups = { 0, 0, 0, 1, 1, 1, 0, 2, 2 };
++
+         private void DrawLanguageSection()
+         {
+             GUILayout.BeginHorizontal();
+-            string[] langLabels = { "English", "中文", "한국어" };
++            string[] langLabels = LanguageLabels;
+             // I18n renders unknown language codes as English — mirror that here so the highlighted
+             // entry matches what is actually shown. / I18n 将未知语言代码按英文渲染——此处保持一致,
+             // 让高亮项与实际显示一致。
+@@ -334,16 +610,38 @@ namespace JipperKeyViewer.KeyViewer
+         {
+             int f = Settings.Data.FontStyleFlags;
+             if (f == 0) return "Normal";
+-            var parts = new List<string>(4);
++            // This runs on EVERY IMGUI event, including for the font rows the user has scrolled
++            // far past, and the font-style row itself never leaves the screen while the Fonts page
++            // is open. A fresh List<string> plus a Join (which allocates the joined string anyway)
++            // per event is pure garbage. Reused scratch + a small StringBuilder; the result is
++            // short (at most 9 two-to-three character labels) so a bounded StringBuilder never
++            // outgrows its first chunk.
++            // 本方法在**每个** IMGUI 事件都跑，包括用户已滚得很远、根本看不到的那些字体行；而
++            // 字体页开着时字体样式行从不离开屏幕。每个事件新建 List<string> 外加一次 Join（后者
++            // 本就要分配拼接结果）纯属垃圾。改用复用暂存 + 一个小的 StringBuilder；结果很短
++            // （最多 9 个两三字符的标签），有界 StringBuilder 不会超出它的首个块。
++            fontStyleSummary.Length = 0;
+             foreach (var (flag, label) in FontStyleFlagLabels)
+-                if ((f & flag) != 0) parts.Add(label);
+-            return string.Join(" ", parts);
++            {
++                if ((f & flag) == 0) continue;
++                if (fontStyleSummary.Length > 0) fontStyleSummary.Append(' ');
++                fontStyleSummary.Append(label);
++            }
++            return fontStyleSummary.ToString();
+         }
+ 
++        private readonly System.Text.StringBuilder fontStyleSummary = new System.Text.StringBuilder(48);
++
+         private void DrawFontSection()
+         {
+             GUILayout.Label(I18n.Tr("font_style") + ":");
+-            string curFont = fontList.Count > 0 ? fontList[Mathf.Clamp(Settings.Data.FontIndex, 0, fontList.Count - 1)].name : "None";
++            // Same resolution the renderer uses (name first, index as the legacy fallback), so the
++            // label here cannot disagree with what is actually drawn. Reading FontIndex directly
++            // made the page show one font while the overlay drew another.
++            // 用**渲染器同一套**解析（名字优先，索引只作旧配置回退），故这里的标注不可能与实际绘制
++            // 的字体不一致。此前直接读 FontIndex，于是设置页显示一个字体、覆盖层画出另一个。
++            FontEntry curEntry = GetCurrentFontEntry();
++            string curFont = curEntry != null ? curEntry.name : "None";
+             if (GUILayout.Button((fontListExpanded ? "◢ " : "▶ ") + curFont, GUILayout.MinWidth(200)))
+                 fontListExpanded = !fontListExpanded;
+             if (fontListExpanded)
+@@ -372,7 +670,7 @@ namespace JipperKeyViewer.KeyViewer
+                 GUILayout.Space(5);
+                 GUILayout.BeginVertical("box");
+                 GUILayout.Label(I18n.Tr("custom_font_tip"));
+-                GUILayout.Label($"CustomFont : {Path.Combine(Loader.ModPath, "CustomFont")}");
++                GUILayout.Label($"CustomFont : {Path.Combine(Loader.ResolveModPath(), "CustomFont")}");
+                 GUILayout.EndVertical();
+             }
+ 
+@@ -381,14 +679,18 @@ namespace JipperKeyViewer.KeyViewer
+             fontStyleExpanded = DrawFoldoutButton(I18n.Tr("font_style") + ": " + styleSummary, fontStyleExpanded);
+             if (fontStyleExpanded)
+             {
+-                string[] styleNames = { "Bold", "Italic", "Underline", "Lowercase", "Uppercase", "SmallCaps", "Strikethrough", "Superscript", "Subscript" };
+-                int[] styleFlags = { 1, 2, 4, 8, 16, 32, 64, 128, 256 };
+-                int[] styleGroups = { 0, 0, 0, 1, 1, 1, 0, 2, 2 };
++                // Three fixed tables, hoisted to statics. Nothing here is i18n or IMGUI-typed, so
++                // static is safe in this partial class (see the round-45 note) — and the section
++                // stays open while the user fiddles, so this was 3 arrays per IMGUI event.
++                // 三张固定表，提为静态。其中既非 i18n 也非 IMGUI 类型，故在该分部类里用静态是
++                // 安全的（见第 45 轮说明）——而用户摆弄时该区块一直开着，故此前是每事件 3 个数组。
++                int[] styleFlags = FontStyleFlagValues;
++                int[] styleGroups = FontStyleGroups;
+                 bool changed = false;
+                 for (int i = 0; i < styleFlags.Length; i++)
+                 {
+                     bool active = (Settings.Data.FontStyleFlags & styleFlags[i]) != 0;
+-                    bool newActive = GUILayout.Toggle(active, styleNames[i]);
++                    bool newActive = GUILayout.Toggle(active, FontStyleNames[i]);
+                     if (newActive != active)
+                     {
+                         if (newActive)
+@@ -413,18 +715,38 @@ namespace JipperKeyViewer.KeyViewer
+         private void DrawFolderButtons()
+         {
+             GUILayout.BeginHorizontal();
++            // Both branches are wrapped, matching the structurally identical Packages (:312) and
++            // DmNote (:367) folder buttons a few hundred lines down. CreateDirectory throws
++            // UnauthorizedAccessException on a read-only mod folder — precisely the situation
++            // Loader.ResolveModPath falls back to — and Process.Start throws Win32Exception where
++            // explorer.exe cannot be launched; either one escaping a GUILayout callback unbalances
++            // the Begin/End groups and disables the whole settings window until restart, with no
++            // banner (these paths are not saves, so there is no lastSaveError to show).
++            // 两处都加保护，与几百行外结构完全相同的 Packages(:312) 与 DmNote(:367) 按钮一致。
++            // 只读 Mod 目录下 CreateDirectory 抛 UnauthorizedAccessException（正是 ResolveModPath
++            // 要回退的那种情况），explorer.exe 起不来时 Process.Start 抛 Win32Exception；任一者从
++            // GUILayout 回调逃出都会让布局组失衡、整个设置窗口失效直到重启，且没有横幅可显示
++            // （这些路径不是保存，不存在 lastSaveError）。
+             if (GUILayout.Button(I18n.Tr("open_config_folder"), GUILayout.MinWidth(120)))
+             {
+-                string dir = Path.GetDirectoryName(ConfigPath);
+-                if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+-                    System.Diagnostics.Process.Start("explorer.exe", dir);
++                try
++                {
++                    string dir = Path.GetDirectoryName(ConfigPath);
++                    if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
++                        System.Diagnostics.Process.Start("explorer.exe", dir);
++                }
++                catch (Exception e) { Loader.Error($"KeyViewer: could not open the config folder: {e.Message}"); }
+             }
+             if (GUILayout.Button(I18n.Tr("open_font_folder"), GUILayout.MinWidth(120)))
+             {
+-                string modPath = Loader.ModPath;
+-                string customFontDir = Path.Combine(modPath, "CustomFont");
+-                if (!Directory.Exists(customFontDir)) Directory.CreateDirectory(customFontDir);
+-                System.Diagnostics.Process.Start("explorer.exe", customFontDir);
++                try
++                {
++                    string modPath = Loader.ResolveModPath();
++                    string customFontDir = Path.Combine(modPath, "CustomFont");
++                    if (!Directory.Exists(customFontDir)) Directory.CreateDirectory(customFontDir);
++                    System.Diagnostics.Process.Start("explorer.exe", customFontDir);
++                }
++                catch (Exception e) { Loader.Error($"KeyViewer: could not open the font folder: {e.Message}"); }
+             }
+             GUILayout.EndHorizontal();
+ 
+@@ -611,6 +933,15 @@ namespace JipperKeyViewer.KeyViewer
+ 
+         // ===== Per-key text size section / 每键字号 区块 =====
+         int perKeyTextSelected = -1;
++        /// <summary>Per-slot cached button label for DrawPerKeyTextSizeBtn, plus the cached
++        /// GUILayoutOption. Both must be INSTANCE fields: a static GUILayoutOption would drag
++        /// UnityEngine.IMGUIModule into this type's static constructor and make every caller need
++        /// that assembly (the Harness fails to load the type immediately). / 每槽缓存的按钮标签与
++        /// 宽度。两者都必须是**实例**字段：静态 GUILayoutOption 会把 UnityEngine.IMGUIModule 拖进
++        /// 本类型的静态构造，使每个调用方都需要该程序集（Harness 会立刻加载失败）。
++        /// </summary>
++        private readonly PerKeyTextSizeBtnLabel[] perKeyTextSizeBtnLabels = new PerKeyTextSizeBtnLabel[PerKeySlotCount];
++        private GUILayoutOption perKeyTextSizeMinWidth;
+         bool perKeyTextExpanded = false;
+ 
+         private void DrawPerKeyTextSizeSection()
+@@ -630,7 +961,7 @@ namespace JipperKeyViewer.KeyViewer
+                 Settings.Data.EnablePerKeyTextSize = pk;
+                 if (!pk)
+                 {
+-                    int n = KeyViewer.MaxKeySlots + 2;
++                    int n = PerKeySlotCount;
+                     if (Settings.Data.PerKeyFontSize != null)
+                         for (int i = 0; i < n && i < Settings.Data.PerKeyFontSize.Length; i++)
+                             Settings.Data.PerKeyFontSize[i] = 0f;
+@@ -644,6 +975,22 @@ namespace JipperKeyViewer.KeyViewer
+                 GUILayout.BeginVertical("box");
+                 KeyCode[] keyCodes = GetKeyCode();
+                 KeyCode[] footKeyCodes = GetFootKeyCode();
++                // Same guard the per-key COLOUR panel has (KeyViewerColorGUI.cs:330). Row 1 indexed
++                // keyCodes[i] unguarded and row 2 indexed keyCodes[backSequence[b]] with only the
++                // `b < 8` bound — while the row-3 loop right below DID guard the same thing. Today
++                // EnsureSettingsArrays forces both arrays to their exact default lengths, so this is
++                // defence in depth rather than a live crash; but an IndexOutOfRangeException inside
++                // an IMGUI callback disables the whole settings window until restart, so any future
++                // path that swaps Settings.Data without EnsureSettingsArrays would be very
++                // expensive. / 与每键**颜色**面板同款守卫。第 1 排无守卫地索引 keyCodes[i]、第 2 排
++                // 只判了 `b < 8` 就索引 keyCodes[backSequence[b]]，而紧随其后的第 3 排循环**反倒**
++                // 有守卫。今天 EnsureSettingsArrays 会把两个数组强制成精确默认长度，故这是纵深
++                // 防御而非现存崩溃；但 IMGUI 回调里的越界会让整个设置窗口失效直到重启。
++                if (keyCodes == null || keyCodes.Length < 8)
++                {
++                    GUILayout.EndVertical();
++                    return;
++                }
+ 
+                 GUILayout.Label(I18n.Tr("row1_keys") + ":");
+                 GUILayout.BeginHorizontal();
+@@ -651,21 +998,29 @@ namespace JipperKeyViewer.KeyViewer
+                 GUILayout.EndHorizontal();
+ 
+                 byte[] backSequence = GetBackSequence();
+-                if (backSequence.Length > 0)
++                if (backSequence != null && backSequence.Length > 0)
+                 {
+                     GUILayout.Label(I18n.Tr("row2_keys") + ":");
+                     GUILayout.BeginHorizontal();
+                     for (int b = 0; b < backSequence.Length && b < 8; b++)
+-                        DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                        if (backSequence[b] < keyCodes.Length)
++                            DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
+                     GUILayout.EndHorizontal();
+                 }
+ 
+-                if (backSequence.Length > 8)
++                if (backSequence != null && backSequence.Length > 8)
+                 {
+                     GUILayout.Label(I18n.Tr("row3_keys") + ":");
+                     GUILayout.BeginHorizontal();
+-                    for (int b = 8; b < backSequence.Length && backSequence[b] < keyCodes.Length; b++)
+-                        DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                    for (int b = 8; b < backSequence.Length; b++)
++                    {
++                        // Body, not loop condition — the row-2 loop above does the same. As a
++                        // condition this test terminates the loop, dropping every remaining row-3 key.
++                        // 放在循环体而非循环条件——上方的第 2 排循环同样如此。作为条件时该检查会终止
++                        // 循环，使第 3 排剩余所有按键一起消失。
++                        if (backSequence[b] < keyCodes.Length)
++                            DrawPerKeyTextSizeBtn(backSequence[b], KeyToString(keyCodes[backSequence[b]]));
++                    }
+                     GUILayout.EndHorizontal();
+                 }
+ 
+@@ -690,12 +1045,12 @@ namespace JipperKeyViewer.KeyViewer
+                 DrawPerKeyTextSizeBtn(MaxKeySlots + 1, "Total");
+                 GUILayout.EndHorizontal();
+ 
+-                if (perKeyTextSelected >= 0 && perKeyTextSelected < MaxKeySlots + 2)
++                if (perKeyTextSelected >= 0 && perKeyTextSelected < PerKeySlotCount)
+                     DrawPerKeyTextSizeEditor(perKeyTextSelected);
+ 
+                 if (GUILayout.Button(I18n.Tr("per_key_color_reset")))
+                 {
+-                    int n = MaxKeySlots + 2;
++                    int n = PerKeySlotCount;
+                     if (Settings.Data.PerKeyFontSize != null)
+                         for (int i = 0; i < n && i < Settings.Data.PerKeyFontSize.Length; i++)
+                             Settings.Data.PerKeyFontSize[i] = 0f;
+@@ -712,27 +1067,69 @@ namespace JipperKeyViewer.KeyViewer
+         private void DrawPerKeyTextSizeBtn(int idx, string label)
+         {
+             bool selected = perKeyTextSelected == idx;
+-            if (GUILayout.Button((selected ? "[ " : "  ") + label + (selected ? " ]" : ""), GUILayout.MinWidth(50)))
++            if (perKeyTextSizeMinWidth == null) perKeyTextSizeMinWidth = GUILayout.MinWidth(50);
++            // Cached label + cached width, so an open foldout costs zero allocations per IMGUI event.
++            // This row is up to 42 calls per event (8 + 8 + 8 + 16 + 2), and the previous inline
++            // string concatenation plus GUILayout.MinWidth allocated 2 objects each time — the same
++            // defect class already fixed in FloatSliderField and DrawTabBar, missed on the per-key
++            // TEXT-SIZE twin of DrawPerKeyColorBtn (which does it right). 缓存标签与宽度，使展开状态
++            // 下每个 IMGUI 事件零分配。该排每事件最多调用 42 次（8+8+8+16+2），此前的内联字符串
++            // 拼接加 GUILayout.MinWidth 每次分配 2 个对象——与 FloatSliderField/DrawTabBar 已修的
++            // 同类缺陷，只是漏在了每键**字号**这一支（颜色那一支本来就是对的）。
++            PerKeyTextSizeBtnLabel cached = perKeyTextSizeBtnLabels[idx];
++            if (perKeyTextSizeBtnLabels[idx] == null
++                || !perKeyTextSizeBtnLabels[idx].Key.Equals(label, StringComparison.Ordinal)
++                || perKeyTextSizeBtnLabels[idx].Selected != selected)
++            {
++                perKeyTextSizeBtnLabels[idx] = new PerKeyTextSizeBtnLabel(
++                    (selected ? "[ " : "  ") + label + (selected ? " ]" : ""), label, selected);
++                cached = perKeyTextSizeBtnLabels[idx];
++            }
++            if (GUILayout.Button(cached.Label, perKeyTextSizeMinWidth))
+             {
+                 perKeyTextSelected = perKeyTextSelected == idx ? -1 : idx;
+             }
+         }
+ 
++        private sealed class PerKeyTextSizeBtnLabel
++        {
++            public readonly string Label;
++            public readonly string Key;
++            public readonly bool Selected;
++            public PerKeyTextSizeBtnLabel(string label, string key, bool selected)
++            { Label = label; Key = key; Selected = selected; }
++        }
++
+         private void DrawPerKeyTextSizeEditor(int s)
+         {
+             GUILayout.Space(5);
+             string label = s == MaxKeySlots ? "KPS" : s == MaxKeySlots + 1 ? "Total" : "Key " + s;
+             GUILayout.Label("<b>" + label + " " + I18n.Tr("key_font_size") + "</b>");
+ 
+-            // Font size: 0 = use global, 1-72 = per-key override
+-            float curSize = s < Settings.Data.PerKeyFontSize.Length ? Settings.Data.PerKeyFontSize[s] : 0f;
+-            string sizeLabel = curSize <= 0f ? "(Global: " + Settings.Data.KeyFontSize.ToString("F0") + ")" : curSize.ToString("F0");
++            // Font size: 0 = use global, 1-72 = per-key override.
++            // The PerKeyFontSize length check is done by the caller, not repeated here: this local
++            // used to index it unguarded on a path an IMGUI exception would take the whole window
++            // down over. It also built a `sizeLabel` string that nothing ever displayed — a
++            // ToString plus a concatenation per event for as long as a key stayed selected.
++            // 字号：0 = 跟随全局，1-72 = 每键覆盖。PerKeyFontSize 的长度检查由调用方负责，不在此
++            // 重复：此前的本地变量在一条会让整个窗口崩掉的路径上无守卫地索引它。它还拼了一个
++            // 从未被显示的 sizeLabel 字符串——选中某个键期间每事件一次 ToString 加拼接。
++            // The length check is the caller's job, but the NULL check is not: the reader two lines
++            // below the writer was hardened and this one was not, so a null PerKeyFontSize threw
++            // an NRE out of a GUILayout callback — which unbalances the Begin/End group stack and
++            // disables the ENTIRE settings window until restart, not just this row. Same
++            // belt-and-suspenders the surrounding guards establish.
++            // 长度检查由调用方负责，但**判空**不是：下方两行的写入点已加守卫而这个读取点没有，
++            // 故 PerKeyFontSize 为 null 时会从 GUILayout 回调抛出 NRE——Begin/End 组栈失衡，
++            // **整个**设置窗口（而不只是这一行）失效直到重启。与周围守卫同款的谨慎起见。
++            float[] perKeyFontSize = Settings.Data.PerKeyFontSize;
++            float curSize = perKeyFontSize != null && s < perKeyFontSize.Length ? perKeyFontSize[s] : 0f;
+             float newSize = FloatSliderField(label + " " + I18n.Tr("key_font_size"), curSize, 0f, 72f, "F0");
+             if (newSize != curSize)
+             {
+-                if (Settings.Data.PerKeyFontSize != null && s < Settings.Data.PerKeyFontSize.Length)
++                if (perKeyFontSize != null && s < perKeyFontSize.Length)
+                 {
+-                    Settings.Data.PerKeyFontSize[s] = Mathf.Round(newSize);
++                    perKeyFontSize[s] = Mathf.Round(newSize);
+                     UpdateAllFonts();
+                     SaveSettingsFromGui();
+                 }
+@@ -811,6 +1208,299 @@ namespace JipperKeyViewer.KeyViewer
+                 SaveSettingsFromGui();
+             }
+ 
++            // Global fixed-layout glow. It is deliberately separate from FreeMake node glow and
++            // updates cached Images in place — changing a slider never rebuilds the key mesh.
++            // 固定布局全局光效：与 FreeMake 节点光效分开，修改滑块只更新缓存 Image，不重建 Mesh。
++            if (!IsCustomLayout)
++            {
++                GUILayout.Space(5f);
++                GUILayout.Label("<b>" + I18n.Tr("fixed_glow") + "</b>");
++                bool newFixedGlow = GUILayout.Toggle(Settings.Data.EnableFixedKeyGlow, I18n.Tr("fixed_glow_enable"));
++                if (newFixedGlow != Settings.Data.EnableFixedKeyGlow)
++                {
++                    Settings.Data.EnableFixedKeyGlow = newFixedGlow;
++                    ApplyFixedKeyGlows();
++                    SaveSettingsFromGui();
++                }
++                if (Settings.Data.EnableFixedKeyGlow)
++                {
++                    bool newFollow = GUILayout.Toggle(Settings.Data.FixedKeyGlowFollowBody, I18n.Tr("fixed_glow_follow"));
++                    if (newFollow != Settings.Data.FixedKeyGlowFollowBody)
++                    {
++                        Settings.Data.FixedKeyGlowFollowBody = newFollow;
++                        ApplyFixedKeyGlows();
++                        SaveSettingsFromGui();
++                    }
++                    float newGlowSize = FloatSliderField(I18n.Tr("fixed_glow_size"), Settings.Data.FixedKeyGlowSize, 0f, 50f, "F0");
++                    if (newGlowSize != Settings.Data.FixedKeyGlowSize)
++                    {
++                        Settings.Data.FixedKeyGlowSize = newGlowSize;
++                        ApplyFixedKeyGlows();
++                        SaveSettingsFromGui();
++                    }
++                    float newGlowOpacity = FloatSliderField(I18n.Tr("fixed_glow_opacity"), Settings.Data.FixedKeyGlowOpacity * 100f, 0f, 100f, "F0");
++                    if (newGlowOpacity != Settings.Data.FixedKeyGlowOpacity * 100f)
++                    {
++                        Settings.Data.FixedKeyGlowOpacity = Mathf.Clamp01(newGlowOpacity / 100f);
++                        ApplyFixedKeyGlows();
++                        SaveSettingsFromGui();
++                    }
++                    if (!Settings.Data.FixedKeyGlowFollowBody)
++                    {
++                        Color newGlowColor = DrawColorPicker(I18n.Tr("fixed_glow_color"), Settings.Data.FixedKeyGlowColor, Color.white);
++                        if (newGlowColor != Settings.Data.FixedKeyGlowColor)
++                        {
++                            Settings.Data.FixedKeyGlowColor = newGlowColor;
++                            ApplyFixedKeyGlows();
++                            SaveSettingsFromGui();
++                        }
++                    }
++
++                    bool newPressedOverride = GUILayout.Toggle(Settings.Data.FixedKeyGlowPressedOverride, I18n.Tr("fixed_glow_pressed_override"));
++                    if (newPressedOverride != Settings.Data.FixedKeyGlowPressedOverride)
++                    {
++                        Settings.Data.FixedKeyGlowPressedOverride = newPressedOverride;
++                        ApplyFixedKeyGlows();
++                        SaveSettingsFromGui();
++                    }
++                    if (Settings.Data.FixedKeyGlowPressedOverride)
++                    {
++                        bool newPressedFollow = GUILayout.Toggle(Settings.Data.FixedKeyGlowFollowBodyPressed, I18n.Tr("fixed_glow_pressed_follow"));
++                        if (newPressedFollow != Settings.Data.FixedKeyGlowFollowBodyPressed)
++                        {
++                            Settings.Data.FixedKeyGlowFollowBodyPressed = newPressedFollow;
++                            ApplyFixedKeyGlows();
++                            SaveSettingsFromGui();
++                        }
++                        float newPressedSize = FloatSliderField(I18n.Tr("fixed_glow_pressed_size"), Settings.Data.FixedKeyGlowSizePressed, 0f, 50f, "F0");
++                        if (newPressedSize != Settings.Data.FixedKeyGlowSizePressed)
++                        {
++                            Settings.Data.FixedKeyGlowSizePressed = newPressedSize;
++                            ApplyFixedKeyGlows();
++                            SaveSettingsFromGui();
++                        }
++                        float newPressedOpacity = FloatSliderField(I18n.Tr("fixed_glow_pressed_opacity"), Settings.Data.FixedKeyGlowOpacityPressed * 100f, 0f, 100f, "F0");
++                        if (newPressedOpacity != Settings.Data.FixedKeyGlowOpacityPressed * 100f)
++                        {
++                            Settings.Data.FixedKeyGlowOpacityPressed = Mathf.Clamp01(newPressedOpacity / 100f);
++                            ApplyFixedKeyGlows();
++                            SaveSettingsFromGui();
++                        }
++                        if (!Settings.Data.FixedKeyGlowFollowBodyPressed)
++                        {
++                            Color newPressedColor = DrawColorPicker(I18n.Tr("fixed_glow_pressed_color"), Settings.Data.FixedKeyGlowColorPressed, Color.white);
++                            if (newPressedColor != Settings.Data.FixedKeyGlowColorPressed)
++                            {
++                                Settings.Data.FixedKeyGlowColorPressed = newPressedColor;
++                                ApplyFixedKeyGlows();
++                                SaveSettingsFromGui();
++                            }
++                        }
++                    }
++                }
++
++                GUILayout.Space(5f);
++                GUILayout.Label("<b>" + I18n.Tr("fixed_background_gradient") + "</b>");
++                bool newFixedGradient = GUILayout.Toggle(Settings.Data.EnableFixedBackgroundGradient, I18n.Tr("fixed_background_gradient_enable"));
++                if (newFixedGradient != Settings.Data.EnableFixedBackgroundGradient)
++                {
++                    Settings.Data.EnableFixedBackgroundGradient = newFixedGradient;
++                    ApplyFixedBackgroundGradients();
++                    SaveSettingsFromGui();
++                }
++                if (Settings.Data.EnableFixedBackgroundGradient)
++                {
++                    Color top = DrawColorPicker(I18n.Tr("fixed_background_gradient_top"), Settings.Data.FixedBackgroundGradientTop, Color.white);
++                    if (top != Settings.Data.FixedBackgroundGradientTop)
++                    {
++                        Settings.Data.FixedBackgroundGradientTop = top;
++                        ApplyFixedBackgroundGradients();
++                        SaveSettingsFromGui();
++                    }
++                    Color bottom = DrawColorPicker(I18n.Tr("fixed_background_gradient_bottom"), Settings.Data.FixedBackgroundGradientBottom, Color.black);
++                    if (bottom != Settings.Data.FixedBackgroundGradientBottom)
++                    {
++                        Settings.Data.FixedBackgroundGradientBottom = bottom;
++                        ApplyFixedBackgroundGradients();
++                        SaveSettingsFromGui();
++                    }
++                    bool newGradientPressed = GUILayout.Toggle(Settings.Data.FixedBackgroundGradientPressedOverride, I18n.Tr("fixed_background_gradient_pressed"));
++                    if (newGradientPressed != Settings.Data.FixedBackgroundGradientPressedOverride)
++                    {
++                        Settings.Data.FixedBackgroundGradientPressedOverride = newGradientPressed;
++                        ApplyFixedBackgroundGradients();
++                        SaveSettingsFromGui();
++                    }
++                    if (Settings.Data.FixedBackgroundGradientPressedOverride)
++                    {
++                        Color pressedTop = DrawColorPicker(I18n.Tr("fixed_background_gradient_top_pressed"), Settings.Data.FixedBackgroundGradientTopPressed, Color.white);
++                        if (pressedTop != Settings.Data.FixedBackgroundGradientTopPressed)
++                        {
++                            Settings.Data.FixedBackgroundGradientTopPressed = pressedTop;
++                            ApplyFixedBackgroundGradients();
++                            SaveSettingsFromGui();
++                        }
++                        Color pressedBottom = DrawColorPicker(I18n.Tr("fixed_background_gradient_bottom_pressed"), Settings.Data.FixedBackgroundGradientBottomPressed, Color.black);
++                        if (pressedBottom != Settings.Data.FixedBackgroundGradientBottomPressed)
++                        {
++                            Settings.Data.FixedBackgroundGradientBottomPressed = pressedBottom;
++                            ApplyFixedBackgroundGradients();
++                            SaveSettingsFromGui();
++                        }
++                    }
++                }
++
++                GUILayout.Space(5f);
++                GUILayout.Label("<b>" + I18n.Tr("fixed_outline_gradient") + "</b>");
++                bool newFixedOutlineGradient = GUILayout.Toggle(Settings.Data.EnableFixedOutlineGradient, I18n.Tr("fixed_outline_gradient_enable"));
++                if (newFixedOutlineGradient != Settings.Data.EnableFixedOutlineGradient)
++                {
++                    Settings.Data.EnableFixedOutlineGradient = newFixedOutlineGradient;
++                    ApplyFixedOutlineGradients();
++                    SaveSettingsFromGui();
++                }
++                if (Settings.Data.EnableFixedOutlineGradient)
++                {
++                    Color top = DrawColorPicker(I18n.Tr("fixed_outline_gradient_top"), Settings.Data.FixedOutlineGradientTop, Color.white);
++                    if (top != Settings.Data.FixedOutlineGradientTop)
++                    {
++                        Settings.Data.FixedOutlineGradientTop = top;
++                        ApplyFixedOutlineGradients();
++                        SaveSettingsFromGui();
++                    }
++                    Color bottom = DrawColorPicker(I18n.Tr("fixed_outline_gradient_bottom"), Settings.Data.FixedOutlineGradientBottom, Color.black);
++                    if (bottom != Settings.Data.FixedOutlineGradientBottom)
++                    {
++                        Settings.Data.FixedOutlineGradientBottom = bottom;
++                        ApplyFixedOutlineGradients();
++                        SaveSettingsFromGui();
++                    }
++                    bool newOutlinePressed = GUILayout.Toggle(Settings.Data.FixedOutlineGradientPressedOverride, I18n.Tr("fixed_outline_gradient_pressed"));
++                    if (newOutlinePressed != Settings.Data.FixedOutlineGradientPressedOverride)
++                    {
++                        Settings.Data.FixedOutlineGradientPressedOverride = newOutlinePressed;
++                        ApplyFixedOutlineGradients();
++                        SaveSettingsFromGui();
++                    }
++                    if (Settings.Data.FixedOutlineGradientPressedOverride)
++                    {
++                        Color pressedTop = DrawColorPicker(I18n.Tr("fixed_outline_gradient_top_pressed"), Settings.Data.FixedOutlineGradientTopPressed, Color.white);
++                        if (pressedTop != Settings.Data.FixedOutlineGradientTopPressed)
++                        {
++                            Settings.Data.FixedOutlineGradientTopPressed = pressedTop;
++                            ApplyFixedOutlineGradients();
++                            SaveSettingsFromGui();
++                        }
++                        Color pressedBottom = DrawColorPicker(I18n.Tr("fixed_outline_gradient_bottom_pressed"), Settings.Data.FixedOutlineGradientBottomPressed, Color.black);
++                        if (pressedBottom != Settings.Data.FixedOutlineGradientBottomPressed)
++                        {
++                            Settings.Data.FixedOutlineGradientBottomPressed = pressedBottom;
++                            ApplyFixedOutlineGradients();
++                            SaveSettingsFromGui();
++                        }
++                    }
++                }
++
++                GUILayout.Space(5f);
++                GUILayout.Label("<b>" + I18n.Tr("fixed_text_gradient") + "</b>");
++                bool newTextGradient = GUILayout.Toggle(Settings.Data.EnableKeyTextGradient, I18n.Tr("fixed_text_gradient_enable"));
++                if (newTextGradient != Settings.Data.EnableKeyTextGradient)
++                {
++                    Settings.Data.EnableKeyTextGradient = newTextGradient;
++                    TickTextGradients();
++                    SaveSettingsFromGui();
++                }
++                if (Settings.Data.EnableKeyTextGradient)
++                {
++                    Color left = DrawColorPicker(I18n.Tr("fixed_text_gradient_left"), Settings.Data.KeyTextGradientLeft, Color.white);
++                    if (left != Settings.Data.KeyTextGradientLeft)
++                    {
++                        Settings.Data.KeyTextGradientLeft = left;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    Color right = DrawColorPicker(I18n.Tr("fixed_text_gradient_right"), Settings.Data.KeyTextGradientRight, Color.white);
++                    if (right != Settings.Data.KeyTextGradientRight)
++                    {
++                        Settings.Data.KeyTextGradientRight = right;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    bool newPressedTextGradient = GUILayout.Toggle(Settings.Data.KeyTextGradientPressedOverride, I18n.Tr("fixed_text_gradient_pressed"));
++                    if (newPressedTextGradient != Settings.Data.KeyTextGradientPressedOverride)
++                    {
++                        Settings.Data.KeyTextGradientPressedOverride = newPressedTextGradient;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    if (Settings.Data.KeyTextGradientPressedOverride)
++                    {
++                        Color pressedLeft = DrawColorPicker(I18n.Tr("fixed_text_gradient_left_pressed"), Settings.Data.KeyTextGradientLeftPressed, Color.white);
++                        if (pressedLeft != Settings.Data.KeyTextGradientLeftPressed)
++                        {
++                            Settings.Data.KeyTextGradientLeftPressed = pressedLeft;
++                            TickTextGradients();
++                            SaveSettingsFromGui();
++                        }
++                        Color pressedRight = DrawColorPicker(I18n.Tr("fixed_text_gradient_right_pressed"), Settings.Data.KeyTextGradientRightPressed, Color.white);
++                        if (pressedRight != Settings.Data.KeyTextGradientRightPressed)
++                        {
++                            Settings.Data.KeyTextGradientRightPressed = pressedRight;
++                            TickTextGradients();
++                            SaveSettingsFromGui();
++                        }
++                    }
++                }
++                bool newCountGradient = GUILayout.Toggle(Settings.Data.EnableCountTextGradient, I18n.Tr("fixed_count_text_gradient"));
++                if (newCountGradient != Settings.Data.EnableCountTextGradient)
++                {
++                    Settings.Data.EnableCountTextGradient = newCountGradient;
++                    TickTextGradients();
++                    SaveSettingsFromGui();
++                }
++                if (Settings.Data.EnableCountTextGradient)
++                {
++                    Color countLeft = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_left"), Settings.Data.CountTextGradientLeft, Color.white);
++                    if (countLeft != Settings.Data.CountTextGradientLeft)
++                    {
++                        Settings.Data.CountTextGradientLeft = countLeft;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    Color countRight = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_right"), Settings.Data.CountTextGradientRight, Color.white);
++                    if (countRight != Settings.Data.CountTextGradientRight)
++                    {
++                        Settings.Data.CountTextGradientRight = countRight;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    bool newPressedCountGradient = GUILayout.Toggle(Settings.Data.CountTextGradientPressedOverride, I18n.Tr("fixed_count_text_gradient_pressed"));
++                    if (newPressedCountGradient != Settings.Data.CountTextGradientPressedOverride)
++                    {
++                        Settings.Data.CountTextGradientPressedOverride = newPressedCountGradient;
++                        TickTextGradients();
++                        SaveSettingsFromGui();
++                    }
++                    if (Settings.Data.CountTextGradientPressedOverride)
++                    {
++                        Color pressedCountLeft = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_left_pressed"), Settings.Data.CountTextGradientLeftPressed, Color.white);
++                        if (pressedCountLeft != Settings.Data.CountTextGradientLeftPressed)
++                        {
++                            Settings.Data.CountTextGradientLeftPressed = pressedCountLeft;
++                            TickTextGradients();
++                            SaveSettingsFromGui();
++                        }
++                        Color pressedCountRight = DrawColorPicker(I18n.Tr("fixed_count_text_gradient_right_pressed"), Settings.Data.CountTextGradientRightPressed, Color.white);
++                        if (pressedCountRight != Settings.Data.CountTextGradientRightPressed)
++                        {
++                            Settings.Data.CountTextGradientRightPressed = pressedCountRight;
++                            TickTextGradients();
++                            SaveSettingsFromGui();
++                        }
++                    }
++                }
++            }
++
+             // Per-key text size / spacing section / 每键字号/字间距 区块
+             DrawPerKeyTextSizeSection();
+ 
+@@ -898,7 +1588,23 @@ namespace JipperKeyViewer.KeyViewer
+         {
+             GUILayout.BeginHorizontal();
+             GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(100f));
+-            string shown = string.IsNullOrEmpty(current) ? Util.KvEasing.Default : current;
++            // Normalize, NOT KvEasing.Default. The press animation passes the *stored* name to
++            // KvEasing.Ease, where an empty string has IndexOf("") == 0 → "linear" → the default
++            // branch returns t unchanged. Labelling the button "ease-out-cubic" and drawing that
++            // curve next to it therefore advertised an eased animation the runtime never plays:
++            // the user sees ease-out-cubic, presses a key, gets a dead-straight one, and re-picking
++            // the same curve appears to change nothing. Normalize is what maps "" → "linear" —
++            // and it is exactly what the FreeMake editor's twin picker already uses for the same
++            // field, so the two pickers now agree. It also canonicalises an unknown-but-non-empty
++            // name, which previously was echoed verbatim and left no ✓ on any row.
++            // 用 Normalize，而**不是** KvEasing.Default。按压动画把**存储的**名字传给
++            // KvEasing.Ease，而空串在那里 IndexOf("") == 0 → "linear" → default 分支原样返回 t。
++            // 故把按钮标成「ease-out-cubic」并在旁边画出那条曲线，等于宣传一个运行时根本不播的
++            // 缓动：用户看到 ease-out-cubic、按下一个键、得到完全笔直的插值，再重新选一次同一条
++            // 曲线看起来毫无变化。Normalize 正是把 "" 映射为 "linear" 的那个——也正是 FreeMake
++            // 编辑器里同字段的双胞胎选择器早就在用的，故两者现在一致。它同时把「非空但未知」的
++            // 名字规范化，此前那种名字被原样回显、任何一行都没有 ✓。
++            string shown = Util.KvEasing.Normalize(current);
+             if (GUILayout.Button(shown, GUILayout.Width(140f)))
+             {
+                 easingListExpanded = easingListExpanded == id ? null : id;

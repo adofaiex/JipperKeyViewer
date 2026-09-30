@@ -449,11 +449,24 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static readonly float[] scratchCornerY = new float[4];
         private static readonly float[] scratchCornerAngle = new float[] { 180f, 270f, 0f, 90f };
 
-        private static int FillRoundedPoints(Rect r, float radius, float[] xs, float[] ys)
+        private static int FillRoundedPoints(Rect r, float radius, float[] xs, float[] ys, int segmentsOverride = 0)
         {
             if (r.width <= 0f || r.height <= 0f) return 0;
             float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
-            int segments = RoundedSegmentsFor(rad);
+            // An outline ring must pair outer[i] with inner[i], so both sides have to emit the SAME
+            // number of points. Deriving the count from the radius made that impossible: the inset
+            // rect is smaller (its own min(w,h)*0.5 clamp bites harder) AND its radius is smaller by
+            // the border width, so the two almost always landed in different RoundedSegmentsFor
+            // buckets. The mismatch was then papered over by recomputing the inner ring as a CIRCLE
+            // of radius (rad - b) about the inner rect's corner, which is not a rounded rectangle at
+            // all — the border rendered as a starburst whose points ran off the box. Callers that
+            // need index alignment pass the count they already computed.
+            // 描边环必须按索引配对外圈[i] 与内圈[i]，故两侧点数必须**相同**。而段数原本由半径决定：
+            // 内缩矩形更小（其自身 min(w,h)*0.5 钳制咬得更紧）且半径还减去了一个边框宽，两者几乎总是
+            // 落在不同的 RoundedSegmentsFor 档位上。此前用「把内圈按半径 (rad-b) 的**圆**重算」来
+            // 掩盖点数不一致——那根本不是圆角矩形，于是描边渲染成星芒、顶点飞出盒子外。现允许调用方
+            // 传入已算好的段数以保证索引对齐。
+            int segments = segmentsOverride > 0 ? segmentsOverride : RoundedSegmentsFor(rad);
             int k = 0;
             // Corner centers in CCW order with each arc's start angle (degrees). / 逆时针顺序的
             // 角心及每段圆弧的起始角度（度）。
@@ -553,24 +566,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             b = Mathf.Min(b, Mathf.Min(r.width, r.height) * 0.5f);
             if (b <= 0f) return;
             Rect inner = new Rect(r.x + b, r.y + b, r.width - 2f * b, r.height - 2f * b);
-            int m = FillRoundedPoints(inner, Mathf.Max(0f, rad - b), scratchInnerX, scratchInnerY);
-            if (m != n)
-            {
-                // The inset rect collapsed (border too thick for the box) or its radius
-                // shrank to 0 while the outer is still rounded. Fall back to drawing the
-                // outer ring only — still better than vanishing entirely. /
-                // 内缩矩形崩溃（边框过粗）或其半径缩到 0 而外圈仍圆角。降级为只画外圈环——
-                // 仍比完全消失要好。
-                m = n;
-                for (int i = 0; i < n; i++)
-                {
-                    float angle = (float)i / n * Mathf.PI * 2f;
-                    float cos = Mathf.Cos(angle);
-                    float sin = Mathf.Sin(angle);
-                    scratchInnerX[i] = r.x + b + cos * Mathf.Max(0f, rad - b);
-                    scratchInnerY[i] = r.y + b + sin * Mathf.Max(0f, rad - b);
-                }
-            }
+            // Reuse the OUTER point count so outer[i] pairs with inner[i]. The inset can only collapse for
+            // a border so thick the box has no interior left, in which case there is no ring to
+            // draw at all. / 复用**外圈**点数，使 outer[i] 与 inner[i] 一一对应。内框只会在边框粗到
+            // 盒子没有内部时才崩溃，那时本就无环可画。
+            int m = FillRoundedPoints(inner, Mathf.Max(0f, rad - b), scratchInnerX, scratchInnerY,
+                (n - 1) / 4);
+            if (m <= 0) return;
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
