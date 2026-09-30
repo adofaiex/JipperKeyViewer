@@ -719,6 +719,14 @@ namespace JipperKeyViewer.KeyViewer
         /// 与雨滴阶段创建闭包，单次很小但持续发生，会放大覆盖层本来要避免的 GC 峰值。</summary>
         private void RunStage(string stage, FrameStage frameStage, long now)
         {
+            // Opt-in per-stage timing, off unless JIPPER_PROFILE_STAGES is set to 1. Reading the
+            // whole overlay's cost by inspection has repeatedly failed — several plausible
+            // per-frame costs turned out to be off, and one real regression was found only by
+            // diffing history. Rather than keep guessing, measure: one Stopwatch read per stage on
+            // the enabled path, averaged over a second and reported as a single line.
+            // 默认关闭的逐阶段计时，只有 JIPPER_PROFILE_STAGES=1 时才启用。
+            bool timed = stageProfiling;
+            System.Diagnostics.Stopwatch sw = timed ? System.Diagnostics.Stopwatch.StartNew() : null;
             try
             {
                 switch (frameStage)
@@ -734,11 +742,13 @@ namespace JipperKeyViewer.KeyViewer
                     case FrameStage.CounterBounce: TickCounterBounces(); break;
                     case FrameStage.TextGradients: TickTextGradients(); break;
                 }
+                if (timed) RecordStageTime(frameStage, sw.Elapsed.TotalMilliseconds);
                 if (stageFailures.Remove(stage))
                     Loader.Warning($"KeyViewer: '{stage}' recovered after an earlier failure");
             }
             catch (Exception e)
             {
+                if (timed) RecordStageTime(frameStage, sw.Elapsed.TotalMilliseconds);
                 // Report the FIRST failure of a given message, then stay quiet while it repeats.
                 // 同一消息的首次失败才报告，随后重复时保持安静。
                 string message = e.GetType().Name + ": " + e.Message;
@@ -751,6 +761,64 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         private readonly Dictionary<string, string> stageFailures = new Dictionary<string, string>();
+
+        /// <summary>Opt-in per-stage frame timing. Off by default; enable with the environment
+        /// variable JIPPER_PROFILE_STAGES=1. When on, one line per second reports the average
+        /// milliseconds each stage spent, so a frame-time problem can be attributed to a stage
+        /// instead of guessed at.
+        ///
+        /// 默认关闭的逐阶段帧时统计，用环境变量 JIPPER_PROFILE_STAGES=1 开启。开启后每秒输出一行，
+        /// 报告每个阶段的平均耗时，使帧时间问题能被**归因**到某个阶段，而不是靠猜。
+        ///
+        /// Reading the cost by inspection has a track record of failing here: several plausible
+        /// per-frame costs turned out to be switched off in the real profile, and the regressions
+        /// that were real were not the ones the reading pointed at. Measure instead.
+        /// 靠读代码判断开销在这里反复失败：若干看似合理的每帧开销在真实配置里其实是关的，而真正
+        /// 的回归又恰好不在读代码指出来的那一处。改为实测。
+        /// </summary>
+        private static readonly bool stageProfiling =
+            System.Environment.GetEnvironmentVariable("JIPPER_PROFILE_STAGES") == "1";
+        private static readonly double[] stageMs = new double[10];
+        private static readonly int[] stageFrames = new int[10];
+        private static int stageProfileSince;
+        private static int stageProfileFrames;
+
+        static string StageName(FrameStage s)
+        {
+            switch (s)
+            {
+                case FrameStage.Resolution: return "resolution";
+                case FrameStage.KeySelection: return "key-selection";
+                case FrameStage.CustomKeys: return "custom-keys";
+                case FrameStage.MainFootKeys: return "main-foot-keys";
+                case FrameStage.GhostKeys: return "ghost-keys";
+                case FrameStage.Rain: return "rain";
+                case FrameStage.Kps: return "kps";
+                case FrameStage.PerKeyKps: return "per-key-kps";
+                case FrameStage.CounterBounce: return "counter-bounce";
+                default: return "text-gradients";
+            }
+        }
+
+        void RecordStageTime(FrameStage stage, double ms)
+        {
+            int i = (int)stage;
+            if (i < 0 || i >= stageMs.Length) return;
+            stageMs[i] += ms;
+            stageFrames[i]++;
+            if (++stageProfileFrames < 60) return;
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(256);
+            sb.Append("KeyViewer stage timings (ms/frame, avg over ").Append(stageProfileFrames).Append(" frames):");
+            for (int k = 0; k < stageMs.Length; k++)
+            {
+                if (stageFrames[k] == 0) continue;
+                sb.Append(' ').Append(StageName((FrameStage)k)).Append('=')
+                  .Append((stageMs[k] / stageFrames[k]).ToString("F3"));
+            }
+            Loader.Log(sb.ToString());
+            for (int k = 0; k < stageMs.Length; k++) { stageMs[k] = 0; stageFrames[k] = 0; }
+            stageProfileFrames = 0;
+        }
 
         // ======================== Config Management / 配置管理 ========================
 
