@@ -62,6 +62,17 @@ namespace JipperKeyViewer.KeyViewer
         public readonly Dictionary<string, string> Decls =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public bool Has(string name) => Decls.ContainsKey(name);
+
+        /// <summary>A detached copy, so layering one scope over another never edits the parsed
+        /// theme that the next node will read. / 独立副本：叠加作用域时不会改到下一个节点要读的
+        /// 已解析主题。</summary>
+        public DmNoteCssScope Copy()
+        {
+            var copy = new DmNoteCssScope();
+            foreach (KeyValuePair<string, string> kv in Decls) copy.Decls[kv.Key] = kv.Value;
+            return copy;
+        }
+
         public string Get(string name, string fallback = null)
             => Decls.TryGetValue(name, out string v) ? v : fallback;
     }
@@ -533,7 +544,19 @@ namespace JipperKeyViewer.KeyViewer
                 if (h.Length == 6 || h.Length == 8)
                 {
                     var c = new float[4];
-                    for (int i = 0; i < 4; i++)
+                    c[3] = 1f;
+                    // A 6-digit hex carries no alpha: read THREE bytes, not four. The previous
+                    // branch let both lengths through one `for (i < 4)` loop, so at i==3 it indexed
+                    // h[6]/h[7] of a 6-char string and threw IndexOutOfRangeException. 6-digit hex
+                    // is by far the most common CSS colour form, and this runs in the MAPPING layer
+                    // — outside Parse's try/catch — so one ordinary colour aborted the whole preset
+                    // import with "file is invalid".
+                    // 6 位十六进制不带 alpha：**只读三个字节**。此前两种长度共用一个 `i < 4` 循环，
+                    // i==3 时索引了 6 字符串的 h[6]/h[7] 并抛 IndexOutOfRangeException。6 位十六
+                    // 十六进制是最常见的 CSS 颜色写法，且这里位于**映射层**——不在 Parse 的
+                    // try/catch 内——于是一个普通颜色就让整份预设导入失败。
+                    int bytes = h.Length / 2;
+                    for (int i = 0; i < bytes; i++)
                     {
                         if (!Hex(h[i * 2], out int hi) || !Hex(h[i * 2 + 1], out int lo)) return null;
                         c[i] = (hi * 16 + lo) / 255f;
@@ -624,13 +647,22 @@ namespace JipperKeyViewer.KeyViewer
                 // The colour is the last rgb()/hex token; the leading tokens are lengths.
                 int paren = s.IndexOf('(');
                 int rgbStart = s.LastIndexOf("rgb", StringComparison.OrdinalIgnoreCase);
+                // The lengths are whatever precedes the COLOUR, and the colour starts either at
+                // an `rgb(` or at the `#`. Testing `paren < rgbStart` only worked for the rgb form:
+                // with a hex literal rgbStart is -1, so the condition is never true and the prefix
+                // was cut at Substring(0, -1) — ArgumentOutOfRangeException, thrown from the mapping
+                // layer, so a plain `box-shadow: 0 10px 22px #000` failed the entire import.
+                // 长度部分就是颜色之前的内容，而颜色要么从 `rgb(` 开始、要么从 `#` 开始。此前只用
+                // `paren < rgbStart` 判断，对 rgb 形式有效；十六进制字面量时 rgbStart 为 -1，条件
+                // 永不成立，于是前缀被切成 Substring(0, -1)——ArgumentOutOfRangeException，且抛在
+                // 映射层，于是一句普通的 `box-shadow: 0 10px 22px #000` 就让整份导入失败。
+                int colorStart = rgbStart >= 0 ? rgbStart : s.IndexOf('#');
                 if (rgbStart < 0)
                 {
-                    int hash = s.IndexOf('#');
-                    if (hash < 0) continue;
-                    int end = hash;
+                    if (colorStart < 0) continue;
+                    int end = colorStart;
                     while (end < s.Length && s[end] != ' ') end++;
-                    color = ParseColor(s.Substring(hash, end - hash));
+                    color = ParseColor(s.Substring(colorStart, end - colorStart));
                     if (color == null) continue;
                 }
                 else
@@ -640,7 +672,7 @@ namespace JipperKeyViewer.KeyViewer
                     color = ParseColor(s.Substring(rgbStart, close - rgbStart + 1));
                     if (color == null) continue;
                 }
-                string lengths = s.Substring(0, paren >= 0 && paren < rgbStart ? paren : rgbStart);
+                string lengths = s.Substring(0, paren >= 0 && paren < colorStart ? paren : colorStart);
                 var lens = new List<string>(SplitTopLevel(lengths.Trim(), ' '));
                 // box-shadow length order is <offset-x> <offset-y> <blur> <spread> — four slots,
                 // not two. Reading lens[0] as y and lens[1] as blur took the 10px y offset of

@@ -28,8 +28,8 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (node == null || theme == null || !useCustomCss || !theme.HasAny) return;
 
-            DmNoteCssScope idle = theme.Idle;
-            DmNoteCssScope active = theme.Active;
+            DmNoteCssScope idle = theme.Idle.Copy();
+            DmNoteCssScope active = theme.Active.Copy();
             // A class-scoped block (`.clear`, `.fail`, …) only describes nodes carrying that
             // className, and overrides the shared block for them. / 类作用域块只描述带该 className
             // 的节点，并对它们覆盖共享块。
@@ -37,8 +37,8 @@ namespace JipperKeyViewer.KeyViewer
             {
                 foreach (string token in className.Split(new[] { ' ', ',', '\t' }, StringSplitOptions.RemoveEmptyEntries))
                 {
-                    if (theme.ClassIdle.TryGetValue(token, out DmNoteCssScope ci)) Overlay(idle, ci);
-                    if (theme.ClassActive.TryGetValue(token, out DmNoteCssScope ca)) Overlay(active, ca);
+                    if (theme.ClassIdle.TryGetValue(token, out DmNoteCssScope ci)) idle = Overlay(idle, ci);
+                    if (theme.ClassActive.TryGetValue(token, out DmNoteCssScope ca)) active = Overlay(active, ca);
                 }
             }
 
@@ -47,17 +47,22 @@ namespace JipperKeyViewer.KeyViewer
             ApplyCounter(node, theme, className);
         }
 
-        /// <summary>Layer a class scope over a shared one without mutating the shared object —
-        /// two nodes can share the same shared scope while getting different class overrides.
-        /// 把类作用域叠加到共享作用域之上，且**不修改**共享对象——两个节点可共用同一共享作用域
-        /// 却得到不同的类覆盖。
+        /// <summary>Layer a class scope over a shared one. The shared scope is COPIED first: passing
+        /// theme.Idle straight in mutated the parsed theme, so the first classed node permanently
+        /// repainted every node after it in the import.
+        /// 把类作用域叠加到共享作用域之上。**先复制**共享作用域：此前直接传 theme.Idle，改的是
+        /// 已解析的主题本身，于是第一个带类节点会永久地重绘之后导入的每一个节点。
         /// </summary>
-        private static void Overlay(DmNoteCssScope shared, DmNoteCssScope over)
+        private static DmNoteCssScope Overlay(DmNoteCssScope shared, DmNoteCssScope over)
         {
-            foreach (KeyValuePair<string, string> kv in over.Decls)
-            {
-                if (!shared.Decls.ContainsKey(kv.Key)) shared.Decls[kv.Key] = kv.Value;
-            }
+            var merged = shared.Copy();
+            // The class block is MORE specific, so it must WIN the key. Skipping keys already
+            // present made it lose every conflict against the shared block, which is backwards:
+            // `.clear { --key-bg: … }` describes the class, and the shared block is the default.
+            // 类块**更具体**，必须赢下该键。跳过已存在的键让它在与共享块的每个冲突中都输，方向反了：
+            // `.clear { --key-bg: … }` 描述的是该类，共享块才是默认值。
+            foreach (KeyValuePair<string, string> kv in over.Decls) merged.Decls[kv.Key] = kv.Value;
+            return merged;
         }
 
         private static void ApplyShape(FmNode node, DmNoteCssScope idle, DmNoteCssScope active)
@@ -158,8 +163,8 @@ namespace JipperKeyViewer.KeyViewer
 
         private static void ApplyCounter(FmNode node, DmNoteCssTheme theme, string className)
         {
-            DmNoteCssScope idle = theme.CounterIdle;
-            DmNoteCssScope active = theme.CounterActive;
+            DmNoteCssScope idle = theme.CounterIdle.Copy();
+            DmNoteCssScope active = theme.CounterActive.Copy();
             if (idle.Decls.Count == 0 && active.Decls.Count == 0) return;
 
             // The emphasis variant is an author override for a specific counter state, so it wins.
@@ -169,8 +174,8 @@ namespace JipperKeyViewer.KeyViewer
                  || className.IndexOf("emphasis", StringComparison.OrdinalIgnoreCase) >= 0);
             if (emphasised)
             {
-                if (theme.CounterEmphasisIdle.Decls.Count > 0) Overlay(idle, theme.CounterEmphasisIdle);
-                if (theme.CounterEmphasisActive.Decls.Count > 0) Overlay(active, theme.CounterEmphasisActive);
+                if (theme.CounterEmphasisIdle.Decls.Count > 0) idle = Overlay(idle, theme.CounterEmphasisIdle);
+                if (theme.CounterEmphasisActive.Decls.Count > 0) active = Overlay(active, theme.CounterEmphasisActive);
             }
 
             float[] fill = DmNoteCss.ParseColor(idle.Get("color") ?? idle.Get("--counter-color"));

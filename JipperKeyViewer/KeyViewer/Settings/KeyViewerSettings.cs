@@ -658,6 +658,16 @@ namespace JipperKeyViewer.KeyViewer.Settings
         internal static void ApplyLegacyFmNodeDefaults(FmNode node)
         {
             if (node == null) return;
+            // The guard keys on LabelScale/CountScale, which DID NOT EXIST at 1.7.2 — a profile
+            // authored then has no such key, both read 0, and every node fails this test. The body
+            // must therefore only default fields that were introduced after 1.7.2; anything that
+            // already existed then is a USER SETTING that the file carries faithfully and this
+            // repair must never overwrite. Resetting those silently rewrote real user choices in
+            // every pre-1.7.2 profile, and the result was persisted.
+            // 守卫以 LabelScale/CountScale 为判据，而这两项在 1.7.2 **并不存在**——那时写的配置
+            // 没有该键，两者都读成 0，于是每个节点都通过不了。修复体因此**只能**为 1.7.2 之后
+            // 新增的字段补默认值；当时已存在的字段是**用户设置**，文件里忠实带着，修复绝不可
+            // 覆盖。重置它们会静默改写每个 1.7.2 之前配置里的真实用户选择，且结果会被落盘。
             if (node.LabelScale > 0f && node.CountScale > 0f) return;
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
@@ -665,7 +675,6 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.CountScale = 1f;
             node.PressedLabelScale = 1f;
             node.PressedCountScale = 1f;
-            node.CountShowWhilePressed = true;
             node.RainAlignment = 1;
             node.RainDotLength = 12f;
             node.RainGapLength = 8f;
@@ -677,13 +686,7 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.GlowFollowBodyPressed = true;
             node.GlowSizePressed = 20f;
             node.GlowOpacityPressed = 0.7f;
-            node.VideoLoop = true;
-            node.PressAnimEnabled = true;
-            node.PressAnimScale = 0.9f;
-            node.PressAnimDurationMs = 80f;
-            node.PressAnimEasing = "linear";
             node.CounterAnimEnabled = true;
-            node.CounterAnimScale = 1.1f;
             node.CounterAnimDurationMs = 300f;
             node.CounterAnimBezier = new float[] { 0.25f, 0.46f, 0.45f, 0.94f };
             // Override seeds for the rain tabs: the editor copies these current values when the
@@ -714,16 +717,18 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.CountTextShadowEnabled = true;
             node.CountTextShadowOffsetX = 1f;
             node.CountTextShadowOffsetY = -1f;
-            // Membership switch and node opacity. Opacity 0 is the visible-node failure this whole
-            // repair was written for: EnsureCustomNodes clamps it to [0,1], so 0 stays 0 and a
-            // legacy node renders completely invisible with no way for the user to tell why.
-            // CountInTotal=false likewise drops the node out of the global Total on every load.
-            // 成员开关与节点不透明度。不透明度 0 正是本修复要解决的那种「节点看不见」故障：
-            // EnsureCustomNodes 把它钳到 [0,1]，0 原样保留，于是旧节点渲染得完全不可见，而用户
-            // 完全无从判断原因。CountInTotal=false 同理会让该节点在每次加载时都被排除在全局 Total
-            // 之外。
-            node.CountInTotal = true;
-            node.Opacity = 1f;
+            // Deliberately NOT defaulted: VideoLoop, PressAnimEnabled, PressAnimScale,
+            // PressAnimDurationMs, PressAnimEasing, CountInTotal, Opacity, FontStyleFlags,
+            // CounterAnimScale, CounterAnimEnabled and the rain shadow/outline offsets all existed
+            // at 1.7.2 and are user-settable, so an old profile carries them faithfully. The
+            // membership/opacity lines that used to live here were added because 0 read as
+            // "invisible node"; but 0 is also a legitimate user choice, and forcing it back to 1
+            // made a deliberately hidden node reappear on every load. They are covered instead by
+            // the coverage test below, which only requires fields with a NON-1 default.
+            // 刻意**不**补默认值：VideoLoop、PressAnim*、CountInTotal、Opacity、FontStyleFlags、
+            // CounterAnim* 以及雨滴阴影/描边偏移在 1.7.2 就已存在且用户可设，旧配置忠实带着它们。
+            // 此前那份「成员/不透明度」清单是因为 0 会被读成「节点隐形」才加的——但 0 同样可能是
+            // 用户的合法选择，强行改回 1 会让刻意隐藏的节点每次加载都冒出来。
         }
 
         // Interim-build string carriers (that build persisted the lists as escaped JSON strings

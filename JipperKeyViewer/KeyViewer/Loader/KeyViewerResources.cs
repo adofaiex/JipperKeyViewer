@@ -280,7 +280,7 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>
         /// Load an OTF/TTF font file and add it to the font list / 加载 OTF/TTF 字体文件并添加到字体列表
         /// </summary>
-        private static void LoadFontFromFile(string assetsDir, string fileName, string entryName, ref TMP_FontAsset target, List<FontEntry> fontList)
+        private void LoadFontFromFile(string assetsDir, string fileName, string entryName, ref TMP_FontAsset target, List<FontEntry> fontList)
         {
             string path = Path.Combine(assetsDir, fileName);
             // Without logging here the entry simply never appears in the font list with no hint
@@ -290,20 +290,22 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Font font = new Font(path);
                 if (font == null) { Loader.Error($"KeyViewer: failed to create font from '{fileName}'"); return; }
-                // CreateFontAsset bakes the glyph atlas immediately and does not keep a reference to
-                // the source Font, so the legacy Font object can be released right away. It was
-                // never destroyed, which leaked the native font face plus a file copy on every
-                // font-set reload. / CreateFontAsset 会立即烘焙字形图集且不持有源 Font 引用，
-                // 因此 legacy Font 对象可立即释放。此前从不销毁，每次字体集重载都泄漏一份原生
-                // 字体面与文件副本。
-                try
-                {
-                    target = TMP_FontAsset.CreateFontAsset(font);
-                }
-                finally
-                {
-                    UnityEngine.Object.Destroy(font);
-                }
+                // The comment here used to claim CreateFontAsset "bakes the atlas immediately and
+                // does not keep a reference to the source Font" — that is wrong, and the leak fix
+                // built on it was worse than the leak. CreateFontAsset builds a DYNAMIC atlas: it
+                // rasterises glyphs on demand through this Font and retains it (see RetainSourceFont
+                // and ScanCustomFonts in this same file). Destroying it in a `finally` removed the
+                // rasteriser at the end of the first frame, so the shipped fonts could never draw
+                // the characters they exist for. The leak it was avoiding is handled properly by
+                // holding the Font for the asset's lifetime and freeing it in ReleaseSourceFonts.
+                // 这里的注释原称 CreateFontAsset「立即烘焙图集且不持有源 Font」——这是错的，而建立
+                // 在该错误之上的「修复」比泄漏本身更糟：CreateFontAsset 生成的是**动态**图集，按需
+                // 通过这个 Font 光栅化并持有它（见同文件的 RetainSourceFont 与 ScanCustomFonts）。
+                // 在 finally 里销毁它等于在第一帧末拿走光栅化器，于是内置字体永远画不出它本该画的
+                // 字。它想避免的泄漏本就该由「持有 Font 到资源生命周期结束、在 ReleaseSourceFonts
+                // 里释放一次」来正确处理。
+                target = TMP_FontAsset.CreateFontAsset(font);
+                RetainSourceFont(font);
                 // CreateFontAsset can return null (unreadable font) — a null entry would render
                 // as an empty row in the font list; skip it like ScanCustomFonts does.
                 // CreateFontAsset 可能返回 null(不可读字体)——null 条目会在字体列表中渲染成
@@ -328,7 +330,7 @@ namespace JipperKeyViewer.KeyViewer
         /// <summary>
         /// Load CJK font and insert it at the front of the font list / 加载 CJK 字体并插入到字体列表最前面
         /// </summary>
-        private static void LoadCJKFontFromFile(string assetsDir, string fileName, string entryName, List<FontEntry> fontList)
+        private void LoadCJKFontFromFile(string assetsDir, string fileName, string entryName, List<FontEntry> fontList)
         {
             string path = Path.Combine(assetsDir, fileName);
             // Losing the CJK font also breaks the fallback chain LinkFallbackFonts wires into every
@@ -339,18 +341,20 @@ namespace JipperKeyViewer.KeyViewer
             {
                 Font font = new Font(path);
                 if (font == null) { Loader.Error($"KeyViewer: failed to create CJK font from '{fileName}'"); return; }
-                TMP_FontAsset cjkFont;
-                // Same as LoadFontFromFile: the source Font is released right after the atlas is
-                // baked, so a font-set reload no longer leaks a native face per attempt.
-                // 与 LoadFontFromFile 相同：图集烘焙后立即释放源 Font，字体集重载不再每次泄漏。
-                try
-                {
-                    cjkFont = TMP_FontAsset.CreateFontAsset(font);
-                }
-                finally
-                {
-                    UnityEngine.Object.Destroy(font);
-                }
+                TMP_FontAsset cjkFont = TMP_FontAsset.CreateFontAsset(font);
+                // DO NOT destroy the source Font. TMP_FontAsset.CreateFontAsset builds a DYNAMIC
+                // atlas that rasterises glyphs on demand through this very Font and holds it via
+                // RetainSourceFont — exactly what ScanCustomFonts in this same file already does,
+                // with the reasoning documented there. Freeing it in a `finally` (as this site and
+                // LoadFontFromFile used to) took the rasteriser away at the end of the first frame,
+                // so a CJK font could never draw the characters it exists for: the labels silently
+                // rendered as blank or as missing-glyph boxes.
+                // **不要**销毁源 Font。TMP_FontAsset.CreateFontAsset 生成的是**动态**图集：它按需
+                // 通过这个 Font 光栅化字形，并用 RetainSourceFont 持有它——本文件里的
+                // ScanCustomFonts 早已这样做且写明了理由。此前两处在 finally 里销毁它，等于在第一
+                // 帧末就拿走了光栅化器，于是 CJK 字体永远画不出它本该画的字：标签静默渲染成空白
+                // 或缺字方块。
+                RetainSourceFont(font);
                 // Null CJK font breaks the whole fallback chain; don't insert the entry when
                 // creation failed — Insert(0) would occupy the default slot with a dead font.
                 // CJK 字体为 null 会破坏整条后备链;创建失败时不要插入条目——Insert(0) 会把

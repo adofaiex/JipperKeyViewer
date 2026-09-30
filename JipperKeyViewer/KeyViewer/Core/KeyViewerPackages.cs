@@ -98,6 +98,18 @@ namespace JipperKeyViewer.KeyViewer
             private readonly HashSet<string> stagedTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             private readonly List<string> committedFiles = new List<string>();
             private readonly List<string> createdDirectories = new List<string>();
+            /// <summary>Bytes ACTUALLY written so far, measured by the streaming copy below. The
+            /// per-entry limit alone bounds one entry, not the package: an archive of many entries
+            /// that each stay under it still fills the disk. MaxPackageExpandedBytes was checked on
+            /// the EXPORT side against real file lengths, and on the IMPORT side only against the
+            /// archive's own self-reported Length — metadata a crafted archive controls. Nothing was
+            /// enforcing a running total on the bytes that really land on disk.
+            /// 到目前为止**实际写出**的字节数，由下面的流式拷贝累加。单条上限只能限制**一个**条目，
+            /// 限制不了整个包：许多各自不超限的条目加起来照样写满磁盘。MaxPackageExpandedBytes 在
+            /// 导出侧是按真实文件长度校验的，导入侧却只拿归档**自报**的 Length——那是构造出来的归档
+            /// 可以随意填的元数据。真正落盘的总字节数此前无人限制。
+            /// </summary>
+            private long totalExpandedBytes;
             private string profilePath;
 
             public PackageImportTransaction()
@@ -142,6 +154,10 @@ namespace JipperKeyViewer.KeyViewer
                         if (written > MaxPackageEntryBytes)
                             throw new InvalidDataException(
                                 $"Package entry expands beyond the safety limit: {entry.FullName}");
+                        totalExpandedBytes += read;
+                        if (totalExpandedBytes > MaxPackageExpandedBytes)
+                            throw new InvalidDataException(
+                                "Package expands beyond the total safety limit");
                         target.Write(buffer, 0, read);
                     }
                 }
