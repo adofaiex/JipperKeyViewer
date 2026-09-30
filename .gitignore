@@ -385,3 +385,6 @@ Harness/
 
 # 内嵌默认资源的 DEFLATE 打包产物（tools/Pack-EmbeddedAssets.ps1 生成，不入库）
 JipperKeyViewer/embedded/
+
+# Scratch output from the audit subagents / 审查子代理的临时产物
+.audit/
