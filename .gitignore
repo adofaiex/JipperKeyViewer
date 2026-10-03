@@ -388,3 +388,6 @@ JipperKeyViewer/embedded/
 
 # Scratch output from the audit subagents / 审查子代理的临时产物
 .audit/
+
+# meow-memory local store (per-project SQLite memory DB) / meow-memory 本地记忆库
+.dsh-meow/

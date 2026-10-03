@@ -2389,3 +2389,49 @@ try/catch，故某个阶段抛异常**不会中断**后面的链——`UpdateCus
   - 图片缓存从不驱逐、饿死 256 MB 预算（`KvImageLoader`）——完全拆解时会释放
     （`KeyViewerLayout.cs:206`），且单次构建内所有缓存贴图**都正在使用**，拒绝新图是合理取舍。
   - 每键字号守卫未 `EndVertical`（`KeyViewerSettingsGUI.cs:989`）——991 行确实关了组。
+
+### 图片按键「更新后不显示」：单边 4096 误拒用户真实图片（2026-10-03，第 117 轮）
+- **根因是用户自己的两张图**：`Mods/JipperKeyViewer/CustomImages\` 里只有两张 JPEG——
+  `142143104.jpg` **400x4360**（6.65 MB 显存）与 `00000001.jpg` **1871x4360**（31.12 MB）。
+  两者高度都是 4360，被 `KvImageLoader` 的 `MaxImageDimension = 4096`（**单边**上限）拒掉，
+  `LoadTexture` 返回 null → `CustomLayout.cs:1402-1407` 画灰占位并记
+  `custom image/video '...' not found, drew a placeholder`。用户配置的 NodeType 3 节点 Id=544
+  正是 `142143104.jpg`（Opacity 0.5、无 KeyBind → 装饰图路径）。
+- **上限写反了**：注释声称限制「单张贴图 64 MB 显存」，而 4096x4096 RGBA32 = 67,108,864 字节
+  = 64 MB——那是**总像素**预算，不是单边。400x4360 只有 7 MB，被自己的预算低一个数量级地拒掉。
+  解压炸弹是**面积**巨大，不是长宽比夸张：65535x65535 在两种写法下都是 43 亿像素，都被拦。
+- **改为总像素预算**（`KvImageLoader.cs`）：`MaxImagePixels = 4096L*4096L`（16,777,216 像素
+  = 64 MB）+ `MaxImageEdge = 16384`（单边常识上限，高于任何 GPU 最大贴图尺寸，挡住 65535x1
+  这种「像素不多但边长荒谬」的文件）。新增 `internal static bool SizeWithinLimits(int, int)`
+  与 `TryReadPngHeaderSize` / `DescribeSizeRejection`。
+- **两处守卫此前定义不一致**：只有 PNG 头部那条路径带尺寸规则，解码后那条是另一套写法；
+  现共用同一个谓词，不会再分歧。错误文案也从「decoded to an unusable size」改为**带数字**说明
+  破了哪条上限（「an edge over the 16384px limit」/「N pixels, over the 16777216 pixel
+  budget」）——原来那句把每一条报告都指回解码器而不是指回这道防线。
+- **两条真实证据链**（不再靠推测）：① 直接解析用户 JPEG 的 SOF 段得到尺寸（不是猜文件名）；
+  ② 读 `config/profiles/16K-预设.json` 确认 544 节点确实引用该图、GroupId=g18 且 g18
+  `Visible=True`——即**不是**图层组可见性或 `Hidden` 的问题（另两个图片节点 762/763 是
+  `Hidden=True` 的视频节点，本就不显示，属正常）。
+- **日志的坑**：`Player-prev.log`（03:14 会话）早于用户 03:20:58 的配置写入，且完全没有图片
+  相关行——不能用它「证明」本轮结论。`Player.log` 在游戏运行期间是 0 字节。**下次要拿运行期
+  证据，必须让用户先退出游戏**再复现一次。
+- **部署事故**：游戏进程（PID 18388，`A Dance of Fire and Ice`，03:14:35 启动）锁住了
+  `JipperKeyViewer.dll`，`Copy-Item` 报「请求的操作无法在使用用户映射区域打开的文件上执行」。
+  两个 Loader dll 部署成功（03:35:48 / 03:35:52），**核心 dll 仍是 2026/9/30 22:30:58 的旧版**。
+  与第 110 轮同形：构建产物未真正进入游戏目录，修复未生效。**收尾时若游戏在跑，必须显式说明
+  核心 dll 未部署**。
+- **Harness 回归 12 项**（新增「image: …」一组，`[tests] 195 passed, 0 failed`）：
+  直接钉住用户的 400x4360 与 1871x4360 被接受、4096x4096 恰好在预算内、超预算一像素被拒、
+  65535x65535 与 65535x1 被拒、退化尺寸被拒、PNG 头部与解码后走同一谓词、截断 PNG 交回解码器。
+  验证过「修复前必失败」：stash 掉修复后重建，旧代码下 2 项 FAIL（谓词方法不存在）。
+
+### 仍待实机（2026-10-03）
+- **核心 dll 已于 2026/10/3 09:46 部署成功**（游戏已退出，文件锁解除）。mod 目录三个 dll 现与
+  `bin\` 逐字节一致：`JipperKeyViewer.dll` 28555776 字节 03:37:58、
+  `JipperKeyViewer.Loader.Melon.dll` 10752 字节 03:35:48、
+  `JipperKeyViewer.Loader.UMM.dll` 7680 字节 03:35:52。**修复这次真的在用户二进制里了**。
+  请开一局复现「更新后图片按键不显示」，确认长条图 `142143104.jpg`（400x4360）已正常显示、
+  不再是灰占位。
+- 运行期日志证据：复现**必须先完全退出游戏再开一局**，否则 `Player.log` 是 0 字节。复现后在
+  `Player-prev.log` 搜 `KeyViewer: image` ——修复后这两张图不应再出现任何 `not loaded` 或
+  `drew a placeholder` 行。

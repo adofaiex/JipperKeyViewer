@@ -254,19 +254,66 @@ namespace JipperKeyViewer.KeyViewer.Util
         /// OutOfMemoryException 会被下方的通用 catch 吞掉、加载"成功"却得到损坏贴图。他人分享的
         /// .jkv 就能携带这种文件。</summary>
         private const long MaxImageBytes = 16L * 1024 * 1024;
-        private const int MaxImageDimension = 4096;
+
+        /// <summary>The bound is on TOTAL PIXELS, not on each axis. A per-axis 4096 cap states the
+        /// same number the wrong way round: it refuses images that are modest in memory but merely
+        /// tall or wide — a 400x4360 strip costs 7 MB of VRAM, and the user's own presets are full of
+        /// them — while catching nothing the pixel budget misses. A bomb is enormous in AREA, not in
+        /// aspect ratio; 65535x65535 is 4.3 billion pixels either way. 4096x4096 RGBA32 is
+        /// 67,108,864 bytes = 64 MB, which is exactly the per-texture ceiling this has always
+        /// claimed to enforce. / 上限约束的是**总像素**而非单边。单边 4096 把同一个数字说反了：
+        /// 它拒绝内存并不大的、只是偏高或偏宽的图——400x4360 的长条只要 7 MB 显存，用户自己的
+        /// 预设里满是这种——却挡不住任何像素预算会漏掉的东西。炸弹是**面积**巨大，不是长宽比
+        /// 夸张；65535x65535 无论怎么算都是 43 亿像素。4096x4096 RGBA32 是 67,108,864 字节 =
+        /// 64 MB，正是此处一直声称要强制的单张贴图上限。</summary>
+        private const long MaxImagePixels = 4096L * 4096L;
+
+        /// <summary>Sanity ceiling on ONE axis, above every GPU's max texture size. This is not the
+        /// memory bound (MaxImagePixels is that one); it only stops the decoder from being handed an
+        /// edge no texture can ever have, which the pixel budget alone would wave through (65535x1
+        /// is 65k pixels). / 单边的常识上限，高于任何 GPU 的最大贴图尺寸。它不是内存上限（那是
+        /// MaxImagePixels），只用于阻止把解码器喂给一条任何贴图都不可能具有的边长——单靠像素
+        /// 预算会放行这种情况（65535x1 才 6.5 万像素）。</summary>
+        private const int MaxImageEdge = 16384;
+
+        /// <summary>Is this decoded (or PNG-header-declared) size one the loader accepts? Shared by
+        /// the pre-decode PNG header check and the post-decode check so the two can never disagree
+        /// about what "reasonable" means — they did once, when only the PNG path had a per-axis
+        /// rule. / 解码后（或 PNG 头部声明）的尺寸是否是加载器接受的？供解码前的 PNG 头部检查
+        /// 与解码后的检查共用，使两者永远不会对「合理」的定义产生分歧——它们曾分歧过，那时只有
+        /// PNG 那条路径带着单边规则。</summary>
+        internal static bool SizeWithinLimits(int width, int height)
+        {
+            if (width <= 0 || height <= 0) return false;
+            if (width > MaxImageEdge || height > MaxImageEdge) return false;
+            return (long)width * height <= MaxImagePixels;
+        }
+
+        /// <summary>Which limit a refused size broke, with the numbers — "unusable size" sent every
+        /// report of this back to the decoder instead of to the guard. / 被拒的尺寸破了哪一条上限，
+        /// 带上数字——「尺寸不可用」把每一条此类报告都指回解码器而非这道防线。</summary>
+        private static string DescribeSizeRejection(int width, int height)
+        {
+            if (width <= 0 || height <= 0) return "an unusable size";
+            if (width > MaxImageEdge || height > MaxImageEdge) return $"an edge over the {MaxImageEdge}px limit";
+            return $"{(long)width * height} pixels, over the {MaxImagePixels} pixel budget";
+        }
 
         private static bool IsPngSignature(byte[] bytes)
             => bytes != null && bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50
                && bytes[2] == 0x4E && bytes[3] == 0x47;
 
-        private static bool IsPngHeaderReasonable(byte[] bytes)
+        /// <summary>Read width/height out of a PNG IHDR. False when the file is too short to hold
+        /// one — the caller then lets the decoder speak, because a truncated file's real failure is
+        /// corruption, not size. / 从 PNG 的 IHDR 读出宽高。文件短到装不下时返回 false——此时交给
+        /// 解码器发言，因为被截断的文件真正的故障是损坏而非尺寸。</summary>
+        private static bool TryReadPngHeaderSize(byte[] bytes, out int width, out int height)
         {
-            // PNG signature (8) + IHDR chunk (4 len + 4 type + 13 data) / PNG 签名(8) + IHDR 块
-            if (bytes.Length < 33) return bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50;
-            int width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
-            int height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
-            return width > 0 && height > 0 && width <= MaxImageDimension && height <= MaxImageDimension;
+            width = 0; height = 0;
+            if (bytes == null || bytes.Length < 33) return false;
+            width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+            height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+            return true;
         }
 
         /// <summary>Load a PNG as a Texture2D (FreeMake image nodes draw the texture directly). /
@@ -326,10 +373,11 @@ namespace JipperKeyViewer.KeyViewer.Util
                 // 范围检查不通过，于是以「不是 PNG」拒掉文件。此后**每一张** JPEG 都在调用处退化成
                 // 灰色占位框，而该检查当初只为「真实超大的 PNG」而写。下面按**解码后尺寸**的检查
                 // 覆盖所有格式——那才是真正会分配显存的地方。
-                if (IsPngSignature(bytes) && !IsPngHeaderReasonable(bytes))
+                if (IsPngSignature(bytes) && TryReadPngHeaderSize(bytes, out int pngW, out int pngH)
+                    && !SizeWithinLimits(pngW, pngH))
                 {
                     UnityEngine.Object.Destroy(tex);
-                    Loader.Error($"KeyViewer: image '{path}' is not a PNG within {MaxImageDimension}x{MaxImageDimension} — not loaded");
+                    Loader.Error($"KeyViewer: image '{path}' is a PNG declaring {DescribeSizeRejection(pngW, pngH)} — not loaded");
                     return null;
                 }
                 if (!EnsureLoadImageMethod())
@@ -356,11 +404,12 @@ namespace JipperKeyViewer.KeyViewer.Util
                 // PNG 的尺寸；其它格式的尺寸只能在这里知道，而此时 Texture2D 已经预留了
                 // width*height*4 字节。手改或 .jkv 携带的、声称自己极大的图片仍必须被拒绝——与
                 // 之前完全一样，只是不再顺带拒绝每一张 JPEG。
-                if (tex == null || tex.width <= 0 || tex.height <= 0
-                    || tex.width > MaxImageDimension || tex.height > MaxImageDimension)
+                int decodedWidth = tex != null ? tex.width : 0;
+                int decodedHeight = tex != null ? tex.height : 0;
+                if (!SizeWithinLimits(decodedWidth, decodedHeight))
                 {
                     if (tex != null) UnityEngine.Object.Destroy(tex);
-                    Loader.Error($"KeyViewer: image '{path}' decoded to an unusable size — not loaded");
+                    Loader.Error($"KeyViewer: image '{path}' decoded to {DescribeSizeRejection(decodedWidth, decodedHeight)} — not loaded");
                     return null;
                 }
                 tex.filterMode = FilterMode.Bilinear;
