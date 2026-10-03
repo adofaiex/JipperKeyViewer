@@ -1084,7 +1084,19 @@ namespace JipperKeyViewer.KeyViewer
             int footSize = FootKeySize(d.FootKeyViewerStyle);
             if (footSize == 0)
             {
-                if (d.DataVersion < 4) d.DataVersion = 4;
+                // footSize == 0 means "no shift to do" for an OFF foot layout — but ALSO for a
+                // style this build does not know (FootKeySize answers 0 for both, which is the
+                // mapping-sharing comment above about). Only the first case may consume the gate:
+                // for an unrecognised style this would stamp DataVersion=4 with the v3-era counters
+                // still on slots 20.., and nothing could ever shift them afterwards. MigrateFootSlots
+                // already draws exactly that distinction, so ask it instead of re-deciding here.
+                //
+                // footSize == 0 既表示「脚键布局为 Off、无需平移」，**也**表示「本构建不认识的样式」
+                //（FootKeySize 对两者都答 0——正是上方那份共用映射的说明所指）。只有前者才允许消耗
+                // 闸门：若是无法识别的样式，这里会盖上 DataVersion=4，而 v3 时代的计数仍停在
+                // 20.. 槽位上，此后永远没人能再平移它们。MigrateFootSlots 已经精确区分了这两种
+                // 情况，故此处交给它判断，而不是重新决策一遍。
+                MigrateFootSlots(d);
                 SaveCurrentProfile();
                 if (!MigrateAllProfileFiles())
                 {
@@ -1242,18 +1254,28 @@ namespace JipperKeyViewer.KeyViewer
                     try
                     {
                         string path = GetProfilePath(name);
-                        // A file that is merely unreadable RIGHT NOW (cloud placeholder, unplugged
-                        // drive, permissions) must count as a failure: advancing the meta gate with
-                        // it still un-migrated means it is never revisited — its foot counters stay
-                        // on the pre-v4 slots and its KPS panel keeps the old Y convention forever,
-                        // with no compensating path.
-                        // 此刻"读不到"的文件（云盘占位、移动硬盘未挂载、权限）必须计为失败：若带着
-                        // 未迁移的文件推进 meta 门，它就再也不会被回访——脚键计数永远留在 v4 之前
-                        // 的槽位上、KPS 面板永远是旧 Y 约定，且没有任何补偿路径。
+                        // A file that is ABSENT is not a migration failure — there is nothing to
+                        // migrate, and "unreadable right now" is a different condition entirely
+                        // (cloud placeholder, unplugged drive, permissions): that one throws below
+                        // and is still counted as a failure, which is what should hold the gate back.
+                        // Counting absence as a failure also made the rollback permanent in spirit:
+                        // it rolled the meta to 5, warned about a profile that was never going to
+                        // come back, and forced a pointless second full pass. A profile that
+                        // reappears LATER is still handled — LoadProfile runs MigrateFootSlots (and
+                        // the v5→v6 flip) on every load, so nothing depends on this pass catching it.
+                        // SyncProfilesWithDisk drops the stale name right after, so the name cannot
+                        // outlive the condition either.
+                        //
+                        // 文件**不存在**不构成迁移失败——根本没有东西可迁移；而「此刻读不到」是完全
+                        // 不同的状况（云盘占位、移动硬盘未挂载、权限），那一条会在下方抛异常，仍被计为
+                        // 失败，也正是应当压住版本门的那一种。把「缺失」也算作失败还让回滚在精神上变成
+                        // 永久的：它把 meta 退回 5，为一个再也不会回来的 Profile 发出警告，并白白逼出
+                        // 第二轮完整重跑。**之后**才出现的 Profile 仍会被处理——LoadProfile 每次加载
+                        // 都跑 MigrateFootSlots（以及 v5→v6 翻转），所以没有任何东西依赖本轮抓到它。
+                        // SyncProfilesWithDisk 随后就会丢掉这个陈旧名字，故该名字也不会比这个状况活得更久。
                         if (!File.Exists(path))
                         {
-                            allProfilesSucceeded = false;
-                            Loader.Warning($"Profile '{name}' is missing or inaccessible; v6 migration will retry next launch");
+                            Loader.Log($"KeyViewer: profile '{name}' has no file on disk; nothing to migrate to v6");
                             continue;
                         }
                         string raw = File.ReadAllText(path);
@@ -1304,12 +1326,38 @@ namespace JipperKeyViewer.KeyViewer
         /// version-bump pass, so without this it loaded with permanently zeroed foot counters. /
         /// 就地把 v3→v4 的脚键槽位平移应用到一份 ProfileData。脚键过去从槽位 20 起，后移至
         /// FootKeyBase(24)；此前写出的配置把脚键计数与每键颜色留在旧槽位上，加载后读出来就是 0/
-        /// 错值。该变换幂等（由 DataVersion 守卫），并由一次性版本升级与 LoadProfile 共用——meta
+        /// 错值。该变换幂等（由 DataVersion 与 FootSlotsMigrationDeferred 共同守卫），并由一次性
+        /// 版本升级与 LoadProfile 共用——meta
         /// 升级之后才出现的配置文件（手动拷入，或从旧版 .jkv 导入）不会被升级流程看到，没有这里
-        /// 就会带着永久为零的脚键计数加载。</summary>
-        private static void MigrateFootSlots(ProfileData pd)
+        /// 就会带着永久为零的脚键计数加载。
+        ///
+        /// internal 而非 private：脚键样式选择网格会直接调用它，好让因样式无法识别而被推迟的
+        /// 平移，在用户选定样式的那一刻立刻落地。公开该入口是有意的——它幂等且有闸门。</summary>
+        internal static void MigrateFootSlots(ProfileData pd)
         {
-            if (pd == null || pd.DataVersion >= 4) return;
+            if (pd == null) return;
+            // The gate is (DataVersion >= 4) OR NOT deferred — never DataVersion alone. DataVersion
+            // is stamped forward by SaveCurrentProfile on the very next save, and by the v5→v6 flip
+            // in LoadProfile, so gating on it alone means a profile whose foot shift was skipped for
+            // an unrecognised style is stamped >= 4 while its counters are STILL on the v3-era
+            // slots — the round-38 bug, re-armed and genuinely permanent. The marker is the only
+            // state that survives that stamp, so it re-opens the gate by itself.
+            //
+            // Blocking the stamp instead was tried and is WRONG: with DataVersion held low, the v5→v6
+            // Y-convention flip in LoadProfile re-fires on the next launch and flips the KPS/Total Y
+            // values a second time. Two migrations share one stamp, so the stamp must keep telling
+            // the truth about BOTH; only this migration gets a gate of its own.
+            //
+            // 闸门是（DataVersion >= 4）**或**「未推迟」，绝不能只看 DataVersion。DataVersion 会被
+            // SaveCurrentProfile 在下一次保存时前向盖章，也会被 LoadProfile 里的 v5→v6 翻转盖章；
+            // 只看它意味着「因样式不认识而跳过平移」的 Profile 在计数**仍**停在 v3 槽位上时就被盖成
+            // >= 4 ——即第 38 轮那个 bug 被重新武装，且真的永久。标记是唯一能挺过那次盖章的状态，
+            // 故由它自行重开闸门。
+            //
+            // 曾试过「阻止盖章」，那是**错的**：DataVersion 被压低后，LoadProfile 里的 v5→v6 Y 约定
+            // 翻转会在下次启动再跑一次，把 KPS/Total 的 Y 值翻第二遍。两次迁移共用一个版本戳，
+            // 故该戳必须对**两者**都说真话；只有本次迁移拥有自己的闸门。
+            if (pd.DataVersion >= 4 && !pd.FootSlotsMigrationDeferred) return;
             // An enum value this build does not recognise (a profile written by a NEWER build, or a
             // hand-edited one). Falling through to footSize == 0 below would stamp DataVersion = 4
             // and RETURN — consuming the idempotence gate without performing the shift, so the
@@ -1323,11 +1371,23 @@ namespace JipperKeyViewer.KeyViewer
             // 保持该配置的旧版本，好让认识该样式的构建仍能平移它。
             if (!System.Enum.IsDefined(typeof(FootKeyviewerStyle), pd.FootKeyViewerStyle))
             {
+                // The marker is what actually preserves the gate: SaveCurrentProfile's forward
+                // stamp would otherwise raise DataVersion to 6 on the next save and close it for
+                // good. See ProfileData.FootSlotsMigrationDeferred.
+                // 真正保住闸门的是这个标记：否则 SaveCurrentProfile 的前向盖章会在下一次保存时把
+                // DataVersion 抬到 6 并永久关闭它。见 ProfileData.FootSlotsMigrationDeferred。
+                pd.FootSlotsMigrationDeferred = true;
                 Loader.Warning($"KeyViewer: profile '{pd.GetType().Name}' has an unrecognised "
                     + $"FootKeyViewerStyle ({(int)pd.FootKeyViewerStyle}); skipping the foot-slot "
                     + "migration so a build that knows the style can still apply it");
                 return;
             }
+            // Recognised now, so a marker left by an older build (or by a hand-edited file) must
+            // not outlive the migration it was protecting — it would keep DataVersion pinned below
+            // the meta version forever, which disables every later schema migration for this file.
+            // 现在认识该样式了，故更早构建（或手改文件）留下的标记不能比它所保护的那次迁移活得更久
+            // ——否则 DataVersion 会被永久钉在 meta 版本之下，该文件此后所有架构迁移都失效。
+            pd.FootSlotsMigrationDeferred = false;
             // FootKeySize, not an inline switch. This mapping is written in six places (here, the
             // other migration, the array-sizing lines, the ctor fallbacks, the label table, and an
             // inline copy in the editor); they all agree today only because nobody has added a
@@ -1339,7 +1399,18 @@ namespace JipperKeyViewer.KeyViewer
             int footSize = FootKeySize(pd.FootKeyViewerStyle);
             if (pd.KeyViewerStyle == KeyviewerStyle.Key24 || footSize == 0)
             {
-                pd.DataVersion = 4;
+            // NEVER stamp DOWNWARD. This migration shares DataVersion with v5→v6, and a profile
+            // can legitimately arrive here already stamped 6 (the deferred marker is what lets the
+            // gate re-open; nothing holds the stamp back). Writing 4 would re-open the v5→v6 gate
+            // in LoadProfile and flip the KPS/Total Y convention a SECOND time on the next launch.
+            // The migration is complete either way — what remains to be recorded is "the foot slots
+            // are settled", which is exactly what the now-cleared marker already says.
+            // 绝不**向下**盖章。本次迁移与 v5→v6 共用 DataVersion，而一份配置完全可能已经带着 6
+            // 到达这里（正是那个推迟标记让闸门得以重开；没有任何东西压住该版本戳）。写 4 会重新
+            // 打开 LoadProfile 里的 v5→v6 闸门，在下次启动把 KPS/Total 的 Y 约定**再翻一遍**。
+            // 无论哪种情况迁移都已完成；需要记录的是「脚键槽位已就位」，而这正是刚被清除的标记
+            // 所表达的内容。
+                if (pd.DataVersion < 4) pd.DataVersion = 4;
                 return;
             }
             const int oldBase = 20;
@@ -1395,7 +1466,18 @@ namespace JipperKeyViewer.KeyViewer
             Shift(pd.PerKeyText, oldBase, FootKeyBase, footSize);
             Shift(pd.PerKeyTextClicked, oldBase, FootKeyBase, footSize);
             Shift(pd.PerKeyRainColor, oldBase, FootKeyBase, footSize);
-            pd.DataVersion = 4;
+            // NEVER stamp DOWNWARD. This migration shares DataVersion with v5→v6, and a profile
+            // can legitimately arrive here already stamped 6 (the deferred marker is what lets the
+            // gate re-open; nothing holds the stamp back). Writing 4 would re-open the v5→v6 gate
+            // in LoadProfile and flip the KPS/Total Y convention a SECOND time on the next launch.
+            // The migration is complete either way — what remains to be recorded is "the foot slots
+            // are settled", which is exactly what the now-cleared marker already says.
+            // 绝不**向下**盖章。本次迁移与 v5→v6 共用 DataVersion，而一份配置完全可能已经带着 6
+            // 到达这里（正是那个推迟标记让闸门得以重开；没有任何东西压住该版本戳）。写 4 会重新
+            // 打开 LoadProfile 里的 v5→v6 闸门，在下次启动把 KPS/Total 的 Y 约定**再翻一遍**。
+            // 无论哪种情况迁移都已完成；需要记录的是「脚键槽位已就位」，而这正是刚被清除的标记
+            // 所表达的内容。
+            if (pd.DataVersion < 4) pd.DataVersion = 4;
         }
 
         private bool MigrateAllProfileFiles()
@@ -1409,22 +1491,38 @@ namespace JipperKeyViewer.KeyViewer
                 try
                 {
                     string path = GetProfilePath(name);
-                    // Unreadable-right-now is a FAILURE, not a skip: advancing the meta gate with a
-                    // still-unmigrated profile means it is never revisited and its foot-key counts
-                    // stay on the pre-v4 slots (reading as zero) for good.
-                    // 此刻"读不到"必须计为失败而非跳过：带着未迁移的配置推进 meta 门意味着它再也
-                    // 不会被回访，脚键计数会永远留在 v4 之前的槽位上（读出来是 0）。
+                    // An ABSENT file is not a failure — nothing to migrate, and SyncProfilesWithDisk
+                    // drops the stale name moments later, so it cannot hold the gate back. What DOES
+                    // hold it back is an EXISTING file that cannot be read right now (cloud
+                    // placeholder, unplugged drive, permissions): that throws below and counts as a
+                    // failure, which is correct, because the file is still there to be migrated later.
+                    // An existing file that throws on open is exactly the transient condition; an
+                    // absent one can never become migrated by waiting, only by reappearing — and
+                    // LoadProfile migrates it on arrival.
+                    //
+                    // 文件**不存在**不算失败——没有东西可迁移，且 SyncProfilesWithDisk 片刻之后就会
+                    // 丢掉这个陈旧名字，故它无法压住版本门。真正该压住它的是**存在但此刻读不到**的文件
+                    //（云盘占位、移动硬盘未挂载、权限）：那会在下方抛异常并计为失败，这是正确的，
+                    // 因为文件还在，之后仍可迁移。打开时抛异常的文件恰恰是那种暂时性状况；而缺失的
+                    // 文件靠等待永远不会变成「已迁移」，只能等它重新出现——而 LoadProfile 会在它出现时
+                    // 完成迁移。
                     if (!File.Exists(path))
                     {
-                        allSucceeded = false;
-                        Loader.Warning($"Profile '{name}' is missing or inaccessible; v4 migration will retry next launch");
+                        Loader.Log($"KeyViewer: profile '{name}' has no file on disk; nothing to migrate to v4");
                         continue;
                     }
                     string json = File.ReadAllText(path);
                     var pd = new ProfileData();
                     JsonConvert.PopulateObject(json, pd, ProfileData.ProfileSerializer);
                     pd.SyncArraysFromLists();
-                    if (pd.DataVersion >= 4) continue;
+                    // Same two-part gate as MigrateFootSlots, so a profile whose shift was
+                    // DEFERRED is still visited once this build understands the style — that is
+                    // literally the promise the deferral makes. Gating on DataVersion alone skipped
+                    // exactly those profiles forever, which is the bug the marker exists to fix.
+                    // 与 MigrateFootSlots 同款的双段闸门，故「平移被推迟」的 Profile 在本构建终于认识
+                    // 该样式时仍会被访问——那正是推迟本身许下的承诺。仅按 DataVersion 判断会让这类
+                    // Profile 永远被跳过，而这恰恰是标记要修的那个 bug。
+                    if (pd.DataVersion >= 4 && !pd.FootSlotsMigrationDeferred) continue;
                     // Shared with LoadProfile so there is exactly one implementation of the foot-slot
                     // shift. / 与 LoadProfile 共用，确保脚键槽位平移只有一份实现。
                     MigrateFootSlots(pd);
@@ -1534,10 +1632,47 @@ namespace JipperKeyViewer.KeyViewer
                 Loader.Warning($"KeyViewer: invalid KeyViewerStyle {(int)Settings.Data.KeyViewerStyle}, falling back to Key16");
                 Settings.Data.KeyViewerStyle = KeyviewerStyle.Key16;
             }
+            // The clamp is what keeps an out-of-range enum from reaching GetLayout's throw, but for
+            // the FOOT style it also DESTROYS the only copy of a value this build does not know —
+            // and the next save writes the replacement to the file. That silently defeats the whole
+            // deferral MigrateFootSlots just set up: the raw style is gone, the file now carries
+            // None (a perfectly DEFINED value), so the next launch — even one that DOES know the
+            // style — clears the marker, answers FootKeySize = 0, stamps DataVersion = 4 and leaves
+            // the v3-era counters on slots 20.. reading as 0. Permanent, and for a different reason
+            // each round.
+            // While a shift is deferred, keep the unknown value verbatim: every consumer of it is
+            // already guarded (FootKeySize answers 0 and the layout/editor check footSize before
+            // using it, GetFootKeyCode/GetFootKeyText return empty), and the GUI clamps only the
+            // DISPLAYED index. Once the user resolves the style in the GUI the value becomes defined
+            // and the normal clamp is a no-op again.
+            // Scope limit: this only preserves the value while DataVersion is still below 4. A
+            // profile already stamped >= 4 by a newer build gets clamped as before — its foot slots
+            // are settled, so only the layout choice is lost, and no build that understands the
+            // style can be reached anyway.
+            //
+            // 钳制是为了防止越界枚举走到 GetLayout 的 throw，但对**脚键**样式而言它还会**销毁**本构建
+            // 不认识的值的唯一一份拷贝，而下一次保存就把替换值写回文件。这会悄悄废掉 MigrateFootSlots
+            // 刚建立的整套推迟机制：原始样式值已丢失，文件里存着 None（一个完全**合法**的值），于是
+            // 下次启动——哪怕是**认识**该样式的构建——也会清掉标记、答出 FootKeySize = 0、盖上
+            // DataVersion = 4，把 v3 时代的计数留在 20.. 槽位上读作 0。永久，且每轮换一个新原因。
+            // 平移被推迟期间原样保留未知值：所有消费方都已加守卫（FootKeySize 答 0，布局与编辑器在
+            // 使用前都检查 footSize，GetFootKeyCode/GetFootKeyText 返回空），界面只钳制**显示**下标。
+            // 用户在界面里解决该样式后值即为合法，常规钳制自动重新变成空操作。
+            // 作用范围：本保护仅在 DataVersion 仍低于 4 时保留该值。已被更新构建盖成 >= 4 的配置照旧
+            // 被钳制——它的脚键槽位本就已就位，损失的只是布局选择，且无论如何也够不到认识该样式的构建。
             if (!System.Enum.IsDefined(typeof(FootKeyviewerStyle), Settings.Data.FootKeyViewerStyle))
             {
-                Loader.Warning($"KeyViewer: invalid FootKeyViewerStyle {(int)Settings.Data.FootKeyViewerStyle}, falling back to None");
-                Settings.Data.FootKeyViewerStyle = FootKeyviewerStyle.None;
+                if (Settings.Data.FootSlotsMigrationDeferred)
+                {
+                    Loader.Warning($"KeyViewer: unrecognised FootKeyViewerStyle "
+                        + $"{(int)Settings.Data.FootKeyViewerStyle} kept verbatim; the foot-slot "
+                        + "migration stays deferred until this build (or you) resolves it");
+                }
+                else
+                {
+                    Loader.Warning($"KeyViewer: invalid FootKeyViewerStyle {(int)Settings.Data.FootKeyViewerStyle}, falling back to None");
+                    Settings.Data.FootKeyViewerStyle = FootKeyviewerStyle.None;
+                }
             }
 
             // Truncated binding arrays (hand-edited / partially written profiles) are the same gap

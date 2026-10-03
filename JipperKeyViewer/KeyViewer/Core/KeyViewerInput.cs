@@ -643,19 +643,33 @@ namespace JipperKeyViewer.KeyViewer
                 if (d2.EnableKeyTextGradient) key.text.color = Color.white;
                 if (key.value != null)
                 {
-                    key.value.color = d2.EnableCountTextGradient ? Color.white : key.text.color;
+                    // Read the real count colour instead of key.text.color: that is white whenever
+                    // the label gradient is on, so a label-gradient-on / count-gradient-off combo
+                    // painted EVERY count pure white with no compensation path. 1.7.2 kept
+                    // text.color as the real colour here, so this is a regression. / 读真实的
+                    // 计数色而不是 key.text.color：标签渐变开着时后者恒为白，于是「标签渐变开、
+                    // 计数渐变关」会把所有计数画成纯白且无补偿路径。1.7.2 这里 text.color 仍是
+                    // 真实色，故属回归。
+                    Color countColor = pressed ? (u ? d2.FullKeyboardTextClicked : d2.TextClicked)
+                        : (u ? d2.FullKeyboardText : d2.Text);
+                    key.value.color = d2.EnableCountTextGradient ? Color.white : countColor;
                 }
                 ApplyFixedGlow(key, i, pressed);
                 ApplyFixedBackgroundGradient(key, pressed);
                 ApplyFixedOutlineGradient(key, pressed);
                 return;
             }
+            // The label colour and the count colour are tracked separately: the gradient pass
+            // forces key.text.color to white, so the count must read the real colour, not that.
+            // 标签色与计数色分开跟踪：渐变 pass 会把 key.text.color 强制成白，计数必须读真实色。
+            Color countTextColor;
             if (d.EnablePerKeyColors && i < MaxKeySlots && PerKeyColorArraysValid(d, i))
             {
                 SetShapeColors(key,
                     pressed ? d.PerKeyBackgroundClicked[i] : d.PerKeyBackground[i],
                     pressed ? d.PerKeyOutlineClicked[i] : d.PerKeyOutline[i]);
-                key.text.color = pressed ? d.PerKeyTextClicked[i] : d.PerKeyText[i];
+                countTextColor = pressed ? d.PerKeyTextClicked[i] : d.PerKeyText[i];
+                key.text.color = countTextColor;
                 if (d.EnableKeyTextGradient) key.text.color = Color.white;
             }
             else
@@ -663,7 +677,8 @@ namespace JipperKeyViewer.KeyViewer
                 SetShapeColors(key,
                     pressed ? d.BackgroundClicked : d.Background,
                     pressed ? d.OutlineClicked : d.Outline);
-                key.text.color = pressed ? d.TextClicked : d.Text;
+                countTextColor = pressed ? d.TextClicked : d.Text;
+                key.text.color = countTextColor;
                 if (d.EnableKeyTextGradient) key.text.color = Color.white;
             }
             // With a glyph gradient active the solid colour must stay white: TMP's colour setter
@@ -672,9 +687,15 @@ namespace JipperKeyViewer.KeyViewer
             // variant supplies the real pressed colours. / 文字渐变生效时实色必须保持白色：TMP 的
             // 颜色 setter 会安排一次按该色重绘所有顶点的 mesh 重建，而渐变 pass 在同一帧内跑得更早，
             // 赢不了该竞态。按下渐变变体提供真实的按下颜色。
+            // Track the count colour in its own variable, NOT via key.text.color -- see the
+            // full-keyboard branch above. With the label gradient on, key.text.color is white by
+            // design (the gradient pass owns it), so copying it here forced pure white onto every
+            // count in every layout. / 单独跟踪计数色，**不要**借道 key.text.color——见上方全键盘
+            // 分支。标签渐变开着时 key.text.color 按设计就是白（归渐变 pass 管），照抄它会让
+            // 所有布局的每个计数都变成纯白。
             if (key.value != null)
             {
-                if (!d.EnableCountTextGradient) key.value.color = key.text.color;
+                if (!d.EnableCountTextGradient) key.value.color = countTextColor;
                 else key.value.color = Color.white;
             }
             ApplyFixedGlow(key, i, pressed);

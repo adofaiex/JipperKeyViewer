@@ -2499,3 +2499,103 @@ AGENTS.md:2091（第 110 轮）记录用户测的 mod DLL 时间戳是 **11:16:4
 - **仍待用户实机确认**：用户在 10:00:46 那次会话跑的就是含两条修复的 DLL 且日志零图片拒绝——
   如果他现在能正常看到图片，即告闭环；如果仍有问题，则是**另一个**问题，须按上面的
   「必须先问清症状」处理，而不是继续沿用本轮的假设。
+
+### 审计复核第 119 轮：`.audit/` 六份报告逐条复验（2026-10-03）
+
+本轮不看新故障，而是把审计目录里 18 条结论**逐条重新验证**（是否仍成立），并修掉仍成立的那些。
+
+#### 结论一览
+
+- **本轮修复（9 条）**：gui① gui② core① core② core③ core⑤ rain① rain② rain③
+- **早已修好，无需再动（1 条）**：core④——`WriteAllTextSafe`（`KeyViewer.cs:1960` 附近）早已捕获
+  `PlatformNotSupportedException` 并回退 `File.Copy(tmp, path, true)`，审计报告描述的是更早的状态。
+- **判定有意不改（2 条）**：util①（跨重建图片缓存永不淘汰，`KvImageLoader.cs:86 ReleaseCachedTextures`
+  无 LRU/引用计数；`ResetKeyViewer` 刻意经 `ReleaseCustomTextures` 跳过缓存自有贴图，
+  `KeyViewerLayout.cs:1745`；此前在 `99cadb8` 已作为**已驳回**候选记录在案）、
+  editor.md④（误判：`DrawEditorFloatField` 的 `basis` 参数**没有任何调用方**，X/Y 传的是 `fmActiveNode`）。
+
+#### core③：未知脚键样式的逃生口，被两处「顺手」永久关闭
+
+`.audit/core.md:21-27`（severity low）。`MigrateFootSlots` 对未识别的 `FootKeyViewerStyle` **故意**不抬
+`DataVersion`（「leave the profile at its old version so a build that does know the style still shifts
+it」），但这条逃生口在同一次加载里就被两次「顺手」关死：
+
+1. `EnsureSettingsArrays`（`KeyViewer.cs:1635-1639`）把越界的 `FootKeyviewerStyle` **钳成 `None`**，
+   而 `None` 之后会被原样写回文件——**原始样式值就此销毁**。文件里存着 `None`（完全**合法**的值），
+   下次启动——哪怕是**认识**该样式的构建——也会清掉标记、答 `FootKeySize=0`、盖 `DataVersion=4`，
+   把 v3 计数留在 20.. 槽位读作 0（第 38 轮那个 bug）。永久，且每轮换一个新原因。
+2. `SaveCurrentProfile` 的 `if (Settings.Data.DataVersion < Settings.Version) Settings.Data.DataVersion =
+   Settings.Version;`（`KeyViewer.cs:2030-2031`）在下一次保存即盖成 6。
+
+**否决的方案**：阻止 `SaveCurrentProfile` 前向盖章。DataVersion 被压低后，`LoadProfile` 的 v5→v6 Y 翻转
+（`KeyViewer.cs:2104-2109`）会在下次启动再跑一遍，把 KPS/Total 的 Y 值翻**第二遍**——两次迁移共用一个
+DataVersion，故该戳必须对两者都说真话。（该编辑已实际做过并在本轮回滚。）
+
+**采纳的方案**：新增持久化标记 `ProfileData.FootSlotsMigrationDeferred`
+（`JipperKeyViewer/KeyViewer/Settings/KeyViewerSettings.cs:564`），由它承载「推迟」状态，
+DataVersion 照常前向盖章。具体改动：
+
+- `KeyViewer.cs:1313` `MigrateFootSlots(ProfileData pd)` 由 `private static` 改 **internal static**（GUI 直接调用）；
+  新闸门 `if (pd.DataVersion >= 4 && !pd.FootSlotsMigrationDeferred) return;`。
+- 未识别样式分支：`pd.FootSlotsMigrationDeferred = true;` + Warning 后 return；样式被识别即置回 `false`。
+- 两处 `pd.DataVersion = 4;` 改为 `if (pd.DataVersion < 4) pd.DataVersion = 4;`——**绝不向下盖章**
+  （会把已到 6 的配置退回 4，重开 v6 闸门导致 Y 值二次翻转）。
+- `MigrateV3toV4`（`KeyViewer.cs:1085-1108`）的 `footSize == 0` 分支改为调用 `MigrateFootSlots(d);`。
+- `MigrateAllProfileFiles`（`KeyViewer.cs:1525`）闸门改为同一双段。
+- 脚键钳制分支改为三分支：`FootSlotsMigrationDeferred` 为真时**原样保留**未知值 + Warning；否则照旧钳成
+  `None`。注释记录了「所有消费方都已加守卫」：`KeyViewerLayout.cs:132/1416/2074` 是 footSize/size==0 守卫，
+  `KeyViewerInput.cs:328` 只比较缓存键，`KeyViewerEditor.cs:603` 有 footSize 守卫，
+  `GetFootKeyCode`/`GetFootKeyText` 返回空数组，`KeyViewerSettingsGUI.cs:915` SelectionGrid 只钳**显示**下标。
+  保留仅限 `DataVersion < 4`；已被更新构建盖成 >= 4 的配置照旧被钳（脚键槽位本已就位，损失的只是布局选择）。
+- `KeyViewerSettingsGUI.cs:916-934` 脚键样式选择器在赋值后新增 `MigrateFootSlots(Settings.Data);` 再
+  `ResetFootKeyViewer(); SaveSettingsFromGui();`——手动选定样式是「推迟→已解决」入口。
+
+调用顺序核实：`LoadSettings`（`KeyViewer.cs:893-904`）= 迁移链(:893-898) → `LoadProfileFromMeta`(:895) →
+`EnsureSettingsArrays`(:900) → `SyncProfilesWithDisk`(:904)；`LoadProfile` 内 `:2090` 调 `MigrateFootSlots`、
+`:2104-2109` 做 v5→v6 翻转，**均在 `EnsureSettingsArrays` 之前**，故推迟标记在钳制前已就位。
+
+#### core⑤：文件已消失被当成「可重试失败」，meta 永远停在 v5
+
+`MigrateV5toV6`（`KeyViewer.cs:1276-1280`）与 `MigrateAllProfileFiles`（`:1509-1513`）原逻辑都是
+`if (!File.Exists(path)) { allProfilesSucceeded = false; Loader.Warning("... will retry next launch"); continue; }`
+。名字可以**永久**活得比文件长（删掉的目录、只恢复了一半的备份、永不再回来的同步客户端），而等待永远
+无法把「不存在」变成「已迁移」，于是 meta 永远停在 v5，**每次启动重跑整批**并重复刷警告。
+
+现改为仅 `Loader.Log("... has no file on disk; nothing to migrate to v6/v4")` + `continue`。
+注释区分两种情况：「不存在」不是失败；「存在但此刻读不到」（云盘占位、移动硬盘未挂载、权限）会在下方
+**抛异常**并仍被计为失败——那才是应当压住版本门的。另外**之后**才出现的 Profile 仍会被处理：
+`LoadProfile` 每次加载都跑 `MigrateFootSlots`（以及 v5→v6 翻转），`SyncProfilesWithDisk` 随后就会丢掉
+陈旧名字，故没有任何东西依赖本轮抓到它。
+
+#### 验证
+
+- 四个工程 `dotnet build <proj> --configuration Release --no-restore` 全部 **0 错误**；
+  既存警告是 `CS0169 从不使用字段"KeyViewer.stageProfileSince"`（`KeyViewer.cs:783`），
+  Harness 的 4 个 `SYSLIB0050` 过时警告。
+- 离线套件 **`[tests] 199 passed, 0 failed`**（基线 195 → 新增 core③ 三条 + core⑤ 一条）。
+- **行为级反证**（core⑤）：把 `MigrateV5toV6` 的缺失文件分支临时改回 `allProfilesSucceeded = false;`
+  （带 `// ANTI-TEST` 标记）→ `[FAIL] profiles: a name with no file on disk no longer pins the meta version
+  -- meta stayed at v5 because a name has no file`，`[tests] 198 passed, 1 failed`；撤销后回到 199/0，
+  `ANTI-TEST` 残留计数 0。（core③ 同样做过：把闸门退回 `if (pd.DataVersion >= 4) return;` → 2 条 FAIL，
+  撤销后 198/0。）
+- **部署已完成**（游戏未运行）：三个 DLL 从 repo-root `bin\` 复制到
+  `D:\Program Files (x86)\Steam\steamapps\common\A Dance of Fire and Ice\Mods\JipperKeyViewer`，
+  `Get-FileHash -Algorithm SHA256` 逐一校验 src==dst（`JipperKeyViewer.dll` 与两个 Loader 全为 `match=True`）。
+
+#### 本轮的三条教训（都是我自己踩的）
+
+- **教训 1：一个「故意留下的逃生口」会被下游的「顺手清理」静默关掉，而且每轮换个新原因。**
+  core③ 的逃生口先被 `EnsureSettingsArrays` 的钳制销毁（**原始值写回文件后不可恢复**），
+  再被 `SaveCurrentProfile` 的前向盖章盖掉。审计时必须顺着**写入点**追一遍：
+  「这个值会不会在下一次保存时被改写成别的样子」。
+- **教训 2：反证要作用在**行为**上，不是编译上。** 只把源码 stash 掉看 `CS1061` 只能证明「用例引用了新符号」；
+  真正的证明是**把闸门退回旧逻辑、看用例是否变红**。两者我都做了，但只有后者有价值。
+- **教训 3：Harness 的 `<Reference Include="@(LibDll)">` 是个死写法。** `Harness/Harness.csproj:25-29`
+  把 `@(LibDll)` 的**展开**和 `LibDll` 的**声明**放在同一个 `ItemGroup` 里，MSBuild 求值时后者尚不存在，
+  该组实际不产生任何引用——只有显式列出的 CoreModule 与 Newtonsoft 真的被链接。
+  碰 `UnityEngine.JSONSerializeModule`（`JsonUtility`）时报 `Could not load file or assembly ...`；
+  补上引用后又报 `ECall methods must be packaged into a system module.`（Unity 原生调用在游戏外跑不了）。
+  于是 core⑤ 的用例改成 `FormatterServices.GetUninitializedObject(typeof(KeyViewer))`（**不能**用
+  `Activator.CreateInstance`——MonoBehaviour 构造器会牵进 `UnityEngine.UI`），并**只**吞掉 `SaveMetaOnly`
+  里那个位于被断言赋值**之后**的 ECall 异常；真正的迁移失败仍会让用例变红。
+  **教训：给 Harness 加新测试时，凡是需要 Unity 原生调用的路径，要么绕开，要么把断言放在调用点之前。**

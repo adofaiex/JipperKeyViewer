@@ -370,20 +370,22 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 DrawRainSolidRect(vh, outer.xMax - width, outer.xMax, outer.yMin + radius, outer.yMax - radius,
                     color, outer, dNear, dFar, trackH, fade, span, simple);
             }
-            if (horizontal)
-            {
-                AddRainArc(vh, outer.xMax - radius, outer.yMax - radius, radius, inner, 0f, Mathf.PI * 0.5f,
-                    color, outer, dNear, dFar, trackH, fade, span, simple);
-                AddRainArc(vh, outer.xMin + radius, outer.yMax - radius, radius, inner, Mathf.PI * 0.5f, Mathf.PI,
-                    color, outer, dNear, dFar, trackH, fade, span, simple);
-            }
-            if (vertical)
-            {
-                AddRainArc(vh, outer.xMin + radius, outer.yMin + radius, radius, inner, Mathf.PI, Mathf.PI * 1.5f,
-                    color, outer, dNear, dFar, trackH, fade, span, simple);
-                AddRainArc(vh, outer.xMax - radius, outer.yMin + radius, radius, inner, Mathf.PI * 1.5f, Mathf.PI * 2f,
-                    color, outer, dNear, dFar, trackH, fade, span, simple);
-            }
+            // ALL FOUR corner arcs, in every side mode. The two axis flags gate only the straight
+            // strips, and both single-axis modes keep bars whose ends are the top AND the bottom
+            // corners -- so gating the arcs on the same flags left the opposite pair undrawn and
+            // punched two radius x radius transparent notches out of the outline ring (sides == 2
+            // lost the top pair, sides == 1 the bottom pair). / 四角弧在**任何** sides 模式下都
+            // 全部发出。两个轴开关只门控直条，而两种单轴模式保留下来的直条其两端都是**上下**
+            // 两组角，于是沿用同一组开关门控弧会让对侧那对弧不发，在描边环上挖出两个
+            // radius x radius 的透明缺口（sides == 2 缺顶部、sides == 1 缺底部）。
+            AddRainArc(vh, outer.xMax - radius, outer.yMax - radius, radius, inner, 0f, Mathf.PI * 0.5f,
+                color, outer, dNear, dFar, trackH, fade, span, simple);
+            AddRainArc(vh, outer.xMin + radius, outer.yMax - radius, radius, inner, Mathf.PI * 0.5f, Mathf.PI,
+                color, outer, dNear, dFar, trackH, fade, span, simple);
+            AddRainArc(vh, outer.xMin + radius, outer.yMin + radius, radius, inner, Mathf.PI, Mathf.PI * 1.5f,
+                color, outer, dNear, dFar, trackH, fade, span, simple);
+            AddRainArc(vh, outer.xMax - radius, outer.yMin + radius, radius, inner, Mathf.PI * 1.5f, Mathf.PI * 2f,
+                color, outer, dNear, dFar, trackH, fade, span, simple);
         }
 
         private static void DrawRainSolidRect(VertexHelper vh, float xL, float xR, float yB, float yT, Color color,
@@ -772,14 +774,26 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // 可替换鬼雨贴图配合大自定义节点会把一滴雨变成无界嵌套平铺循环。带边框路径此前完全没
             // 上限；遇到病态平铺数量时退化为一个拉伸四边形，保留可见鬼雨并防止主线程卡死/顶点爆炸。
             const long maxGhostTilesPerAxis = 32;
-            if (nTilesW <= 0 || nTilesH <= 0) return;
-            if (nTilesW > maxGhostTilesPerAxis || nTilesH > maxGhostTilesPerAxis)
+            // A zero/negative tile count means the borders swallowed the whole rect (the default
+            // GhostRain border is 11 px on every side, 22 px total), which happens routinely while
+            // a drop is still growing. That is NOT a reason to skip the method: the four corner
+            // quads below are the ONLY way this drop gets drawn in that state, and returning early
+            // made the ghost vanish outright — dropping its first frames on every spawn. The
+            // center tiling and the border strips need positive counts; the corners never do.
+            // 平铺数为零/负说明边框吃掉了整个矩形（默认鬼雨四边各 11px、合计 22px），而这在雨滴
+            // 生长过程中是常事。这**不是**跳过整个方法的理由：下面的四角四边形在该状态下是这滴
+            // 雨唯一的画法，提前返回会让鬼雨彻底消失——每次生成都丢掉最初几帧。中心平铺与边框
+            // 条带需要正的平铺数，四角不需要。
+            bool hasTiles = nTilesW > 0 && nTilesH > 0;
+            if (hasTiles && (nTilesW > maxGhostTilesPerAxis || nTilesH > maxGhostTilesPerAxis))
             {
                 RainLayer.AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, oL, oR, oB, oT, c, c);
                 return;
             }
             float px = r.xMin, py = r.yMin;
 
+            if (hasTiles)
+            {
             // Center tiles / 中心平铺
             for (long j = 0; j < nTilesH; j++)
             {
@@ -813,6 +827,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 if (x2 > xMax) { uClip = iL + (iR - iL) * (xMax - x1) / (x2 - x1); x2 = xMax; }
                 RainLayer.AddQuad(vh, px + x1, px + x2, py, py + yMin, iL, uClip, oB, iB, c, c);
                 RainLayer.AddQuad(vh, px + x1, px + x2, py + yMax, py + r.height, iL, uClip, iT, oT, c, c);
+            }
             }
             // Corners / 四角
             RainLayer.AddQuad(vh, px, px + xMin, py, py + yMin, oL, iL, oB, iB, c, c);

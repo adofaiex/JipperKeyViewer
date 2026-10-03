@@ -291,13 +291,32 @@ namespace JipperKeyViewer.KeyViewer
 
             GUILayout.Label(I18n.Tr("rain_width") + ":");
             float newW1 = FloatSliderField(I18n.Tr("rain_width_row1"), Settings.Data.RainWidthRow1, 10f, 200f, "F0");
-            if (!Mathf.Approximately(newW1, Settings.Data.RainWidthRow1)) { Settings.Data.RainWidthRow1 = newW1; SaveSettingsFromGui(); }
+            // NodeWidth is baked into each live RawRain at spawn and UpdateLocation reuses it every
+            // frame, so without a rebuild here a width slider looks dead until the drops happen
+            // to end. / NodeWidth 在雨滴生成时被烘焙进 RawRain，UpdateLocation 每帧复用，故这里不
+            // 重建就等于滑杆看起来失灵，直到雨滴恰好结束才生效。
+            if (!Mathf.Approximately(newW1, Settings.Data.RainWidthRow1))
+            {
+                Settings.Data.RainWidthRow1 = newW1;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
             float newW2 = FloatSliderField(I18n.Tr("rain_width_row2"), Settings.Data.RainWidthRow2, 10f, 200f, "F0");
-            if (!Mathf.Approximately(newW2, Settings.Data.RainWidthRow2)) { Settings.Data.RainWidthRow2 = newW2; SaveSettingsFromGui(); }
+            if (!Mathf.Approximately(newW2, Settings.Data.RainWidthRow2))
+            {
+                Settings.Data.RainWidthRow2 = newW2;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
             if (HasThirdRow)
             {
                 float newW3 = FloatSliderField(I18n.Tr("rain_width_row3"), Settings.Data.RainWidthRow3, 10f, 200f, "F0");
-                if (!Mathf.Approximately(newW3, Settings.Data.RainWidthRow3)) { Settings.Data.RainWidthRow3 = newW3; SaveSettingsFromGui(); }
+                if (!Mathf.Approximately(newW3, Settings.Data.RainWidthRow3))
+                {
+                    Settings.Data.RainWidthRow3 = newW3;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
             }
 
             bool newRoundedOutline = GUILayout.Toggle(Settings.Data.EnableRainRoundedOutline, I18n.Tr("rain_rounded_outline"));
@@ -468,13 +487,28 @@ namespace JipperKeyViewer.KeyViewer
                 // 宽度标签此前误用排名("第 N 排")——从起始 Y 区块复制而来;现与上方普通雨
                 // 宽度块一致使用宽度文案。
                 float newGW1 = FloatSliderField(I18n.Tr("rain_width_row1"), Settings.Data.GhostRainWidthRow1, 10f, 200f, "F0");
-                if (!Mathf.Approximately(newGW1, Settings.Data.GhostRainWidthRow1)) { Settings.Data.GhostRainWidthRow1 = newGW1; SaveSettingsFromGui(); }
+                if (!Mathf.Approximately(newGW1, Settings.Data.GhostRainWidthRow1))
+                {
+                    Settings.Data.GhostRainWidthRow1 = newGW1;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
                 float newGW2 = FloatSliderField(I18n.Tr("rain_width_row2"), Settings.Data.GhostRainWidthRow2, 10f, 200f, "F0");
-                if (!Mathf.Approximately(newGW2, Settings.Data.GhostRainWidthRow2)) { Settings.Data.GhostRainWidthRow2 = newGW2; SaveSettingsFromGui(); }
+                if (!Mathf.Approximately(newGW2, Settings.Data.GhostRainWidthRow2))
+                {
+                    Settings.Data.GhostRainWidthRow2 = newGW2;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
                 if (HasThirdRow)
                 {
                     float newGW3 = FloatSliderField(I18n.Tr("rain_width_row3"), Settings.Data.GhostRainWidthRow3, 10f, 200f, "F0");
-                    if (!Mathf.Approximately(newGW3, Settings.Data.GhostRainWidthRow3)) { Settings.Data.GhostRainWidthRow3 = newGW3; SaveSettingsFromGui(); }
+                    if (!Mathf.Approximately(newGW3, Settings.Data.GhostRainWidthRow3))
+                    {
+                        Settings.Data.GhostRainWidthRow3 = newGW3;
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                        SaveSettingsFromGui();
+                    }
                 }
             }
 

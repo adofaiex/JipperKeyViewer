@@ -916,6 +916,19 @@ namespace JipperKeyViewer.KeyViewer
                 if (newFootStyle != Settings.Data.FootKeyViewerStyle)
                 {
                     Settings.Data.FootKeyViewerStyle = newFootStyle;
+                    // Choosing a style by hand is how a deferred foot-slot migration gets
+                    // resolved. The style is known now, so MigrateFootSlots can run: it applies the
+                    // still-unshifted v3-era counters and clears the marker, and on any ordinary
+                    // (already migrated) profile it returns immediately. DataVersion must NOT be
+                    // forced up here — the SaveSettingsFromGui below stamps it from the meta
+                    // version, and forcing it would re-open the v5→v6 gate for a file that was
+                    // legitimately migrated long ago.
+                    // 手动选定样式，正是那份被推迟的脚键平移得以解决的方式。样式此刻已知，
+                    // MigrateFootSlots 可以运行：它会平移那些仍未搬动的 v3 时代计数并清除标记；
+                    // 而在任何普通（早已迁移过）配置上它立刻返回。此处**不得**强行抬高
+                    // DataVersion——下面的 SaveSettingsFromGui 会按 meta 版本盖章，强行抬高会为
+                    // 早已合法迁移过的文件重新打开 v5→v6 闸门。
+                    MigrateFootSlots(Settings.Data);
                     ResetFootKeyViewer();
                     SaveSettingsFromGui();
                 }
@@ -986,8 +999,17 @@ namespace JipperKeyViewer.KeyViewer
                 // 只判了 `b < 8` 就索引 keyCodes[backSequence[b]]，而紧随其后的第 3 排循环**反倒**
                 // 有守卫。今天 EnsureSettingsArrays 会把两个数组强制成精确默认长度，故这是纵深
                 // 防御而非现存崩溃；但 IMGUI 回调里的越界会让整个设置窗口失效直到重启。
+                // BOTH opened groups must be closed here: BeginVertical("box") at 957 (the section)
+                // and 975 (the per-key list) are both still on IMGUI group stack. Returning after
+                // a single EndVertical leaves the stack one level deep for the rest of the session,
+                // so every later Begin/End pair in the process -- the tab bar, this window, OnGUI
+                // itself -- lands one level off; the settings window then stops responding until
+                // restart. / **两个** BeginVertical 都要闭合：957 行（区块）与 975 行（每键
+                // 列表）此刻都还在 IMGUI 组栈上。此处只 EndVertical 一次就返回，组栈此后永久
+                // 错位一格，本进程后续每次 Begin/End 都落错一层，设置窗口随即不再响应直到重启。
                 if (keyCodes == null || keyCodes.Length < 8)
                 {
+                    GUILayout.EndVertical();
                     GUILayout.EndVertical();
                     return;
                 }

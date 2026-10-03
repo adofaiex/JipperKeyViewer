@@ -1546,6 +1546,16 @@ namespace JipperKeyViewer.KeyViewer
                 ((RectTransform)key.visuals).anchoredPosition = new Vector2(x + key.keySize.x * 0.5f, y);
             if (keyShapeLayer != null && key.shapeSlot >= 0)
                 keyShapeLayer.SetRect(key.shapeSlot, x, y - key.keySize.y * 0.5f, key.keySize.x, key.keySize.y);
+            // The fixed glow derives its rect from the key root on every ApplyFixedGlow pass, and
+            // every reposition path runs ApplyFixedKeyGlows BEFORE SetKeyPosition (BuildOverlay,
+            // ResetKeyViewer, ResetFootKeyViewer, and both color passes) -- so the glow stayed at
+            // its previous coordinates until the next press dragged it along. Re-apply here,
+            // immediately after the move. Custom nodes position themselves and are excluded.
+            // 固定光效每次都从按键根推算矩形，而各条重定位路径都把 ApplyFixedKeyGlows 排在
+            // SetKeyPosition **之前**（BuildOverlay、ResetKeyViewer、ResetFootKeyViewer 与两条
+            // 着色路径），于是光效停在旧坐标直到下一次按压才被拖过去。这里移动后立即重算；
+            // 自定义节点自行定位，故排除。
+            if (!IsCustomLayout) ApplyFixedGlow(key, keyIndex, key.isPressed);
         }
 
         /// <summary>Get color setting by numeric index (0-8) for the color picker / 通过数字索引（0-8）获取颜色设置，用于颜色选择器</summary>

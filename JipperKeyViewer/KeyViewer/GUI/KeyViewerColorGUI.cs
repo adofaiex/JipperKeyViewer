@@ -669,6 +669,15 @@ namespace JipperKeyViewer.KeyViewer
         private static readonly string[] PerKeyCountCtrlNames = BuildPerKeyCountCtrlNames(MaxKeySlots);
         private static readonly string[] perKeyResetLabelText = new string[MaxKeySlots];
         private static readonly int[] perKeyResetLabelCache = new int[MaxKeySlots];
+        // The label cache is compared against live state and is therefore keyed on more than the
+        // count: the label is localized, so the language joins the key, and a null entry is treated
+        // as "never built" rather than relying on an int sentinel -- a fresh config has Count[s] == 0
+        // for every slot, so a 0 sentinel matched on the very first frame and left the button text
+        // null (an empty button) until the count happened to change. / 标签缓存与实时状态比较，故键
+        // 不止计数一个：标签是本地化的，故语言也是键的一部分；"尚未构建"改用 null 判定而非 int
+        // 哨兵——全新配置的每个槽位 Count[s] 都是 0，0 哨兵在第一帧就命中，按钮文本保持 null
+        // （空按钮）直到计数恰好变化。
+        private static readonly string[] perKeyResetLabelLang = new string[MaxKeySlots];
         private static readonly System.Text.StringBuilder perKeyCtrlBuilder = new System.Text.StringBuilder(24);
         private readonly GUILayoutOption perKeyCountWidth = GUILayout.Width(64f);
 
@@ -835,9 +844,17 @@ namespace JipperKeyViewer.KeyViewer
             // 两次 ToString 与两处字符串拼接此前对**每个**按键在**每个** IMGUI 事件都执行，包括
             // 用户根本没滚到的那些。现把按钮文本按其显示的计数缓存，并为每个槽位复用一个控件名。
             int displayedCount = Settings.Data.Count[s];
-            if (perKeyResetLabelCache[s] != displayedCount)
+            // Count + language + a null check make up the cache key. Comparing the count alone
+            // left a brand-new profile with a null label on every slot, and left the text stale
+            // after a language switch; either way the button below is handed null. / 计数、语言、
+            // 以及一次 null 判定共同构成缓存键。只比计数会让全新配置的每个槽位拿到 null 标签，
+            // 切语言后文本也陈旧——两种情况都会把 null 交给下面的按钮。
+            if (perKeyResetLabelCache[s] != displayedCount
+                || !string.Equals(perKeyResetLabelLang[s], I18n.Lang, System.StringComparison.Ordinal)
+                || perKeyResetLabelText[s] == null)
             {
                 perKeyResetLabelCache[s] = displayedCount;
+                perKeyResetLabelLang[s] = I18n.Lang;
                 perKeyResetLabelText[s] = I18n.Tr("reset_counts") + " (" + displayedCount.ToString() + ")";
             }
             string typed = TextInputField(PerKeyCountCtrl(s), displayedCount.ToString(), perKeyCountWidth);

@@ -539,6 +539,30 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// </summary>
         public int NodeDefaultsVersion;
 
+        /// <summary>Set when a foot-slot migration was DECLINED because this build does not
+        /// recognise the profile's FootKeyviewerStyle, so the v3-era foot counters are still parked
+        /// on the OLD slots (20..) and must be shifted by a build that knows the style.
+        ///
+        /// This is a persisted marker, not a transient flag, because <c>DataVersion</c> alone cannot
+        /// carry the state: MigrateFootSlots leaves DataVersion below 4 on purpose, and
+        /// SaveCurrentProfile then unconditionally raises it to the meta version on the very next
+        /// save. That forward stamp is CORRECT for every other profile and cannot simply be
+        /// removed, but it consumes the escape hatch, so the v3 foot counters would read back as a
+        /// permanent 0 — the round-38 bug, re-armed and now genuinely permanent. The stamp is
+        /// therefore skipped while this flag is set, and cleared once the style is recognised (or
+        /// explicitly resolved by the user in the GUI).
+        ///
+        /// 标记「本次脚键平移被**推迟**」：本构建不认识该 Profile 的 FootKeyviewerStyle，于是 v3
+        /// 时代的脚键计数仍停在旧槽位（20..），必须由认识该样式的构建来平移。
+        ///
+        /// 这是**持久化**标记而非临时标志，因为 <c>DataVersion</c> 单独承载不了这个状态：
+        /// MigrateFootSlots 是故意把 DataVersion 留在 4 以下，而 SaveCurrentProfile 随即在**下一次**
+        /// 保存时无条件把它抬到 meta 版本。前向盖章对其余所有 Profile 都是**正确**的，不能简单
+        /// 去掉，但它会吞掉这个逃生口——v3 的脚键计数就会读回永久的 0，即第 38 轮那个 bug 被
+        /// 重新武装且这次真的永久。故此标志置位期间跳过该盖章；样式被认识（或用户在界面里显式
+        /// 选定）后清除。/ 该字段参与序列化。</summary>
+        public bool FootSlotsMigrationDeferred;
+
         /// <summary>Bump when a new defaulted FmNode field is added, so the one-shot legacy repair
         /// below re-runs for profiles written before the field existed. Gate:
         /// `NodeDefaultsVersion < NodeTextDefaultsVersion` in SyncArraysFromLists. The Harness
