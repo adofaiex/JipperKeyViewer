@@ -255,26 +255,15 @@ namespace JipperKeyViewer.KeyViewer.Util
         /// .jkv 就能携带这种文件。</summary>
         private const long MaxImageBytes = 16L * 1024 * 1024;
 
-        /// <summary>The bound is on TOTAL PIXELS, not on each axis. A per-axis 4096 cap states the
-        /// same number the wrong way round: it refuses images that are modest in memory but merely
-        /// tall or wide — a 400x4360 strip costs 7 MB of VRAM, and the user's own presets are full of
-        /// them — while catching nothing the pixel budget misses. A bomb is enormous in AREA, not in
-        /// aspect ratio; 65535x65535 is 4.3 billion pixels either way. 4096x4096 RGBA32 is
-        /// 67,108,864 bytes = 64 MB, which is exactly the per-texture ceiling this has always
-        /// claimed to enforce. / 上限约束的是**总像素**而非单边。单边 4096 把同一个数字说反了：
-        /// 它拒绝内存并不大的、只是偏高或偏宽的图——400x4360 的长条只要 7 MB 显存，用户自己的
-        /// 预设里满是这种——却挡不住任何像素预算会漏掉的东西。炸弹是**面积**巨大，不是长宽比
-        /// 夸张；65535x65535 无论怎么算都是 43 亿像素。4096x4096 RGBA32 是 67,108,864 字节 =
-        /// 64 MB，正是此处一直声称要强制的单张贴图上限。</summary>
-        private const long MaxImagePixels = 4096L * 4096L;
-
-        /// <summary>Sanity ceiling on ONE axis, above every GPU's max texture size. This is not the
-        /// memory bound (MaxImagePixels is that one); it only stops the decoder from being handed an
-        /// edge no texture can ever have, which the pixel budget alone would wave through (65535x1
-        /// is 65k pixels). / 单边的常识上限，高于任何 GPU 的最大贴图尺寸。它不是内存上限（那是
-        /// MaxImagePixels），只用于阻止把解码器喂给一条任何贴图都不可能具有的边长——单靠像素
-        /// 预算会放行这种情况（65535x1 才 6.5 万像素）。</summary>
-        private const int MaxImageEdge = 16384;
+        /// <summary>Ceiling on ONE axis. 4096 was not chosen by a pixel budget but is exactly one:
+        /// 4096x4096 RGBA32 is 67,108,864 bytes = 64 MB, the largest single texture this loader has
+        /// always claimed to allow. Both edges being capped at 4096 also means no accepted image can
+        /// exceed 4096x4096 in area, so the cap IS the pixel budget — a second, wider area rule
+        /// would be unreachable code. / 单边上限。4096 不是按像素预算挑的，而是恰好等于一个：
+        /// 4096x4096 RGBA32 是 67,108,864 字节 = 64 MB，是本加载器一直声称允许的最大单张贴图。
+        /// 且两条边都被 4096 挡住时，任何被接受的图片面积都不可能超过 4096x4096——所以单边
+        /// 上限**就是**像素预算，再加一条更宽松的面积规则只会是走不到的死代码。</summary>
+        private const int MaxImageEdge = 4096;
 
         /// <summary>Is this decoded (or PNG-header-declared) size one the loader accepts? Shared by
         /// the pre-decode PNG header check and the post-decode check so the two can never disagree
@@ -285,8 +274,7 @@ namespace JipperKeyViewer.KeyViewer.Util
         internal static bool SizeWithinLimits(int width, int height)
         {
             if (width <= 0 || height <= 0) return false;
-            if (width > MaxImageEdge || height > MaxImageEdge) return false;
-            return (long)width * height <= MaxImagePixels;
+            return width <= MaxImageEdge && height <= MaxImageEdge;
         }
 
         /// <summary>Which limit a refused size broke, with the numbers — "unusable size" sent every
@@ -295,8 +283,7 @@ namespace JipperKeyViewer.KeyViewer.Util
         private static string DescribeSizeRejection(int width, int height)
         {
             if (width <= 0 || height <= 0) return "an unusable size";
-            if (width > MaxImageEdge || height > MaxImageEdge) return $"an edge over the {MaxImageEdge}px limit";
-            return $"{(long)width * height} pixels, over the {MaxImagePixels} pixel budget";
+            return $"an edge over the {MaxImageEdge}px limit";
         }
 
         private static bool IsPngSignature(byte[] bytes)
