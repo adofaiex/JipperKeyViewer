@@ -1,8 +1,8 @@
 # JipperKeyViewer 项目上下文（代理每次请求都会读到，压缩不会丢失）
 
 ## 事实锚点（2026-09-18 核实）
-- `CHANGELOG.md` 共 274 行；顶部条目 `## 1.7.2`（FreeMake custom-layout editor / 文字描边阴影 /
-  视频键节点 / .jkv 分享包等）；最旧条目 1.6.1。以实际 read 结果为准。
+- `CHANGELOG.md` 共 **298** 行（2026-10-07 核）；顶部条目 `## 1.7.2`（FreeMake custom-layout editor /
+  文字描边阴影 / 视频键节点 / .jkv 分享包等）；最旧条目 1.6.1。以实际 read 结果为准。
 
 ## 当前任务（由用户维护，完成后更新）
 - 已完成：FreeMake 编辑器撤销历史、Profile/预设切换瞬态隔离、迁移幂等标记与失败重试、
@@ -2728,4 +2728,10 @@ DataVersion 照常前向盖章。具体改动：
 #### 收尾状态
 - 改动的生产文件 4 个：`Rendering/KvTextStyle.cs`、`Editor/KeyViewerEditor.cs`、
   `Loader/KeyViewerResources.cs`、`Core/KeyViewerPackages.cs`（Harness 被 gitignore，不进版本库）。
-- **未部署、未提交**：本轮只完成源码修改 + 离线回归；是否编译进 `bin/` 并由用户实机确认由其决定。
+- **已构建 + 已部署 + 已推送**：四个工程 0 错误、离线回归 **211 passed / 0 failed**；三个 dll
+  复制进 `Mods/JipperKeyViewer`（复制前确认游戏进程 NOT_RUNNING），逐个用 `Get-FileHash -Algorithm`
+  加 `SHA256` 与仓库 `bin/` 比对 `ALL_MATCH=True`（核心 dll 28557312 字节）；提交 `cf33b62`
+  （6 文件，+359/-43）并 push（`8343641..cf33b62`，push 后 `ahead=0`）。
+- **但这不等于修好了**：三项仍未获用户实机确认——阴影柔和度 >1 的实际效果、15 处浮点控件改动
+  是否即时刷新并进撤销栈、`.jkv` 导入字体是否无需重启即可选。第 110 轮的教训就是「已部署」
+  曾被当成「已修复生效」。
