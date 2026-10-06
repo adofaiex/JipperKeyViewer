@@ -30,6 +30,29 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         public float ShadowOffsetY;
         public float ShadowSoftness;
 
+        /// <summary>Upper bound of the shadow-softness value, shared by the resolver below and by
+        /// CustomLayout's load-time sanitizer (SanitizeTextStyle(..., 0f, 64f)) and the editor's
+        /// Mathf.Clamp(v, 0f, 64f). The resolver used to clamp to 1.0, so every softness the user
+        /// legally authored above 1 was silently reduced to 1 on its way into
+        /// mat.SetFloat("_UnderlaySoftness") — the field showed 30, the JSON kept 30, and the
+        /// shadow rendered at 1. /
+        /// 阴影柔和度上限，由下方解析器、CustomLayout 的加载期净化（SanitizeTextStyle(..., 0f, 64f)）
+        /// 与编辑器的 Mathf.Clamp(v, 0f, 64f) 共用。解析器此前钳成 1.0，于是用户合法写下的、大于 1
+        /// 的柔和度在进入 mat.SetFloat("_UnderlaySoftness") 的路上被静默压成 1——字段显示 30、JSON
+        /// 也存 30，阴影却按 1 渲染。</summary>
+        internal const float ShadowSoftnessMax = 64f;
+
+        /// <summary>Magnitude bound of the cache-key quantiser. It must span every LEGAL style value
+        /// or two distinct styles collide onto one key: the cache would hand the second style the
+        /// material minted for the first, so the rendered numbers would not match the resolved ones.
+        /// The legal magnitudes are 1 (outline width), 50 (shadow offsets) and 64 (softness), so the
+        /// old +-10 band already collided softness 30 with 64 — and offsets 15 with 20. /
+        /// 缓存键量化器的幅值上限。它必须覆盖**每一个合法**样式值，否则两个不同样式会撞到同一个键：
+        /// 缓存会把为第一个样式铸出的材质交给第二个，渲染出来的数值便与解析出的不符。合法幅值为
+        /// 1（描边宽）、50（阴影偏移）与 64（柔和度），故旧的 ±10 区间本就让柔和度 30 与 64、
+        /// 偏移 15 与 20 撞键。</summary>
+        private const float BitsMax = 100f;
+
         /// <summary>True when the style needs a dedicated material at all. A fully-off style
         /// resolves to the font's own material, which is what every TMP text used before this
         /// feature existed. / 该样式是否需要专属材质。全关的样式回落到字体自带材质，即本功能
@@ -75,8 +98,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // 共用同一个材质。钳到宽而有限的区间也避免了 1e30f 溢出 RoundToInt（f * 1000f 本身
             // 已是 Infinity，其 int 转换在 x86 上未定义）——而配置 JSON 可以携带这种值。
             if (float.IsNaN(f)) return 0L;
-            if (float.IsInfinity(f)) return f > 0f ? 10000L : -10000L;
-            float clamped = Mathf.Clamp(f, -10f, 10f);
+            // The Infinity sentinels MUST sit outside the finite band (BitsMax * 1000 = 100000), or a
+            // legal value collides with them: the old +-10 band already reserved 10000 for +Inf, and
+            // a finite 10.0 quantises to exactly 10000 — so "softness 10" and "softness +Inf" shared
+            // one material. Keep them clear of every representable finite result.
+            // Infinity 哨兵值**必须**落在有限区间（BitsMax * 1000 = 100000）之外，否则会与合法值
+            // 撞键：旧的 ±10 区间已把 10000 留给 +Inf，而有限的 10.0 量化后正好也是 10000——于是
+            // 「柔和度 10」与「柔和度 +Inf」共用同一份材质。哨兵须避开一切可表示的有限结果。
+            if (float.IsInfinity(f)) return 1000000L * (f > 0f ? 1L : -1L);
+            float clamped = Mathf.Clamp(f, -BitsMax, BitsMax);
             return (long)Mathf.RoundToInt(clamped * 1000f);
         }
 
@@ -160,7 +190,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     s.ShadowColor = ColorOf(node.KeyTextShadowColor, SafeColor(d?.KeyTextShadowColor ?? Color.black, Color.black));
                     s.ShadowOffsetX = SafeFloat(node.KeyTextShadowOffsetX, -50f, 50f, 1f);
                     s.ShadowOffsetY = SafeFloat(node.KeyTextShadowOffsetY, -50f, 50f, -1f);
-                    s.ShadowSoftness = SafeFloat(node.KeyTextShadowSoftness, 0f, 1f, 0f);
+                    s.ShadowSoftness = SafeFloat(node.KeyTextShadowSoftness, 0f, ShadowSoftnessMax, 0f);
                 }
                 else
                 {
@@ -171,7 +201,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     s.ShadowColor = ColorOf(node.CountTextShadowColor, SafeColor(d?.CountTextShadowColor ?? Color.black, Color.black));
                     s.ShadowOffsetX = SafeFloat(node.CountTextShadowOffsetX, -50f, 50f, 1f);
                     s.ShadowOffsetY = SafeFloat(node.CountTextShadowOffsetY, -50f, 50f, -1f);
-                    s.ShadowSoftness = SafeFloat(node.CountTextShadowSoftness, 0f, 1f, 0f);
+                    s.ShadowSoftness = SafeFloat(node.CountTextShadowSoftness, 0f, ShadowSoftnessMax, 0f);
                 }
             }
             else if (d != null)
@@ -185,7 +215,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     s.ShadowColor = SafeColor(d.KeyTextShadowColor, Color.black);
                     s.ShadowOffsetX = SafeFloat(d.KeyTextShadowOffsetX, -50f, 50f, 1f);
                     s.ShadowOffsetY = SafeFloat(d.KeyTextShadowOffsetY, -50f, 50f, -1f);
-                    s.ShadowSoftness = SafeFloat(d.KeyTextShadowSoftness, 0f, 1f, 0f);
+                    s.ShadowSoftness = SafeFloat(d.KeyTextShadowSoftness, 0f, ShadowSoftnessMax, 0f);
                 }
                 else
                 {
@@ -196,7 +226,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     s.ShadowColor = SafeColor(d.CountTextShadowColor, Color.black);
                     s.ShadowOffsetX = SafeFloat(d.CountTextShadowOffsetX, -50f, 50f, 1f);
                     s.ShadowOffsetY = SafeFloat(d.CountTextShadowOffsetY, -50f, 50f, -1f);
-                    s.ShadowSoftness = SafeFloat(d.CountTextShadowSoftness, 0f, 1f, 0f);
+                    s.ShadowSoftness = SafeFloat(d.CountTextShadowSoftness, 0f, ShadowSoftnessMax, 0f);
                 }
             }
             // A zero/negative outline width renders nothing while still costing a material, so a

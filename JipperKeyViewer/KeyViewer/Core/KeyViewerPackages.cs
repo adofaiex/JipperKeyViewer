@@ -112,6 +112,21 @@ namespace JipperKeyViewer.KeyViewer
             private long totalExpandedBytes;
             private string profilePath;
 
+            /// <summary>How many entries this import staged under `fonts/`. The font registry lives in
+            /// fontList and is only ever rebuilt by ScanCustomFonts, whose other call site
+            /// (TryLoadResources) returns early once the overlay exists — so without an explicit
+            /// rescan after the import, a profile that selects "Custom: <name>" from the package
+            /// resolves to no entry at all and silently renders in the FontIndex 0 fallback face until
+            /// the game is restarted. Counted here (rather than guessed from the archive) so the
+            /// rescan runs only when this import really did add font files; an import that brought
+            /// none must not bake atlases. /
+            /// 本次导入在 `fonts/` 下落盘的条目数。字体注册表位于 fontList，只由 ScanCustomFonts
+            /// 重建，而它的另一个调用点（TryLoadResources）在覆盖层存在后就提前返回——因此若导入后
+            /// 不显式重扫，选中包内 "Custom: <名称>" 的配置会解析不到任何条目，并以 FontIndex 0 的
+            /// 回退字面静默渲染，直到重启游戏。在此计数（而非从归档猜测），使重扫只在本次导入**确实**
+            /// 添加了字体文件时执行；没带字体的导入绝不能烘焙图集。</summary>
+            public int StagedFontCount { get; private set; }
+
             public PackageImportTransaction()
             {
                 string modPath = Loader.ResolveModPath();
@@ -162,6 +177,8 @@ namespace JipperKeyViewer.KeyViewer
                     }
                 }
 
+                if (string.Equals(category, "fonts", StringComparison.OrdinalIgnoreCase))
+                    StagedFontCount++;
                 stagedFiles.Add(new StagedFile
                 {
                     StagedPath = stagedPath,
@@ -759,6 +776,13 @@ namespace JipperKeyViewer.KeyViewer
 
                 // The profile can only resolve assets after they are in their final directories.
                 transaction.CommitFiles();
+                // Register any fonts this package just installed, BEFORE SwitchProfile renders the
+                // imported layout: the profile's "Custom: <name>" font selection only resolves against
+                // fontList, and nothing else re-scans CustomFont once the overlay has been built. /
+                // 在 SwitchProfile 渲染导入的布局**之前**注册这个包刚装好的字体：配置里的
+                // 「Custom: <名称>」字体选择只对着 fontList 解析，而覆盖层构建完成后没有任何东西会
+                // 重扫 CustomFont。
+                if (transaction.StagedFontCount > 0) RescanCustomFontsAfterImport();
                 metadataChanged = true;
                 SyncProfilesWithDisk();
                 if (!SwitchProfile(newName)) throw new IOException($"Imported profile '{newName}' could not be activated");

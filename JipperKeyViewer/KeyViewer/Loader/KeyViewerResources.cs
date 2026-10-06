@@ -921,6 +921,64 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>Re-run the CustomFont scan AFTER a package import, so the fonts a .jkv just
+        /// dropped into CustomFont\ become selectable without a reload.
+        ///
+        /// Why this is needed at all: TryLoadResources (the only other caller of ScanCustomFonts)
+        /// returns early at its `keyBackgroundSprite != null` guard, so once the overlay has been
+        /// built the scan NEVER runs again — and a profile import commits its `fonts/` entries into
+        /// CustomFont\ long after that. An imported profile that selects "Custom: <name>" therefore
+        /// had NO matching fontList entry: GetCurrentFont fell back to FontIndex 0, the label was
+        /// rendered in the wrong face, and the user had to restart the game for the imported font to
+        /// appear. This is the import-path half of the same gap DmNote presets already handle.
+        ///
+        /// The scan is idempotent by construction (it skips any entry whose `Custom: name` already
+        /// exists) and it only ADDS entries, so calling it after an import cannot disturb the fonts
+        /// already in use. LinkFallbackFonts must be re-run so the new assets also fall back to CJK
+        /// for Chinese glyphs, and the name→index map must be rebuilt because entries were appended.
+        /// / 包导入**之后**重跑 CustomFont 扫描，使 .jkv 刚放进 CustomFont\ 的字体无需重载即可选中。
+        ///
+        /// 为何必须如此：TryLoadResources（ScanCustomFonts 在别处的唯一调用方）会在
+        /// `keyBackgroundSprite != null` 这道闸门提前返回，故覆盖层一旦构建完成，扫描就**再也**不
+        /// 会运行——而配置导入把它的 `fonts/` 条目提交进 CustomFont\ 远在那之后。于是选中
+        /// 「Custom: <名称>」的导入配置**没有**对应的 fontList 条目：GetCurrentFont 回退到
+        /// FontIndex 0，标签以错误字面渲染，用户必须重启游戏才能看到导入的字体。这是同一缺口的
+        /// 导入侧一半，DmNote 预设早已处理。
+        ///
+        /// 扫描按构造即为幂等（已存在同名 `Custom: 名称` 条目即跳过），且只**追加**条目，故在导入后
+        /// 调用不会干扰已在使用的字体。必须重跑 LinkFallbackFonts，使新资源的中文字形同样回退到
+        /// CJK；名称→索引表也必须重建，因为追加了条目。</summary>
+        internal void RescanCustomFontsAfterImport()
+        {
+            // Only meaningful once the resource layer has run at least once: ScanCustomFonts reads
+            // the same directory either way, but the fallback link needs the CJK entry to exist, and
+            // on a never-built overlay the normal EnableKeyViewer path will scan anyway.
+            // 仅在资源层至少跑过一次后才有意义：两种情况下 ScanCustomFonts 读的是同一目录，但回退
+            // 链接需要 CJK 条目存在，且从未构建过覆盖层时正常的 EnableKeyViewer 路径本就会扫描。
+            if (keyBackgroundSprite == null) return;
+            try
+            {
+                ScanCustomFonts();
+                LinkFallbackFonts();
+                // Entries were appended, so the cached name→index map is stale. Without this,
+                // RestoreFontOnce / the settings list resolve the imported name against the OLD
+                // indices and silently select a different font.
+                // 追加了条目，故缓存的名称→索引表已过期。若不重建，RestoreFontOnce / 设置列表会拿
+                // **旧**索引解析导入的名称，静默选中另一个字体。
+                fontNameIndex = new Dictionary<string, int>(fontList.Count);
+                for (int i = 0; i < fontList.Count; i++)
+                    fontNameIndex[fontList[i].name] = i;
+            }
+            catch (Exception e)
+            {
+                // An import must not fail because of an optional font. ScanCustomFonts already guards
+                // its own directory IO; this guards the rest (atlas baking, fallback linking).
+                // 导入绝不能因为一个可选字体而失败。ScanCustomFonts 已守护自己的目录 IO；此处守护
+                // 其余部分（图集烘焙、回退链接）。
+                Loader.Error($"KeyViewer: custom font rescan after import failed: {e.Message}");
+            }
+        }
+
         /// <summary>
         /// Scan the CustomFont directory for .ttf and .otf files and load them as TMP_FontAsset / 扫描 CustomFont 目录中的 .ttf 和 .otf 文件并将其作为 TMP_FontAsset 加载
         /// </summary>

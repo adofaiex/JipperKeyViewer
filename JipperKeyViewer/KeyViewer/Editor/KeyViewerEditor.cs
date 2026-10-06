@@ -913,55 +913,109 @@ namespace JipperKeyViewer.KeyViewer
             List<FmNode> sel = new List<FmNode>();
             foreach (FmNode n in editorSelection) if (n != null) sel.Add(n);
             if (sel.Count < 2) return;
+            // Both axes route through the same two pure helpers, which Harness can call directly:
+            // the edge-anchor bug fixed here lived in the twin branches, so keeping ONE rule (plus
+            // a test that pins it) is what stops the two copies drifting apart again.
+            // 两根轴都走同一对纯函数，Harness 可直接调用：此处修掉的边缘锚定 bug 正藏在孪生
+            // 分支里，故保留**一条**规则（外加钉住它的测试）才能防止两份实现再次漂移。
             if (mode <= 2)
             {
                 sel.Sort((a, b) => a.X.CompareTo(b.X));
-                float minX = sel[0].X;
-                float maxX = float.MinValue;
-                foreach (FmNode n in sel) maxX = Math.Max(maxX, n.X + n.Width);
-                if (mode == 1)
-                {
-                    // Center every node on the selection's horizontal midpoint.  The previous
-                    // implementation used minX for this branch, making the button a no-op and
-                    // failing for nodes with different widths. / 每个节点按选区水平中点居中。
-                    // 旧实现此分支误用 minX，按钮实际不生效且无法处理不同宽度。
-                    float center = (minX + maxX) * 0.5f;
-                    foreach (FmNode n in sel) n.X = center - n.Width * 0.5f;
-                }
-                else
-                {
-                    float target = mode == 0 ? minX : maxX - sel[sel.Count - 1].Width;
-                    sel[0].X = target;
-                    float gap = sel[1].X - (sel[0].X + sel[0].Width);
-                    for (int i = 1; i < sel.Count; i++)
-                        sel[i].X = sel[i - 1].X + sel[i - 1].Width + gap;
-                }
+                if (mode == 1) ApplyAlignCenter(sel, false);
+                else ApplyAlignEdgeChain(sel, false, mode != 0);
             }
             else
             {
                 sel.Sort((a, b) => a.Y.CompareTo(b.Y));
-                float minY = sel[0].Y;
-                float maxY = float.MinValue;
-                foreach (FmNode n in sel) maxY = Math.Max(maxY, n.Y + n.Height);
-                if (mode == 4)
-                {
-                    // Same true-center rule vertically. / 垂直方向使用同样的真实中心规则。
-                    float center = (minY + maxY) * 0.5f;
-                    foreach (FmNode n in sel) n.Y = center - n.Height * 0.5f;
-                }
-                else
-                {
-                    float target = mode == 3 ? minY : maxY - sel[sel.Count - 1].Height;
-                    sel[0].Y = target;
-                    float gap = sel[1].Y - (sel[0].Y + sel[0].Height);
-                    for (int i = 1; i < sel.Count; i++)
-                        sel[i].Y = sel[i - 1].Y + sel[i - 1].Height + gap;
-                }
+                if (mode == 4) ApplyAlignCenter(sel, true);
+                else ApplyAlignEdgeChain(sel, true, mode != 3);
             }
             // EditorPropertyChanged records the post-change state, saves, and rebuilds the
             // overlay. Do not push a second snapshot here: doing so creates a no-op undo step.
             // EditorPropertyChanged 已负责后置快照、保存和重建；不要再压第二条快照，否则会多出空撤销。
             EditorPropertyChanged();
+        }
+
+        /// <summary>Far edge of the selection along one axis (max of `origin + size`). The caller
+        /// sorts first, so sel[0] already holds the minimum and only the far edge is computed. /
+        /// 选区沿一根轴的远端边缘（`原点 + 尺寸` 的最大值）。调用方已排好序，故 sel[0] 即最小值，
+        /// 此处只算远端。</summary>
+        internal static float SelectionFarEdge(List<FmNode> sorted, bool vertical)
+        {
+            float far = float.MinValue;
+            for (int i = 0; i < sorted.Count; i++)
+            {
+                FmNode n = sorted[i];
+                float edge = vertical ? n.Y + n.Height : n.X + n.Width;
+                if (edge > far) far = edge;
+            }
+            return far;
+        }
+
+        /// <summary>Centre-alignment: move every node so its TRUE centre lands on the selection's
+        /// mid-line. Using each node's real size is what makes differently-sized nodes actually
+        /// share a centre; the old code measured the midpoint from the near edge only and then
+        /// offset by half a width, so mixed-size selections ended up visibly off-centre. /
+        /// 居中：把每个节点移到其**真实**中心落在选区中线上。按真实尺寸计算才能使不同大小的节点
+        /// 真正共线；旧代码只从近端边缘取中点再按半宽偏移，混合尺寸的选区会明显偏掉。</summary>
+        internal static void ApplyAlignCenter(List<FmNode> sorted, bool vertical)
+        {
+            float near = vertical ? sorted[0].Y : sorted[0].X;
+            float center = (near + SelectionFarEdge(sorted, vertical)) * 0.5f;
+            foreach (FmNode n in sorted)
+            {
+                if (vertical) n.Y = center - n.Height * 0.5f;
+                else n.X = center - n.Width * 0.5f;
+            }
+        }
+
+        /// <summary>Edge alignment that preserves the ORIGINAL gaps, in either direction.
+        ///
+        /// `toFar == false` pins the selection's NEAR edge (left/top) and walks forward;
+        /// `toFar == true` pins the FAR edge (right/bottom) and walks backward.
+        ///
+        /// The gap is measured from the ORIGINAL positions BEFORE anything moves. That ordering is
+        /// the whole bug this replaced: the old right/bottom branch first assigned the near node
+        /// to the far anchor and then measured the gap between the already-jumped node and its
+        /// neighbour — a NEGATIVE gap. The chain mirrored left-to-right, only the last node's far
+        /// edge stayed pinned, and with two equal-width nodes it was a no-op. Both directions now
+        /// keep X/Y ascending and the same uniform spacing. /
+        /// 保留**原始**间距的边缘对齐，两个方向共用。`toFar == false` 钉近端边缘（左/上）向前走；
+        /// `toFar == true` 钉远端边缘（右/下）向后走。间距在移动**之前**按原始位置量取——这个顺序
+        /// 正是被替换掉的 bug 本身：旧的右/底分支先把近端节点赋到远端锚点、再量它与邻居的间距，
+        /// 得到**负**间距。链条左右镜像、只有最后一个节点的远端边缘仍被钉住，两个等宽节点时等于
+        /// 没按。现在两个方向都保持 X/Y 递增与同一份均匀间距。</summary>
+        internal static void ApplyAlignEdgeChain(List<FmNode> sorted, bool vertical, bool toFar)
+        {
+            if (sorted.Count < 2) return;
+            float gap = vertical
+                ? sorted[1].Y - (sorted[0].Y + sorted[0].Height)
+                : sorted[1].X - (sorted[0].X + sorted[0].Width);
+            if (!toFar)
+            {
+                // The near node is already at the near edge (the caller sorted ascending), so only
+                // the rest of the chain moves. / 近端节点本就在近端边缘（调用方已升序排列），故只
+                // 需铺开链条其余部分。
+                for (int i = 1; i < sorted.Count; i++)
+                {
+                    if (vertical) sorted[i].Y = sorted[i - 1].Y + sorted[i - 1].Height + gap;
+                    else sorted[i].X = sorted[i - 1].X + sorted[i - 1].Width + gap;
+                }
+            }
+            else
+            {
+                // Pin the FAR edge of the outermost node and walk back, so the chain stays ordered.
+                // 钉住最外节点的远端边缘并向回推，使链条保持有序。
+                float far = SelectionFarEdge(sorted, vertical);
+                FmNode last = sorted[sorted.Count - 1];
+                if (vertical) last.Y = far - last.Height; else last.X = far - last.Width;
+                for (int i = sorted.Count - 1; i > 0; i--)
+                {
+                    FmNode prev = sorted[i - 1], cur = sorted[i];
+                    if (vertical) prev.Y = cur.Y - gap - prev.Height;
+                    else prev.X = cur.X - gap - prev.Width;
+                }
+            }
         }
 
         /// <summary>Distribute the selection evenly along one axis: the OUTERMOST nodes stay
@@ -3066,6 +3120,11 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorFloatField(I18n.Tr("press_anim_duration"), "fme_pad_" + first.Id, n => n.PressAnimDurationMs, v =>
                 {
                     foreach (FmNode n in editorSelection) n.PressAnimDurationMs = Mathf.Clamp(v, 10f, 2000f);
+                    // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                    // around every one of these already do. See DrawEditorFloatField. /
+                    // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                    // 见 DrawEditorFloatField。
+                    EditorPropertyChanged();
                 }, "fm_help_press_easing_custom");
             }
 
@@ -3398,6 +3457,11 @@ namespace JipperKeyViewer.KeyViewer
                     DrawEditorFloatField(I18n.Tr("fm_rain_corner_radius"), "fme_rcr_" + first.Id, n => n.RainCornerRadius, v =>
                     {
                         foreach (FmNode n in editorSelection) n.RainCornerRadius = Mathf.Clamp(v, 0f, 20f);
+                        // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                        // around every one of these already do. See DrawEditorFloatField. /
+                        // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                        // 见 DrawEditorFloatField。
+                        EditorPropertyChanged();
                     }, "fm_help_rain_corner");
                 }
                 DrawEditorToggle(I18n.Tr("fm_rain_border_sides_custom"), first.UseCustomRainBorderSides, v =>
@@ -3435,10 +3499,20 @@ namespace JipperKeyViewer.KeyViewer
                         // 0 = dotted OFF for this node (the only way to keep the global toggle on
                         // everywhere else). / 0 = 该节点关闭点状（全局仍可为其它节点开启）。
                         foreach (FmNode n in editorSelection) n.RainDotLength = Mathf.Clamp(v, 0f, 100f);
+                        // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                        // around every one of these already do. See DrawEditorFloatField. /
+                        // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                        // 见 DrawEditorFloatField。
+                        EditorPropertyChanged();
                     }, "fm_help_rain_dotted");
                     DrawEditorFloatField(I18n.Tr("fm_rain_gap_length"), "fme_rgl_" + first.Id, n => n.RainGapLength, v =>
                     {
                         foreach (FmNode n in editorSelection) n.RainGapLength = Mathf.Clamp(v, 0f, 100f);
+                        // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                        // around every one of these already do. See DrawEditorFloatField. /
+                        // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                        // 见 DrawEditorFloatField。
+                        EditorPropertyChanged();
                     }, "fm_help_rain_dotted");
                 }
                 // Per-node GHOST rain shadow/outline — only meaningful with a ghost key bound. /
@@ -3535,6 +3609,11 @@ namespace JipperKeyViewer.KeyViewer
                         DrawEditorFloatField(I18n.Tr("fm_ghost_rain_corner_radius"), "fme_gcr_" + first.Id, n => n.GhostRainCornerRadius, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainCornerRadius = Mathf.Clamp(v, 0f, 20f);
+                            // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                            // around every one of these already do. See DrawEditorFloatField. /
+                            // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                            // 见 DrawEditorFloatField。
+                            EditorPropertyChanged();
                         }, "fm_help_ghost_rain_corner");
                     }
                     DrawEditorToggle(I18n.Tr("fm_ghost_rain_border_sides_custom"), first.UseCustomGhostRainBorderSides, v =>
@@ -3571,10 +3650,20 @@ namespace JipperKeyViewer.KeyViewer
                         {
                             // 0 = dotted ghost rain OFF for this node. / 0 = 该节点关闭点状鬼雨。
                             foreach (FmNode n in editorSelection) n.GhostRainDotLength = Mathf.Clamp(v, 0f, 100f);
+                            // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                            // around every one of these already do. See DrawEditorFloatField. /
+                            // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                            // 见 DrawEditorFloatField。
+                            EditorPropertyChanged();
                         }, "fm_help_ghost_rain_dotted");
                         DrawEditorFloatField(I18n.Tr("fm_ghost_rain_gap_length"), "fme_ggl_" + first.Id, n => n.GhostRainGapLength, v =>
                         {
                             foreach (FmNode n in editorSelection) n.GhostRainGapLength = Mathf.Clamp(v, 0f, 100f);
+                            // Notify, or the edit is neither saved nor re-rendered — the sibling fields
+                            // around every one of these already do. See DrawEditorFloatField. /
+                            // 通知，否则改动既不入栈存盘也不重绘——这几处周边的同类字段本来就都会。
+                            // 见 DrawEditorFloatField。
+                            EditorPropertyChanged();
                         }, "fm_help_ghost_rain_dotted");
                     }
                 }
@@ -4608,6 +4697,20 @@ namespace JipperKeyViewer.KeyViewer
         /// / 多选感知浮点字段。选区在该值上不一致时显示"—"——活动节点的值不再冒充组值、也不会
         /// 被一次意外提交群体覆盖；"—"永不解析，输入数字即应用到全部。一致时行为与从前相同。
         /// </summary>
+        /// <summary>Every apply callback MUST end with a notifier: EditorPropertyChanged for
+        /// geometry/animation and EditorColorPropertyChanged for the cached-font-material text style.
+        /// The field itself only writes the node, so a callback that forgets leaves the edit neither
+        /// saved nor re-rendered — the box shows the new number while the overlay keeps the old
+        /// rendering, and the value is lost if the game exits before some unrelated action happens to
+        /// save. Fifteen call sites had exactly that gap (the eight per-node text-style floats plus
+        /// press-animation duration and the six rain/ghost-rain geometry fields), while every sibling
+        /// field around them notified; the controls looked inert. /
+        /// 每个 apply 回调都**必须**以通知收尾：几何/动画用 EditorPropertyChanged，缓存字体材质的
+        /// 文字样式用 EditorColorPropertyChanged。字段本身只写入节点，回调漏掉通知就既不入栈存盘、
+        /// 也不重绘覆盖层——输入框显示新数字、渲染却维持旧值，且在别的操作碰巧保存前退出游戏就
+        /// 丢失改动。共有十五处正是这个缺口（八处节点文字样式浮点，外加按压动画时长与六个雨滴/
+        /// 鬼雨几何字段），而它们周边的同类字段全都发了通知；这些控件看起来像坏的。
+        /// </summary>
         private void DrawEditorFloatField(string label, string ctrl, Func<FmNode, float> get, Action<float> apply, string helpKey = null, FmNode basis = null)
         {
             GUILayout.BeginHorizontal();
@@ -4823,6 +4926,10 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorFloatField(I18n.Tr("fm_text_outline_thickness"), "fme_kot_" + first.Id, n => n.KeyTextOutlineThickness, v =>
                 {
                     foreach (FmNode n in editorSelection) n.KeyTextOutlineThickness = Mathf.Clamp(v, 0f, 1f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_outline");
             }
             DrawEditorToggle(I18n.Tr("fm_text_shadow"), first.KeyTextShadowEnabled, v =>
@@ -4836,14 +4943,26 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_x"), "fme_ksx_" + first.Id, n => n.KeyTextShadowOffsetX, v =>
                 {
                     foreach (FmNode n in editorSelection) n.KeyTextShadowOffsetX = Mathf.Clamp(v, -20f, 20f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_y"), "fme_ksy_" + first.Id, n => n.KeyTextShadowOffsetY, v =>
                 {
                     foreach (FmNode n in editorSelection) n.KeyTextShadowOffsetY = Mathf.Clamp(v, -20f, 20f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_softness"), "fme_kss_" + first.Id, n => n.KeyTextShadowSoftness, v =>
                 {
                     foreach (FmNode n in editorSelection) n.KeyTextShadowSoftness = Mathf.Clamp(v, 0f, 64f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
             }
 
@@ -4860,6 +4979,10 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorFloatField(I18n.Tr("fm_text_outline_thickness"), "fme_cot_" + first.Id, n => n.CountTextOutlineThickness, v =>
                 {
                     foreach (FmNode n in editorSelection) n.CountTextOutlineThickness = Mathf.Clamp(v, 0f, 1f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_outline");
             }
             DrawEditorToggle(I18n.Tr("fm_text_shadow"), first.CountTextShadowEnabled, v =>
@@ -4873,14 +4996,26 @@ namespace JipperKeyViewer.KeyViewer
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_x"), "fme_csx_" + first.Id, n => n.CountTextShadowOffsetX, v =>
                 {
                     foreach (FmNode n in editorSelection) n.CountTextShadowOffsetX = Mathf.Clamp(v, -20f, 20f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_offset_y"), "fme_csy_" + first.Id, n => n.CountTextShadowOffsetY, v =>
                 {
                     foreach (FmNode n in editorSelection) n.CountTextShadowOffsetY = Mathf.Clamp(v, -20f, 20f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
                 DrawEditorFloatField(I18n.Tr("fm_text_shadow_softness"), "fme_css_" + first.Id, n => n.CountTextShadowSoftness, v =>
                 {
                     foreach (FmNode n in editorSelection) n.CountTextShadowSoftness = Mathf.Clamp(v, 0f, 64f);
+                    // Text style is baked into the cached font material — this is the in-place path the
+                    // colour fields already use (see EditorColorPropertyChanged). /
+                    // 文字样式烙在缓存字体材质里——这正是颜色字段已用的就地路径（见 EditorColorPropertyChanged）。
+                    EditorColorPropertyChanged();
                 }, "fm_help_text_shadow");
             }
 

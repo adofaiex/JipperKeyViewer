@@ -2663,3 +2663,69 @@ DataVersion 照常前向盖章。具体改动：
   `JipperKeyViewer.dll` 13:17:16 28556288 字节、Melon 13:16:41 10752 字节、UMM 13:16:43 7680 字节。
 - 「已部署」只证明产物进了目录；**这一轮没有任何真实故障被修复**——只是撤回了一个无依据的行为
   放宽。图片故障的实机确认仍待用户。
+
+### 文字样式钳制 / 15 处浮点控件漏通知 / 导入字体未注册（2026-10-07，第 121 轮）
+
+本轮起因是 `.audit/r121_text.md` 的两条报告，外加一次针对「包导入后字体」的追查；三条都做了
+**变异反证**（把修复改回 bug → 对应用例立刻 FAIL → 撤销后全绿）。
+
+#### F1 阴影柔和度被解析器钳成 0..1（真实缺陷，静默改值）
+- 合法范围是 **0..64**：编辑器 `Mathf.Clamp(v, 0f, 64f)`、加载期 `SanitizeTextStyle(..., 0f, 64f)`、
+  以及 Harness 的范围表都按 0..64 钉着。而 `KvTextStyle.Resolve` 的**四个分支**都写成
+  `SafeFloat(<softness>, 0f, 1f, 0f)`，于是 30 在进入 `mat.SetFloat("_UnderlaySoftness")` 的路上
+  被压成 1：字段显示 30、JSON 存 30、渲染按 1。这正是第 86/87 轮明令要根除的「净化窄于编辑器」。
+- 修法：新增 `internal const float ShadowSoftnessMax = 64f`（注释写明与编辑器/净化器同源），四个分支
+  改用它。`OutlineThickness` 的 0..1 **确实**是真实范围，不动；偏移的解析器区间 -50..50 比编辑器的
+  ±20 **更宽**，只是冗余，也不动。
+- 连带修一个**我引入的新碰撞**：`Bits` 的有限区间原先钳在 ±10，而有限结果可达 `BitsMax*1000`，
+  于是 `+Inf` 的哨兵值 `10000` 会与合法的 10.0 撞键。这也**本来就已经**是 bug：旧 ±10 区间下
+  柔和度 30 与 64 量化相同、偏移 15 与 20 也相同，第二个样式静默套用了第一个的材质。
+  现 `BitsMax = 100f`（覆盖合法幅值 1 / 50 / 64）且哨兵移到区间之外。
+
+#### F2 八处节点文字样式浮点 + 七处几何浮点从不通知（真实缺陷，控件像坏的）
+- `DrawEditorFloatField` 只负责写节点，**通知由调用方的 apply 回调负责**。全文件 64 个浮点调用点里
+  有 **15 个**回调末尾什么也不发：8 个节点文字样式（描边宽、阴影 X/Y/柔和度 × 标签/计数）、
+  按压动画时长、普通雨圆角/点长/点距、鬼雨同三项。它们周边的同类字段**全都**发了通知。
+- 后果：改动既不入撤销栈、也不落盘、也不重绘——输入框显示新数字而渲染维持旧值，且在别的操作
+  碰巧保存前退出游戏就丢失。
+- 修法按语义分流：8 个文字样式走 `EditorColorPropertyChanged()`（注释明确它是缓存字体材质的
+  就地路径，`UpdateAllFonts` 正是重解析 `KvTextStyle.Resolve` 的地方）；其余 7 个走所在分区的
+  `EditorPropertyChanged()`。`DrawEditorFloatField` 的文档注释新增硬性要求：**每个 apply 回调都必须
+  以通知收尾**，并写明这 15 处缺口，防止将来新增调用点重犯。
+
+#### F3 包导入的字体从不注册（真实缺陷，需重启才能生效）
+- `ScanCustomFonts()` 在生产代码里**只有** `TryLoadResources` 一处调用，而它开头就在
+  `if (keyBackgroundSprite != null) return true;` 提前返回——即覆盖层一旦建好，扫描**再也**不跑。
+  而 `ImportProfilePackage` 把 `fonts/` 条目提交进 `CustomFont\` 远在那之后。于是包内选中
+  「Custom: 名称」的配置在 fontList 里**没有**对应条目，`GetCurrentFont` 回退到 `FontIndex 0`，
+  标签以错误字面渲染，直到重启游戏。
+- 修法：`PackageImportTransaction` 新增 `StagedFontCount`（在 `Stage` 里按 `category == "fonts"` 计数，
+  而不是从归档猜测），`CommitFiles()` 之后、`SwitchProfile` **之前**按需调用新增的
+  `RescanCustomFontsAfterImport()`：重扫（按构造幂等）+ 重跑 `LinkFallbackFonts`（新资源的中文
+  字形也要回退到 CJK）+ 重建 `fontNameIndex`（追加了条目，旧索引会静默选中别的字体）。整体包
+  try/catch：导入绝不能因为一个可选字体而失败。
+
+#### 顺带的结构改进：对齐规则抽成可离线验证的纯函数
+- 第 120 轮修掉的「右/底对齐测量负间距」bug 藏在**孪生分支**里（水平/垂直两份几乎相同的代码）。
+  本轮把它抽成 `ApplyAlignEdgeChain(sorted, vertical, toFar)` / `ApplyAlignCenter` / `SelectionFarEdge`
+  三个 `internal static` 纯函数，两根轴共用**一条**规则——Harness 不能跑 IMGUI（无 `IMGUIModule`），
+  拆成纯函数才是它能被测试钉住的原因，与 `EditorGroupExists` / `FloatFieldWidthPixels` 同一套路。
+  行为不变（保留**原始**间距、按第一对取一个均匀间距、居中按真实尺寸），只去掉重复实现。
+
+#### 验证
+- 四个工程 0 错误；Harness **`[tests] 211 passed, 0 failed`**（基线 199 → 新增 12 条：文字样式 2、
+  对齐 5、缓存键 3，另 2 条 reachable）。
+- **变异反证**（AGENTS 规定的必须路径）：把柔和度四分支改回 0..1、`Bits` 改回 ±10、对齐改回
+  「先跳到远端再量间距」，重新 build → `206 passed, 5 failed`，失败信息**正是历史症状**：
+  `softened: node/KeyLabel=1, node/Count=1, global/KeyLabel=1, global/Count=1`、
+  `-> 200,200`（两个等宽节点等于没按）、`xs=220,80,-80`（链条镜像）、
+  `10/30, 30/50, 50/63, 63/64`（缓存键碰撞）。撤销后回到 211/0，源码 `MUTATION`/`ANTI-TEST` 残留 0。
+- **注意一条测试自身的坑**：`KvTextKind` 是**命名空间级**枚举（不是嵌套在 `KvTextStyle` 里），
+  用 `GetNestedType` 会拿到 null 并让整个断言块被静默跳过——我这么写时正好被 reachable 那条
+  用例挡住。另一条：对齐链条归一到**一个**均匀间距（取第一对），不是逐对保留原间距；我最初按
+  臆造的规则写，测试 FAIL 后核对 `git log -L` 才确认既有约定如此，改的是测试不是产品代码。
+
+#### 收尾状态
+- 改动的生产文件 4 个：`Rendering/KvTextStyle.cs`、`Editor/KeyViewerEditor.cs`、
+  `Loader/KeyViewerResources.cs`、`Core/KeyViewerPackages.cs`（Harness 被 gitignore，不进版本库）。
+- **未部署、未提交**：本轮只完成源码修改 + 离线回归；是否编译进 `bin/` 并由用户实机确认由其决定。
