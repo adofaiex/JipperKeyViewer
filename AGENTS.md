@@ -2797,5 +2797,12 @@ DataVersion 照常前向盖章。具体改动：
 - 改动生产文件 2 个（新增 `Rendering/KvMeshSink.cs`，改 `Rendering/KeyShapeLayer.cs`）；
   Harness 被 gitignore 不入库。四个工程 0 错误（`JipperKeyViewer.csproj` 余 1 个与本轮无关的
   CS0169：`KeyViewer.stageProfileSince` 从不使用）；回归 **232 passed / 0 failed**。
+- **已构建 + 已部署 + 已推送**：提交 `ef9fafc`（3 文件，+390/−84）并 push
+  （`a930b26..ef9fafc`，`is-ancestor` 校验通过、ahead=0，工作区 0 改动）；三个 dll 用
+  `Get-FileHash -Algorithm SHA256` 与仓库 `bin/` 逐个比对 `ALL_MATCH=True`，核心 dll
+  **28558848** 字节 / `36880B508C66F562…`（比第 121 轮的 28557312 略大，属新增代码所致）。
+- **部署时踩到一次「游戏在跑」**：第一次复制时 `Get-Process` 查到游戏进程，脚本按 AGENTS.md
+  的硬性要求直接 ABORT——若强推，核心 dll 会被内存映射锁住而两个 Loader 照常成功，正是
+  第 110 轮那种「只看到 Loader 成功就宣布部署完毕」的误判。等游戏退出后重跑才 `ALL_MATCH=True`。
 - **仍待用户实机确认**：按键框在按压/松开时外观与从前一致、且帧时间确有下降。离线只证到
   「几何逐位相同 + 快 5~6 倍」，**没有**证明实机渲染结果一致（第 110 轮教训：「已部署」≠「已生效」）。
