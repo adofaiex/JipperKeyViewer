@@ -66,9 +66,44 @@ namespace JipperKeyViewer.KeyViewer.Rendering
 
         public override Texture mainTexture => Sprite != null ? Sprite.texture : base.mainTexture;
 
+        /// <summary>Mesh the legacy path handed us, and the sink bound to it. Both are cached so
+        /// the sink's arrays survive across rebuilds (a rebuild must allocate nothing). /
+        /// 传统路径交给我们的 Mesh 及绑定其上的写入器。两者都缓存，使写入器的数组跨重建存活
+        /// （每次重建必须零分配）。</summary>
+        private Mesh meshSinkBound;
+        private MeshArraySink meshSink;
+
         public KeyShapeLayer()
         {
             raycastTarget = false;
+            // Route uGUI through its Mesh-based generation path instead of VertexHelper.
+            //
+            // Verified by disassembling THIS Unity's UnityEngine.UI (not from documentation):
+            //   UpdateGeometry()  -> DoLegacyMeshGeneration() if useLegacyMeshGeneration else DoMeshGeneration()
+            //   DoLegacyMeshGeneration() calls OnPopulateMesh(Mesh)         then ModifyMesh + SetMesh
+            //   DoMeshGeneration()       calls OnPopulateMesh(VertexHelper) then ModifyMesh + FillMesh + SetMesh
+            // So this flag swaps which OnPopulateMesh overload we implement. It does NOT skip the
+            // framework's masking / clipping / material resolution: both branches run
+            // IMeshModifier.ModifyMesh over the generated mesh and hand it to CanvasRenderer.SetMesh.
+            // The ONE thing the legacy branch omits is VertexHelper.FillMesh — see the vertex-count
+            // guard in MeshArraySink.Finish(), which restores the 65000-vertex limit it enforced.
+            // VertexHelper costs 0.63 ms per rebuild here against 0.12 ms for the flat writer
+            // (measured, 112 slots @ 20px).
+            //
+            // 让 uGUI 走基于 Mesh 的生成路径而非 VertexHelper。以下结论来自**反汇编本机这份**
+            // UnityEngine.UI，而非文档：UpdateGeometry() 按 useLegacyMeshGeneration 二选一；
+            // DoLegacyMeshGeneration() 调 OnPopulateMesh(Mesh) 后执行 ModifyMesh + SetMesh；
+            // DoMeshGeneration() 调 OnPopulateMesh(VertexHelper) 后执行 ModifyMesh + FillMesh +
+            // SetMesh。故该标志只切换我们实现哪个 OnPopulateMesh 重载，**不会**跳过框架的遮罩／
+            // 裁剪／材质解析——两条分支都会对生成的 mesh 执行 IMeshModifier.ModifyMesh 并交给
+            // CanvasRenderer.SetMesh。老分支唯一省略的是 VertexHelper.FillMesh，其 65000 顶点
+            // 限制已由 MeshArraySink.Finish() 里的护栏补回。此处 VertexHelper 每次重建耗时
+            // 0.63ms，平铺写入器仅 0.12ms（实测，112 槽位 @ 20px）。
+#pragma warning disable 618
+            // Setting this to false restores the previous VertexHelper path exactly.
+            // 把它改成 false 即精确恢复此前的 VertexHelper 路径。
+            useLegacyMeshGeneration = true;
+#pragma warning restore 618
         }
 
         /// <summary>Allocate slot arrays (owner only); all slots start hidden / 分配槽位数组（仅持有层）；所有槽位初始隐藏</summary>
@@ -244,9 +279,55 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (outlineLayer != null) outlineLayer.SetVerticesDirty();
         }
 
+        /// <summary>uGUI's VertexHelper entry point. Kept so the previous generation path still
+        /// works verbatim — it is the reference the Mesh path is checked against offline, and the
+        /// fallback if the legacy flag ever stops being honoured. / uGUI 的 VertexHelper 入口。
+        /// 保留它使旧的生成路径仍逐字可用——它既是 Mesh 路径离线比对的基准，也是传统标志万一不再
+        /// 被尊重时的退路。</summary>
         protected override void OnPopulateMesh(VertexHelper vh)
         {
             vh.Clear();
+            DrawAll(new VertexHelperSink(vh));
+        }
+
+        /// <summary>Mesh entry point (the path actually used: the constructor sets
+        /// useLegacyMeshGeneration, so uGUI calls this instead of the VertexHelper overload).
+        ///
+        /// The Mesh is uGUI's cached worker mesh and is the same instance every rebuild, so the
+        /// sink is cached alongside it and its arrays survive — a rebuild allocates nothing.
+        ///
+        /// Mesh 入口（实际走的就是这条：构造函数设置了 useLegacyMeshGeneration，故 uGUI 调用本
+        /// 重载而非 VertexHelper 那个）。该 Mesh 是 uGUI 缓存的 worker mesh，每次重建都是同一个
+        /// 实例，故写入器与之一起缓存、其数组得以存活——每次重建零分配。</summary>
+        // CS0672 ("overrides an obsolete member") is expected and intended: this is the framework's
+        // own Mesh entry point and we are deliberately choosing it.
+        // CS0672（"重写了过时成员"）是预期且有意为之：这是框架自带的 Mesh 入口，正是我们主动
+        // 选择的那条路。
+#pragma warning disable 618, 672
+        protected override void OnPopulateMesh(Mesh mesh)
+#pragma warning restore 618, 672
+        {
+            if (mesh == null)
+            {
+                // uGUI passes a null mesh only when the rect is degenerate; nothing to draw.
+                // uGUI 只在矩形退化时传 null；此时无物可画。
+                return;
+            }
+            if (!ReferenceEquals(meshSinkBound, mesh))
+            {
+                meshSinkBound = mesh;
+                meshSink = new MeshArraySink(mesh);
+            }
+            meshSink.Clear();
+            DrawAll(meshSink);
+            meshSink.Finish();
+        }
+
+        /// <summary>The single copy of the key-box geometry. Both entry points call this, so the
+        /// VertexHelper path and the Mesh path can never drift apart. / 按键框几何的唯一定义。两个
+        /// 入口都调它，故 VertexHelper 路径与 Mesh 路径永远不会分叉。</summary>
+        private void DrawAll(IKvMeshSink sink)
+        {
             KeyShapeLayer src = owner ?? this;
             if (src.rects == null) return;
             Color[] colors = isOutline ? src.outlineColors : src.bgColors;
@@ -285,7 +366,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 描边环单独绘制（填充块下方略小的块），使两层与九宫格路径保持同样的双
                     // mesh 结构。
                     float border = src.borderThicknesses[i];
-                    DrawRounded(vh, r, top, bottom, gradient, radius, border);
+                    DrawRounded(sink, r, top, bottom, gradient, radius, border);
                 }
                 else if (src.borderThicknesses[i] > 0f && isOutline)
                 {
@@ -297,11 +378,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 直角键的自定义边框厚度：描边层改画指定厚度的直角环，取代贴图自带的
                     // 11px 九宫格边框。没有这个分支时 BorderThickness 对直角键完全无效——
                     // 只有圆角路径读它。背景层保持整块九宫格填充；环画在其外缘之上。
-                    DrawSquareRing(vh, r, top, bottom, gradient, src.borderThicknesses[i]);
+                    DrawSquareRing(sink, r, top, bottom, gradient, src.borderThicknesses[i]);
                 }
                 else
                 {
-                    DrawSliced(vh, r, top, bottom, gradient, Sprite);
+                    DrawSliced(sink, r, top, bottom, gradient, Sprite);
                 }
             }
         }
@@ -374,11 +455,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static readonly float[] scratchInnerX = new float[MaxRoundedPoints];
         private static readonly float[] scratchInnerY = new float[MaxRoundedPoints];
 
-        private static void DrawSliced(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, Sprite sprite)
+        private static void DrawSliced(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, Sprite sprite)
         {
             if (sprite == null)
             {
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, top, bottom, gradient, r.yMin, r.yMax);
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             // UV rects computed from textureRect (outer) and border (inner) — this Unity version has
@@ -403,7 +484,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             Vector4 spriteBorder = sprite.border * ppuScale;
             if (sprite.border == Vector4.zero)
             {
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax, top, bottom, gradient, r.yMin, r.yMax);
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             // Inner UV from the RAW texel border — not the ppu-scaled one. / 内圈 UV 用原始 texel 边框计算,而非 ppu 缩放后的。
@@ -432,7 +513,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 for (int xi = 0; xi < 3; xi++)
                 {
                     if (xs[xi + 1] - xs[xi] <= 0f || ys[yi + 1] - ys[yi] <= 0f) continue;
-                    AddQuad(vh, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], top, bottom, gradient, r.yMin, r.yMax);
+                    AddQuad(sink, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], top, bottom, gradient, r.yMin, r.yMax);
                 }
             }
         }
@@ -525,7 +606,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// so radius &gt; 0 slots bypass DrawSliced entirely. / 圆角矩形 mesh：背景层填充形状，
         /// 描边层沿边缘内侧画 border 像素的环。九宫格贴图无法圆角，故 radius &gt; 0 的槽位完全
         /// 绕开 DrawSliced。</summary>
-        private void DrawRounded(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, float radius, float border)
+        private void DrawRounded(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float radius, float border)
         {
             float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
             Vector2 uv = RoundedUV();
@@ -536,7 +617,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 // A radius that collapsed (sub-pixel box) still renders as a plain quad rather
                 // than vanishing. / 半径被压缩到 0（亚像素盒子）时仍画成普通矩形而非消失。
-                AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, top, bottom, gradient, r.yMin, r.yMax);
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, top, bottom, gradient, r.yMin, r.yMax);
                 return;
             }
             int n = FillRoundedPoints(r, rad, scratchRoundX, scratchRoundY);
@@ -544,20 +625,18 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             if (!isOutline)
             {
                 // Filled shape: triangle fan around the rect centre. / 填充形状：绕矩形中心的三角扇。
-                int c = vh.currentVertCount;
-                UIVertex v = UIVertex.simpleVert;
-                v.color = VerticalGradientColor(top, bottom, gradient, r.center.y, r.yMin, r.yMax);
-                v.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
-                v.position = new Vector3(r.center.x, r.center.y, 0f);
-                vh.AddVert(v);
+                int c = sink.VertexCount;
+                sink.AddVert(new Vector3(r.center.x, r.center.y, 0f),
+                    VerticalGradientColor(top, bottom, gradient, r.center.y, r.yMin, r.yMax),
+                    new Vector4(uv.x, uv.y, 0f, 0f));
                 for (int i = 0; i < n; i++)
                 {
-                    v.color = VerticalGradientColor(top, bottom, gradient, scratchRoundY[i], r.yMin, r.yMax);
-                    v.position = new Vector3(scratchRoundX[i], scratchRoundY[i], 0f);
-                    vh.AddVert(v);
+                    sink.AddVert(new Vector3(scratchRoundX[i], scratchRoundY[i], 0f),
+                        VerticalGradientColor(top, bottom, gradient, scratchRoundY[i], r.yMin, r.yMax),
+                        new Vector4(uv.x, uv.y, 0f, 0f));
                 }
                 for (int i = 0; i < n; i++)
-                    vh.AddTriangle(c, c + 1 + i, c + 1 + (i + 1) % n);
+                    sink.AddTriangle(c, c + 1 + i, c + 1 + (i + 1) % n);
                 return;
             }
             // Outline ring between the outer rounded rect and an inset rounded rect. / 描边环：
@@ -576,7 +655,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             for (int i = 0; i < n; i++)
             {
                 int j = (i + 1) % n;
-                AddQuadVerts(vh,
+                AddQuadVerts(sink,
                     new Vector2(scratchRoundX[i], scratchRoundY[i]),
                     new Vector2(scratchRoundX[j], scratchRoundY[j]),
                     new Vector2(scratchInnerX[j], scratchInnerY[j]),
@@ -592,39 +671,30 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// 指定厚度的直角描边环——圆角描边环在直角键上的对应物。四条轴向边（横条占满全宽、
         /// 竖条只占中段），角上不会重复绘制。厚度 0 不会走到这里——旧九宫格路径保留贴图
         /// 自带边框。</summary>
-        private void DrawSquareRing(VertexHelper vh, Rect r, Color top, Color bottom, bool gradient, float border)
+        private void DrawSquareRing(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float border)
         {
             float b = Mathf.Min(border, Mathf.Min(r.width, r.height) * 0.5f);
             if (b <= 0f) return;
             Vector2 uv = RingUV();
-            AddQuad(vh, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // top
-            AddQuad(vh, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // bottom
-            AddQuad(vh, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // left
-            AddQuad(vh, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // right
+            AddQuad(sink, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // top
+            AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // bottom
+            AddQuad(sink, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // left
+            AddQuad(sink, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // right
         }
 
         /// <summary>Arbitrary quad — the ring segments are not axis-aligned. / 任意四边形——环段
         /// 不与坐标轴对齐。</summary>
-        private static void AddQuadVerts(VertexHelper vh, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv,
+        private static void AddQuadVerts(IKvMeshSink sink, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv,
             Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
         {
-            int i = vh.currentVertCount;
-            UIVertex vert = UIVertex.simpleVert;
-            vert.uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
-            vert.color = VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax);
-            vert.position = new Vector3(a.x, a.y, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax);
-            vert.position = new Vector3(b.x, b.y, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax);
-            vert.position = new Vector3(c.x, c.y, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax);
-            vert.position = new Vector3(d.x, d.y, 0f);
-            vh.AddVert(vert);
-            vh.AddTriangle(i, i + 1, i + 2);
-            vh.AddTriangle(i, i + 2, i + 3);
+            int i = sink.VertexCount;
+            var uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
+            sink.AddVert(new Vector3(a.x, a.y, 0f), VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(new Vector3(b.x, b.y, 0f), VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(new Vector3(c.x, c.y, 0f), VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(new Vector3(d.x, d.y, 0f), VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax), uv0);
+            sink.AddTriangle(i, i + 1, i + 2);
+            sink.AddTriangle(i, i + 2, i + 3);
         }
 
         private static Color VerticalGradientColor(Color top, Color bottom, bool gradient, float y, float yMin, float yMax)
@@ -633,50 +703,29 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return Color.Lerp(bottom, top, Mathf.Clamp01((y - yMin) / (yMax - yMin)));
         }
 
-        private static void AddQuad(VertexHelper vh, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1,
+        private static void AddQuad(IKvMeshSink sink, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1,
             Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
         {
-            int i = vh.currentVertCount;
-            UIVertex vert = UIVertex.simpleVert;
-            vert.color = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
-            vert.position = new Vector3(x0, y0, 0f);
-            vert.uv0 = new Vector4(u0, v0, 0f, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
-            vert.position = new Vector3(x1, y0, 0f);
-            vert.uv0 = new Vector4(u1, v0, 0f, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
-            vert.position = new Vector3(x1, y1, 0f);
-            vert.uv0 = new Vector4(u1, v1, 0f, 0f);
-            vh.AddVert(vert);
-            vert.color = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
-            vert.position = new Vector3(x0, y1, 0f);
-            vert.uv0 = new Vector4(u0, v1, 0f, 0f);
-            vh.AddVert(vert);
-            vh.AddTriangle(i, i + 1, i + 2);
-            vh.AddTriangle(i, i + 2, i + 3);
+            int i = sink.VertexCount;
+            Color cBottom = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
+            Color cTop = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            sink.AddVert(new Vector3(x0, y0, 0f), cBottom, new Vector4(u0, v0, 0f, 0f));
+            sink.AddVert(new Vector3(x1, y0, 0f), cBottom, new Vector4(u1, v0, 0f, 0f));
+            sink.AddVert(new Vector3(x1, y1, 0f), cTop, new Vector4(u1, v1, 0f, 0f));
+            sink.AddVert(new Vector3(x0, y1, 0f), cTop, new Vector4(u0, v1, 0f, 0f));
+            sink.AddTriangle(i, i + 1, i + 2);
+            sink.AddTriangle(i, i + 2, i + 3);
         }
 
-        private static void AddQuad(VertexHelper vh, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1, Color color)
+        private static void AddQuad(IKvMeshSink sink, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1, Color color)
         {
-            int i = vh.currentVertCount;
-            UIVertex vert = UIVertex.simpleVert;
-            vert.color = color;
-            vert.position = new Vector3(x0, y0, 0f);
-            vert.uv0 = new Vector4(u0, v0, 0f, 0f);
-            vh.AddVert(vert);
-            vert.position = new Vector3(x1, y0, 0f);
-            vert.uv0 = new Vector4(u1, v0, 0f, 0f);
-            vh.AddVert(vert);
-            vert.position = new Vector3(x1, y1, 0f);
-            vert.uv0 = new Vector4(u1, v1, 0f, 0f);
-            vh.AddVert(vert);
-            vert.position = new Vector3(x0, y1, 0f);
-            vert.uv0 = new Vector4(u0, v1, 0f, 0f);
-            vh.AddVert(vert);
-            vh.AddTriangle(i, i + 1, i + 2);
-            vh.AddTriangle(i, i + 2, i + 3);
+            int i = sink.VertexCount;
+            sink.AddVert(new Vector3(x0, y0, 0f), color, new Vector4(u0, v0, 0f, 0f));
+            sink.AddVert(new Vector3(x1, y0, 0f), color, new Vector4(u1, v0, 0f, 0f));
+            sink.AddVert(new Vector3(x1, y1, 0f), color, new Vector4(u1, v1, 0f, 0f));
+            sink.AddVert(new Vector3(x0, y1, 0f), color, new Vector4(u0, v1, 0f, 0f));
+            sink.AddTriangle(i, i + 1, i + 2);
+            sink.AddTriangle(i, i + 2, i + 3);
         }
     }
 }

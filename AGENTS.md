@@ -1,8 +1,10 @@
 # JipperKeyViewer 项目上下文（代理每次请求都会读到，压缩不会丢失）
 
 ## 事实锚点（2026-09-18 核实）
-- `CHANGELOG.md` 共 **298** 行（2026-10-07 核）；顶部条目 `## 1.7.2`（FreeMake custom-layout editor /
-  文字描边阴影 / 视频键节点 / .jkv 分享包等）；最旧条目 1.6.1。以实际 read 结果为准。
+- `CHANGELOG.md` 共 **251** 行（2026-10-12 核，此前记 298 已失真）；顶部条目 `## 1.7.2`（FreeMake
+  custom-layout editor / 文字描边阴影 / 视频键节点 / .jkv 分享包等）；最旧条目 1.6.1。以实际 read
+  结果为准。
+- Harness 回归基线 **232 passed / 0 failed**（2026-10-12，第 122 轮）。Harness 被 gitignore，只在本机。
 
 ## 当前任务（由用户维护，完成后更新）
 - 已完成：FreeMake 编辑器撤销历史、Profile/预设切换瞬态隔离、迁移幂等标记与失败重试、
@@ -2735,3 +2737,65 @@ DataVersion 照常前向盖章。具体改动：
 - **但这不等于修好了**：三项仍未获用户实机确认——阴影柔和度 >1 的实际效果、15 处浮点控件改动
   是否即时刷新并进撤销栈、`.jkv` 导入字体是否无需重启即可选。第 110 轮的教训就是「已部署」
   曾被当成「已修复生效」。
+
+### 按键框几何直写 Mesh：用掉已验证的 6.5× 提速（2026-10-12，第 122 轮）
+
+用户此前问「如何用 rust 代码和本项目融合达到进一步的性能」，环境探测后我给的是三阶段方案，
+其中 **Stage 0 是纯 C#、不引入 Rust**。他批准「按照之前的A先开始」，第 121 轮之后本轮把 A2 做完。
+
+#### 起因：VertexHelper 的八条并行 List 才是成本，且没有区间重建 API
+- 按键框每层在每次按压/松开经 `KeyShapeLayer.OnPopulateMesh(VertexHelper)` **全量**重发所有顶点。
+  第 111 轮已经测出这一层是实机热点；第 45 轮记的「合并 mesh 无法只重建脏区间」是对的，但
+  **只对 `VertexHelper` 成立**——`Mesh` 侧每个顶点流都有 `start,length` 重载。
+- 本轮先把「便宜地往 VertexHelper 里写」这条否证掉（A2-a）：`AddVert(Vector3, Color32, Vector4)`
+  实测 **0.8577 ms 比 `AddVert(UIVertex)` 的 0.6318 ms 更慢**——三参数重载照样写满八条 List。
+  于是唯一出路是不再用 VertexHelper（A2-b）。
+
+#### 实现：两个 sink 共用一份几何定义
+- 新增 `Rendering/KvMeshSink.cs`：`IKvMeshSink { VertexCount; Clear; AddVert(Vector3,Color,Vector4); AddTriangle }`。
+  - `VertexHelperSink` —— **逐字**保留旧写法（`UIVertex.simpleVert` + 三条赋值 + `AddVert`），
+    它同时是离线比对的基准和这条路万一出问题的退路。
+  - `MeshArraySink` —— 三条并行托管数组（`Vector3[]`/`Color32[]`/`Vector4[]`）+ `int[] indices`，
+    两倍扩容、只增不减，故**每次重建零分配**；`Finish()` 只发布已用前缀。
+- `KeyShapeLayer.cs`：构造函数设 `useLegacyMeshGeneration = true`；`DropAll` 逻辑抽成唯一一份
+  `DrawAll(IKvMeshSink)`，两个 `OnPopulateMesh` 重载（`VertexHelper` 版与 `Mesh` 版）都调它，
+  **两条路径不可能分叉**。`Mesh` 版按 `Mesh` 实例缓存 sink，使其数组跨重建存活。
+
+#### 用 IL 逐条证实（不是查文档，是本机这份 UnityEngine.UI 反汇编）
+派子代理不可靠、文档也会过时，直接反汇编的结论：
+- `UpdateGeometry()` IL 仅 22 字节：`if (useLegacyMeshGeneration) DoLegacyMeshGeneration(); else DoMeshGeneration();`
+- `DoLegacyMeshGeneration` → `OnPopulateMesh(Mesh)`；`DoMeshGeneration` → `OnPopulateMesh(VertexHelper)`。
+  **两条都会**执行 `IMeshModifier.ModifyMesh` + `CanvasRenderer.SetMesh`，故遮罩/裁剪/材质解析不变。
+- `UseLegacyMeshGeneration` 是**真实自动属性**（setter 写 backing field），setter 不是空实现。
+- `Mesh.Clear` 在 `DoLegacyMeshGeneration` 的 **else 分支**（矩形退化时），不是无条件清空——
+  否则写进去的几何会被立刻抹掉（实机表现为覆盖层全黑）。
+
+#### 反汇编 `VertexHelper.FillMesh` 揪出我漏的两处
+`FillMesh` 是框架自己的「从平铺缓冲发布 mesh」权威实现，对照后发现：
+- **`Finish()` 漏了 `Mesh.RecalculateBounds()`**。worker mesh 被共享，其 bounds 描述的是**上一次**
+  建进它的几何，不重算会让剔除按过期范围进行。这是**没有任何离线测试能发现**的缺陷：bounds 是
+  ECall，离线宿主不可观测；只有读参考实现才看得出来。
+- **`Clear()` 的实参**：`FillMesh` 用无参 `Clear()`（`keepVertexLayout` 默认 true），我原写 `Clear(false)`。
+  已改为与框架一致。
+- 同时补回老路径**本来就有**的护栏：老路径经 `FillMesh` 拒绝 ≥65000 顶点，而 `DoLegacyMeshGeneration`
+  **不经过** `FillMesh`，故新路径会把这个「响亮的异常」变成「被静默错处理的 mesh」。
+  `Finish()` 现已显式抛同名 `ArgumentException`（真实规模 112 键 ≈ 2.9 万顶点，远低于此）。
+
+#### 验证
+- **离线**：`Harness` 新增 7 条 Stage-0b（**225 → 232 passed / 0 failed**），驱动**生产**的两个 sink：
+  reachable ×3、两条路径逐位等价（位置/颜色字节/uv0/索引全比）、`VertexHelperSink` 与旧内联写法
+  逐字节一致、`Clear()` 真正复位。索引回读走 `VertexHelper.m_Indices`（私有字段）——本版本
+  `VertexHelper.GetTriangle` **不存在**，不能用。
+- **变异反证**：把生产 `MeshArraySink` 的位置加 `+0.01f` → `1 failed`，报文正是
+  `v[0] position VH=(50.00,20.00) mesh=(50.01,20.00)`；撤销后 232/0。
+- **一个把我坑了十分钟的测试基础设施问题**：`Harness.csproj` 用 `Private=true` 的 HintPath 引用
+  `..\bin\JipperKeyViewer.dll`，该副本**只在 Harness 构建时**刷新。用 `--no-build` 跑，Harness 一
+  直在用几小时前的旧副本——我第一次变异因此**零失败**（假绿）。**重建生产工程后必须一并重建
+  Harness，否则测的不是你刚改的代码。**
+
+#### 收尾状态
+- 改动生产文件 2 个（新增 `Rendering/KvMeshSink.cs`，改 `Rendering/KeyShapeLayer.cs`）；
+  Harness 被 gitignore 不入库。四个工程 0 错误（`JipperKeyViewer.csproj` 余 1 个与本轮无关的
+  CS0169：`KeyViewer.stageProfileSince` 从不使用）；回归 **232 passed / 0 failed**。
+- **仍待用户实机确认**：按键框在按压/松开时外观与从前一致、且帧时间确有下降。离线只证到
+  「几何逐位相同 + 快 5~6 倍」，**没有**证明实机渲染结果一致（第 110 轮教训：「已部署」≠「已生效」）。
