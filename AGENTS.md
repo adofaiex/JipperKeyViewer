@@ -4,7 +4,7 @@
 - `CHANGELOG.md` 共 **251** 行（2026-10-12 核，此前记 298 已失真）；顶部条目 `## 1.7.2`（FreeMake
   custom-layout editor / 文字描边阴影 / 视频键节点 / .jkv 分享包等）；最旧条目 1.6.1。以实际 read
   结果为准。
-- Harness 回归基线 **241 passed / 0 failed**（2026-10-12，第 123 轮）。Harness 被 gitignore，只在本机。
+- Harness 回归基线 **246 passed / 0 failed**（2026-10-12，第 124 轮）。Harness 被 gitignore，只在本机。
 - **Rust 内核（原方案 Stage 1）已被 2026-10-12 的实测否决**，见第 123 轮：三处候选的绝对份额都远低于
   P/Invoke 回本线。Rust 环境本身仍可用（`D:\Rust`），不要再凭「Rust 更快」重开此议，要重开必须先测。
 
