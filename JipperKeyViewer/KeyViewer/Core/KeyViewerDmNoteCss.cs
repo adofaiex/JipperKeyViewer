@@ -42,6 +42,16 @@ namespace JipperKeyViewer.KeyViewer
     internal sealed class DmNoteCssRule
     {
         public string State;                 // "inactive" / "active" / null (both) / 状态
+        /// <summary>State carried by `[data-counter-state="…"]`. DmNote's counters have their OWN
+        /// state axis, separate from the key axis (`data-state`), and the two must not share a
+        /// field: a selector may legitimately carry both attributes, and merging them into one
+        /// slot would let a key-state value decide a counter scope (or the reverse). Resolved into
+        /// <see cref="State"/> only once the rule is known to be a counter rule.
+        /// `[data-counter-state="…"]` 携带的状态。DmNote 的计数器有**自己的**状态轴，与按键轴
+        ///（`data-state`）分开，两者不能共用一个字段：一条选择器完全可能同时带两个属性，并进一个
+        /// 槽位会让按键状态值决定计数作用域（或反之）。只在确定该规则是计数规则后才归并进
+        /// <see cref="State"/>。</summary>
+        public string CounterState;
         public bool Counter;                 // inside a .counter block / 位于 .counter 块内
         public string Emphasis;              // [data-counter-emphasis="…"] / 计数强调变体
         public bool Before;                  // a ::before pseudo-element / 伪元素
@@ -354,19 +364,45 @@ namespace JipperKeyViewer.KeyViewer
                     string attrValue = eq < 0 ? null : Unquote(attr.Substring(eq + 1));
                     if (attrName.Equals("data-state", StringComparison.OrdinalIgnoreCase))
                         rule.State = attrValue;
+                    // DmNote's counter state axis. Recorded into its OWN field, never straight into
+                    // `State`: `rule.Counter` is only set below, from the class list, so at this
+                    // point we cannot yet know whether this attribute describes a counter or a
+                    // stray key. Writing it to `State` here would leak a counter state onto the
+                    // key axis (and vice versa) for any selector carrying both attributes.
+                    // DmNote 的计数状态轴。记进**自己的**字段，绝不直接写 `State`：`rule.Counter`
+                    // 只在下方由类名表设定，此处尚无法判断该属性描述的是计数还是按键。就地写进
+                    // `State` 会让任何同时带两个属性的选择器把计数状态泄漏到按键轴上（反之亦然）。
+                    else if (attrName.Equals("data-counter-state", StringComparison.OrdinalIgnoreCase))
+                        rule.CounterState = attrValue;
                     else if (attrName.Equals("data-counter-emphasis", StringComparison.OrdinalIgnoreCase))
                         rule.Emphasis = attrValue;
                 }
                 foreach (string cls in ExtractClasses(t)) rule.Classes.Add(cls);
             }
             // A rule carrying no class and no state and no counter/emphasis cannot be attributed to
-            // any node, and applying it everywhere would colour unrelated layouts.
+            // any node, and applying it everywhere would colour unrelated layouts. `CounterState`
+            // counts as attribution on its own: the official "State-based Styling" table documents
+            // the bare `[data-counter-state="…"]` form (no `.counter` class).
             // 既无类、无状态、也非 counter/emphasis 的规则无法归属到任何节点；全局套用会给无关
-            // 布局上色。
-            if (rule.State == null && rule.Classes.Count == 0 && !rule.Counter && rule.Emphasis == null)
+            // 布局上色。`CounterState` 本身即构成归属：官方「基于状态的样式」表就记有无 `.counter`
+            // 类的裸 `[data-counter-state="…"]` 写法。
+            if (rule.State == null && rule.CounterState == null
+                && rule.Classes.Count == 0 && !rule.Counter && rule.Emphasis == null)
                 return false;
             foreach (string cls in rule.Classes)
                 if (cls.Equals("counter", StringComparison.OrdinalIgnoreCase)) rule.Counter = true;
+            // Now that the owner is known, fold the counter axis into the one state slot the merge
+            // reads. Doing it HERE and not at the attribute site is the whole point: a selector may
+            // carry both `[data-state]` and `[data-counter-state]` (e.g. `[data-state="active"]
+            // .counter[...]`), and the counter scope must be decided by the counter axis.
+            // 归属已明，才把计数状态轴并入合并读取的那唯一状态槽。**在此处**而非属性处归并正是
+            // 关键：选择器可能同时带 `[data-state]` 与 `[data-counter-state]`（如
+            // `[data-state="active"] .counter[...]`），计数作用域必须由计数轴决定。
+            if (rule.CounterState != null)
+            {
+                rule.Counter = true;
+                rule.State = rule.CounterState;
+            }
             return true;
         }
 

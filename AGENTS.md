@@ -2856,3 +2856,60 @@ DataVersion 照常前向盖章。具体改动：
 #### 收尾状态
 - **生产代码零改动**（`git diff` 为空）；Harness 241 passed / 0 failed；`Rendering/` 未动。
 - 本轮只改 Harness（被 gitignore，不入库）与本文档。**未部署**、也不需要部署——没有产物变化。
+
+### DmNote 导入器：计数器状态轴 `data-counter-state` 被静默丢弃（2026-10-12，第 124 轮）
+
+用户指示「看 DmNote 的项目代码」，随后说「修复」。这是**长期积压的「DmNote CSS 残余缺口」里第一条被
+定性的真实功能缺陷**，也是「契约认知来自样本反推」这一系统性盲区的实例。
+
+#### 缺陷
+DmNote 的状态轴有**两条，且互相独立**：按键用 `[data-state="inactive|active"]`，计数器用
+**`.counter[data-counter-state="inactive|active"]`**。证据链三条：①官方文档
+`docs/content/en/custom-css/variables/page.mdx` 明文「Use with `.counter[data-counter-state="..."]`
+selectors」；②生产代码 `src/renderer/components/overlay/counters/CountDisplay.tsx:174` 真的渲染
+`data-counter-state={active ? 'active' : 'inactive'}`；③**官方随附主题** `distribution/windows/assets/
+neonsign.css` 就用它做按下变色（`inactive → #474244`、`active → #ff2b80`）。
+
+而本导入器只认 `data-state`。失效链路（逐行）：属性识别处两分支都不匹配 → `rule.State` 保持 `null`
+→ `Apply()` 因类名 `counter` 进计数分支，对 `CounterIdle`/`CounterActive` **各 Merge 一次** →
+`Merge` 的守卫是 `rule.State != null && !equals(...)`，**null 时短路不返回** → 该规则被当成
+**无状态共享块**，**两个作用域都写进同一个值**。净效果：`--counter-color` 的按下色恒等于常态色
+（后写的规则按源码顺序覆盖），主题的「按下计数变色」完全失效。
+
+#### 修法与**顺序陷阱**
+不能就地复用 `rule.State`。`rule.Counter` 是**在属性循环之后**才由类名表设定的，属性处无法判断该
+属性描述的是计数还是按键；就地写会让任何**同时带两个属性**的选择器（如
+`.classname .counter[data-counter-state="active"]`）把一根轴的值泄漏到另一根上。正确做法：
+1. 新增独立字段 `CounterState`，属性处只写它；
+2. 归属检查把 `CounterState != null` 也算作**可归属**（官方文档记有无 `.counter` 类的**裸**
+   `[data-counter-state]` 写法，旧代码会在进入层叠前就把整条规则丢掉）；
+3. **类名归并之后**才把 `CounterState` 折进 `State`，并置 `Counter = true`。
+
+#### 验证（Harness 241 → **246** passed / 0 failed）
+新增 5 条：①计数两作用域被**分开**（旧行为是两个都拿 active 色）；②**按键轴仍独立**——这条是
+「直接复用 `State`」捷径的绊线；③两轴同时出现时由**计数轴**决定计数作用域；④裸
+`[data-counter-state]` 能过归属检查且只进自己那个状态；⑤端到端——导入后节点的
+`CountTextColor` 与 `CountTextColorPressed` 必须**不同**（这才是用户看到的症状）。
+
+**变异反证**：把归并改回「只置 `Counter = true`」→ **4 条 FAIL**，报文正是原缺陷形态
+`idle=[rgba(255,43,128)] active=[rgba(255,43,128)]`、节点 `idle==pressed`；同时第②条按键轴
+**正确保持 PASS**，证明两根轴确实分开了。撤销后 246/0、`MUTATION` 残留 0。
+
+#### 对用户当前主题的实际影响（如实记录，勿夸大）
+用户自用的 `dmsnow.json`（Glassic 主题）**确实**写了 `.counter[data-counter-state="active"]`，但那条
+规则只带 `animation`（本导入器不映射动画），所以**他当前这份主题的可见变化有限**。修复真正兑现的
+是官方主题那类把 `--counter-color` 写进计数状态块的写法（`neonsign.css`）。
+
+#### 方法论（已另存为全局 lesson）
+导入第三方格式时，**权威契约在对方仓库，不在我已见过的样本里**。三步：①去上游找成文契约清单
+（DmNote 有完整变量表 + 选择器表），拿它逐项 diff 我的映射面；②再去生产代码确认该契约真在输出；
+③区分两类性质——「我漏映射但本侧有承接字段」才是真缺口，「对方有而我方无此概念」（图形/旋钮/
+精灵族）不映射是**正确**的，别当缺口追。
+
+#### 收尾状态
+- 生产改动 **1 个文件**（`Core/KeyViewerDmNoteCss.cs`：新增 `CounterState` 字段、属性识别、归属检查、
+  延后归并四处）；Harness 5 条新增（被 gitignore，不入库）。四个工程 **0 错误**；回归
+  **246 passed / 0 failed**。
+- **已构建 + 已部署 + 已确认交付**：三个 dll 与仓库 `bin\` 逐个 `Get-FileHash` 比对
+  `ALL_MATCH=True`（核心 **28558848** 字节 / `1B0A2818…`）；部署前 `Get-Process` 确认游戏
+  NOT_RUNNING。**待用户实机确认**：导入官方 `neonsign.css` 那类主题后，按下时计数颜色是否变化。
