@@ -135,8 +135,17 @@ namespace JipperKeyViewer.KeyViewer
                 rules.Sort((a, b) => a.Order.CompareTo(b.Order));
                 foreach (DmNoteCssRule rule in rules) Apply(rule, theme);
                 ResolveAll(theme);
+                // Class scopes count too: `DmNoteCssMapping.Apply` returns early when this is false,
+                // so a sheet built ONLY from class rules (`.clear { --logo-color: … }`) used to be
+                // accepted by the parser and then silently apply NOTHING. A rule can legitimately
+                // be attributed purely by its class, and the mapping layer overlays class scopes
+                // per node afterwards — so "has a class rule" must open the same gate.
+                // 类作用域也算：`DmNoteCssMapping.Apply` 为 false 时直接早退，故**只由类规则构成**的
+                // 样式表（`.clear { --logo-color: … }`）会被解析器接受、却静默**什么都不套用**。规则
+                // 完全可以仅凭类名归属，而映射层之后会按节点叠加类作用域——故「有类规则」也必须开门。
                 theme.HasAny = theme.Idle.Decls.Count > 0 || theme.Active.Decls.Count > 0
-                    || theme.CounterIdle.Decls.Count > 0 || theme.CounterActive.Decls.Count > 0;
+                    || theme.CounterIdle.Decls.Count > 0 || theme.CounterActive.Decls.Count > 0
+                    || theme.ClassIdle.Count > 0 || theme.ClassActive.Count > 0;
             }
             catch (Exception e)
             {
@@ -225,7 +234,7 @@ namespace JipperKeyViewer.KeyViewer
             foreach (string sel in ExpandSelectorList(selectorList, theme))
             {
                 var rule = new DmNoteCssRule { Decls = decls, Order = rules.Count };
-                if (!DescribeSelector(sel, rule)) continue;
+                if (!DescribeSelector(sel, rule, theme)) continue;
                 rules.Add(rule);
             }
         }
@@ -321,9 +330,9 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>Decompose one compound selector. Returns false when it carries nothing this
-        /// importer can act on (hover/focus/nth-child, ::after, …). 分解单条复合选择器；不含本导入器
-        /// 可响应的部分时返回 false。</summary>
-        private static bool DescribeSelector(string sel, DmNoteCssRule rule)
+        /// importer can act on (hover/focus/nth-child, ::after, compound classes, …). 分解单条复合
+        /// 选择器；不含本导入器可响应的部分时返回 false。</summary>
+        private static bool DescribeSelector(string sel, DmNoteCssRule rule, DmNoteCssTheme theme)
         {
             sel = sel.Trim();
             if (sel.Length == 0) return false;
@@ -377,7 +386,31 @@ namespace JipperKeyViewer.KeyViewer
                     else if (attrName.Equals("data-counter-emphasis", StringComparison.OrdinalIgnoreCase))
                         rule.Emphasis = attrValue;
                 }
-                foreach (string cls in ExtractClasses(t)) rule.Classes.Add(cls);
+                // A compound class in ONE token (`.blue.special`) means AND: the element must carry
+                // both classes. This importer keys every class effect by a single class name, so it
+                // can only express OR — flattening the pair into two independent class scopes would
+                // paint nodes carrying EITHER class, i.e. silently style nodes the selector never
+                // matched. The official docs use exactly this form as their top-priority example
+                // (`.blue.special[data-state='active']`), so it does occur in the wild. Dropping the
+                // rule is the honest outcome: the style is visibly missing rather than misapplied.
+                // FALSE-POSITIVE CHECK: `:is()`/`:where()` are expanded into separate selectors
+                // BEFORE this runs, so each resulting token carries at most one class. A token with
+                // several classes is therefore always a real compound selector, never an artefact.
+                // 一个 token 内的复合类（`.blue.special`）意为 AND：元素须**同时**带两个类。本导入器
+                // 的类效果以单个类名为键，只能表达 OR——把这一对摊成两个独立类作用域，会给「带其中
+                // 任一」的节点上色，即静默地作用到选择器从未匹配的节点上。官方文档的**最高优先级示例**
+                // 正是这种写法（`.blue.special[data-state='active']`），故现实中确实会出现。丢弃该规则
+                // 才是诚实的结果：样式明显缺失，而不是被错误套用。
+                // 误判检查：`:is()`/`:where()` 在此**之前**已展开为独立选择器，故每个 token 至多带一个
+                // 类；token 出现多个类必然是真正的复合选择器，不会是展开的产物。
+                var tokenClasses = new List<string>();
+                foreach (string cls in ExtractClasses(t)) tokenClasses.Add(cls);
+                if (tokenClasses.Count > 1)
+                {
+                    theme.Warnings.Add("css: compound class selector ignored (" + t.Trim() + ")");
+                    return false;
+                }
+                foreach (string cls in tokenClasses) rule.Classes.Add(cls);
             }
             // A rule carrying no class and no state and no counter/emphasis cannot be attributed to
             // any node, and applying it everywhere would colour unrelated layouts. `CounterState`
