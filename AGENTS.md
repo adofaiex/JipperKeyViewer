@@ -3028,6 +3028,21 @@ CSS 语义是「**同时**带 blue 与 special」。而 `ExtractClasses` 把它�
   版本串 6 处、`CHANGELOG.md`/`更新日志.md`、本文件。
 - 四个工程 **0 错误**；`bin\` 三个 dll 的 `FileVersion` 均为 `1.7.3.0`；Harness 副本哈希与 `bin\`
   一致（`9DFDC590…`）；回归 **250 passed / 0 failed**，连跑 13 次稳定。
-- **部署另记**：本轮构建时游戏（PID 5592）**正在运行**，按硬性红线**不得**向 `Mods\JipperKeyViewer`
-  复制——核心 dll 被内存映射锁住，两个 Loader 会「复制成功」而核心失败。故发版产物只经 CI 出包，
-  **本地 mod 目录仍是 10-12 的旧产物**，此项须等游戏退出后再补。
+- **部署（游戏退出后已补做）**：构建时游戏（PID 5592）正在运行，按硬性红线当时**未**复制——核心
+  dll 被内存映射锁住时，两个 Loader 会「复制成功」而核心失败。等游戏退出后重新 `Get-Process`
+  确认 NOT_RUNNING，再复制三个 dll + `Info.json` 到 `Mods\JipperKeyViewer`，逐个 `Get-FileHash`
+  比对 **ALL_MATCH=True**：核心 **28559360** 字节 / `9DFDC590FF5AB4AA…`、Melon Loader
+  `2C08F5C6…`、UMM Loader `810DA824…`。部署前 mod 目录 `Info.json` 的 mtime 是 1.7.2 发布那一刻
+  （2026-09-19 06:08），说明它从未被用户改过，故一并覆盖为 `1.7.3-alpha.1`。
+- **发版链路已走通**：commit `dc66f60` → push（ahead=0）→ tag `1.7.3-alpha.1` → CI `Release`
+  全绿（`Set version`/`Apply version to sources` 两步正是被本轮修好的预览版分支）→ GitHub Release
+  标记为 **Pre-release**、资产 `JipperKeyViewer.zip` 28,177,703 字节。已下载解包核对：包内
+  `Info.json` 为 `1.7.3-alpha.1`、三个 dll 齐全。**`1.7.2` 仍为 Latest**、`Repository.json`
+  仍指 1.7.2，故现有用户不会被推送这个 alpha。
+- **文档更正（`c99bd2b`）**：独立审计发现本轮 CHANGELOG 有两条**与代码不符**的陈述，已修正：
+  ①「图片按总像素限制」是错的——`KvImageLoader` 只有 `MaxImageEdge = 4096` 的单边限制，
+  我引用的 `cbf1b24` 早已被 `8343641` 撤销（撤销提交自己说该改动「不修任何真实故障」）；
+  ②六位 hex 那条曾被写成「导致整份导入中止」，实际是**潜在**缺陷（无随附主题用该写法）。
+  教训：**写 CHANGELOG 前必须核对被引用提交是否后来被 revert**，`git log <sha>..HEAD` 不够，
+  要直接读最终代码。同时补上三块此前完全没记录的改动（`6c793ca` 外观层 +2764 行、
+  `9244f84` DmNote 导入器**本身**、`d193e55` 自定义字体退化成中日韩字面）。
