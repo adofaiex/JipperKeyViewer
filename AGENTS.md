@@ -1,12 +1,16 @@
 # JipperKeyViewer 项目上下文（代理每次请求都会读到，压缩不会丢失）
 
 ## 事实锚点（2026-09-18 核实）
-- `CHANGELOG.md` 共 **278** 行（2026-10-17 核，此前记 251 已失真）；顶部条目 `## 1.7.3-alpha.1`
-  （预览版：Mesh sink 性能、DmNote 配套 CSS 主题、counter 状态轴、JPEG 拒收等）；最旧条目 1.6.1。
-  以实际 read 结果为准。**`更新日志.md` 是它的中文镜像（257 行），两者必须同步改**。
-- 版本线 **1.7.3-alpha.1**（2026-10-17）：`Info.json` / 三个 `AssemblyInfo.cs` / `[MelonInfo]` 已提升；
-  `Repository.json` **刻意仍停在 1.7.2**（预览版不得推进更新检查器，与 1.5.2-pre、v1.6.2-pre.1 的
-  既有做法一致）。
+- `CHANGELOG.md` 共 **340** 行（2026-10-17 核）；顶部条目 `## 1.7.3-alpha.1`（预览版：Mesh sink
+  性能、DmNote 预设导入与配套 CSS 主题、counter 状态轴、Quartz 风格外观层、JPEG 拒收等）；
+  最旧条目 1.6.1。以实际 read 结果为准，**不要再靠这条数字判断**——它已经漂移过三次
+  （记 298 时实为 251、记 251 时实为 278、记 278 时实为 333）。
+- **`更新日志.md` 是 CHANGELOG 的中文镜像（315 行），两者必须同步改**；只改一份等于半个版本。
+  审计/改动 CHANGELOG 时务必把两边一起核对（`Select-String` 逐条比对关键串最省事）。
+- 版本线 **1.7.3-alpha.1**（2026-10-17 已发为 GitHub **Pre-release**，tag 同名）：
+  `Info.json` / 三个 `AssemblyInfo.cs` / `[MelonInfo]` 已是 `1.7.3-alpha.1` / `1.7.3.0`；
+  `Repository.json` **刻意仍停在 1.7.2**（预览版不得推进更新检查器；`SetVersion.ps1` 在预览版
+  分支会显式跳过并打印原因）。
 - Harness 回归基线 **250 passed / 0 failed**（2026-10-17，第 126 轮）。Harness 被 gitignore，只在本机。
 - **Rust 内核（原方案 Stage 1）已被 2026-10-12 的实测否决**，见第 123 轮：三处候选的绝对份额都远低于
   P/Invoke 回本线。Rust 环境本身仍可用（`D:\Rust`），不要再凭「Rust 更快」重开此议，要重开必须先测。
