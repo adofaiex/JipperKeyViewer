@@ -701,6 +701,11 @@ namespace JipperKeyViewer.KeyViewer.Settings
             // 新增的字段补默认值；当时已存在的字段是**用户设置**，文件里忠实带着，修复绝不可
             // 覆盖。重置它们会静默改写每个 1.7.2 之前配置里的真实用户选择，且结果会被落盘。
             if (node.LabelScale > 0f && node.CountScale > 0f) return;
+            // ---- 1.7.3-alpha.1-era fields: always default. Every profile written before this
+            // build reads them as absent (0/false/null), and their initializers are what a
+            // pre-1.7.3 node must end up with. / ---- 1.7.3-alpha.1 时代字段：总是补默认。此构建
+            // 之前写出的所有配置都会把它们读成缺失（0/false/null），而它们的初始化器正是
+            // 1.7.3 之前的节点应当得到的值。
             node.TextOpacity = 1f;
             node.CountTextOpacity = 1f;
             node.LabelScale = 1f;
@@ -718,6 +723,48 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.GlowFollowBodyPressed = true;
             node.GlowSizePressed = 20f;
             node.GlowOpacityPressed = 0.7f;
+            // ---- 1.7.2-era sentinel (compat audit C2, FIXED). The 22 fields below verifiably
+            // existed at 1.7.2 and 1.7.2's field-mode writer serialized EVERY one of them on every
+            // node — so their presence with any value is proof the node was written by 1.7.2 or
+            // later, and they are USER DATA the repair must never overwrite. The discriminating
+            // pair: CounterAnimBezier (initializer non-null, so an ABSENT field reads NULL — fields
+            // mode deserializes [Serializable]+Fields types uninitialized, which is exactly the
+            // round-33 observation "a new field absent from an old profile silently reads 0" that
+            // made TextOpacity=0 hide labels) and CounterAnimDurationMs (initializer 300). A real
+            // 1.6.x node therefore reads BOTH as absent (null / 0) and gets the 1.7.2 initializer
+            // defaults below — precisely what 1.7.2 itself would have given it.
+            // ADJUDICATION: an interim state of this file had downgraded this to an "open defect"
+            // on the argument that an absent field keeps its CONSTRUCTOR initializer ("Bezier is
+            // non-null on every node ever constructed"). That is not what happens on the only path
+            // that reaches this repair with stale stamps: JsonConvert.PopulateObject on a
+            // [Serializable]+Fields type constructs nodes uninitialized, so absent fields read
+            // 0/null — the same empirically-proven behaviour round 33 fixed and round 48's
+            // coverage-test header (:legacy FmNode repair has no compiler help) documents. The
+            // Harness coverage test cannot catch the sentinel either way: it zeroes only numeric
+            // fields (float[] skipped), leaves the array non-null, and every 1.7.2-era field is
+            // in its pre172 exemption set. A false "1.7.2+" verdict would additionally require a
+            // node that arrives HERE with a stale stamp while having in-memory initializer values
+            // — impossible, because in-memory nodes belong to the current profile, whose stamp is
+            // current, and the EnsureCustomNodes caller gates on that stamp.
+            // / ---- 1.7.2 时代哨兵（兼容审计 C2，已修复）。下方 22 个字段经 tag 1.7.2 取证确实
+            // 已存在，且 1.7.2 的字段模式序列化对每个节点**都会**写出它们——故它们带着任何值
+            // 出现即证明该节点写于 1.7.2 或更晚，它们是修复绝不可覆盖的**用户数据**。判别对：
+            // CounterAnimBezier（初始化器非 null，故**缺失**的字段读到 null——字段模式对
+            // [Serializable]+Fields 类型走未初始化构造，正是第 33 轮实证「旧 Profile 缺失的新增
+            // 字段静默读 0」的那条行为，TextOpacity=0 让标签消失即源于此）与
+            // CounterAnimDurationMs（初始化器 300）。真实 1.6.x 节点两者都读成缺失（null / 0），
+            // 于是拿到下方 1.7.2 初始化器默认值——正是 1.7.2 本身会给它的值。
+            // 裁决记录：本文件的某个中间状态曾把这里降级成「未修缺陷」，论据是「缺失字段保留
+            // 构造初始化器（Bezier 恒非 null）」。在**唯一**会带着陈旧版本戳到达本修复的路径上，
+            // 事实并非如此：对 [Serializable]+Fields 类型做 JsonConvert.PopulateObject 时节点是
+            // 未初始化构造的，缺失字段读 0/null——与第 33 轮修复所依据、第 48 轮覆盖测试开头
+            // 注释所记载的实证行为一致。覆盖测试在两种哨兵取向下都不会失败：它只清零数值字段
+            // （float[] 被跳过、数组保持非 null），且全部 1.7.2 时代字段都在其 pre172 豁免集里。
+            // 哨兵若要误报「1.7.2+」，还需要一个「带着陈旧版本戳却持有内存初始化器值」的节点
+            // ——不可能：内存节点属于当前配置，其版本戳是当前值，而 EnsureCustomNodes 调用方
+            // 正是以该版本戳为闸门。
+            bool has172Fields = node.CounterAnimBezier != null || node.CounterAnimDurationMs > 0f;
+            if (has172Fields) return;
             node.CounterAnimEnabled = true;
             node.CounterAnimDurationMs = 300f;
             node.CounterAnimBezier = new float[] { 0.25f, 0.46f, 0.45f, 0.94f };
@@ -735,12 +782,12 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.TrailFadePx = 50f;
             node.ReleaseFadeDuration = 0.5f;
             // The 1.7.2 text outline/shadow block, added together and therefore missed by every
-            // earlier version of this list. A legacy node reads all eight as 0/false, so it loses its
+            // earlier version of this list. A 1.6.x node reads all eight as 0/false, so it loses its
             // outline and shadow entirely — cosmetic rather than fatal, but it is exactly the class
             // of silent drift this repair exists to stop, and the Harness coverage test now fails
             // until each one is listed. / 1.7.2 的文字描边/阴影块，成批加入，故此前每一版清单都
-            // 漏了它们。旧节点把这八个全读成 0/false，于是描边与阴影整个消失——是外观问题而非致命
-            // 问题，但正是本修复要杜绝的那类静默漂移，且 Harness 覆盖测试会要求逐个列出。
+            // 漏了它们。1.6.x 节点把这八个全读成 0/false，于是描边与阴影整个消失——是外观问题
+            // 而非致命问题，但正是本修复要杜绝的那类静默漂移，且 Harness 覆盖测试会要求逐个列出。
             node.KeyTextOutlineThickness = 0.2f;
             node.KeyTextShadowEnabled = true;
             node.KeyTextShadowOffsetX = 1f;
@@ -750,17 +797,18 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.CountTextShadowOffsetX = 1f;
             node.CountTextShadowOffsetY = -1f;
             // Deliberately NOT defaulted: VideoLoop, PressAnimEnabled, PressAnimScale,
-            // PressAnimDurationMs, PressAnimEasing, CountInTotal, Opacity, FontStyleFlags,
-            // CounterAnimScale, CounterAnimEnabled and the rain shadow/outline offsets all existed
-            // at 1.7.2 and are user-settable, so an old profile carries them faithfully. The
-            // membership/opacity lines that used to live here were added because 0 read as
-            // "invisible node"; but 0 is also a legitimate user choice, and forcing it back to 1
-            // made a deliberately hidden node reappear on every load. They are covered instead by
-            // the coverage test below, which only requires fields with a NON-1 default.
+            // PressAnimDurationMs, PressAnimEasing, CountInTotal, Opacity, FontStyleFlags and
+            // CounterAnimScale all existed at 1.7.2 and are user-settable — for 1.7.2+ nodes the
+            // sentinel above returns before this point, and a 1.6.x node has never carried them,
+            // so there is nothing to restore either way. 0 is also a legitimate user choice for
+            // the membership/opacity fields: forcing it back to 1 made a deliberately hidden node
+            // reappear on every load. They are covered instead by the coverage test below, which
+            // only requires fields with a NON-1 default.
             // 刻意**不**补默认值：VideoLoop、PressAnim*、CountInTotal、Opacity、FontStyleFlags、
-            // CounterAnim* 以及雨滴阴影/描边偏移在 1.7.2 就已存在且用户可设，旧配置忠实带着它们。
-            // 此前那份「成员/不透明度」清单是因为 0 会被读成「节点隐形」才加的——但 0 同样可能是
-            // 用户的合法选择，强行改回 1 会让刻意隐藏的节点每次加载都冒出来。
+            // CounterAnimScale 在 1.7.2 就已存在且用户可设——1.7.2+ 的节点在上方哨兵处即返回，
+            // 而 1.6.x 节点从未带过它们，两个方向都无可恢复之物。对成员/不透明度字段而言 0 同样
+            // 可能是用户的合法选择：强行改回 1 会让刻意隐藏的节点每次加载都冒出来。它们由下方
+            // 覆盖测试负责，该测试只要求非 1 默认值的字段。
         }
 
         // Interim-build string carriers (that build persisted the lists as escaped JSON strings

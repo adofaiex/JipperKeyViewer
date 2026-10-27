@@ -110,6 +110,14 @@ namespace JipperKeyViewer.KeyViewer
             new Dictionary<string, DmNoteCssScope>(StringComparer.OrdinalIgnoreCase);
         public readonly Dictionary<string, DmNoteCssScope> ClassActive =
             new Dictionary<string, DmNoteCssScope>(StringComparer.OrdinalIgnoreCase);
+        /// <summary>class name → the cascade position (rule Order) of the LAST stylesheet rule that
+        /// wrote that class scope. CSS resolves two classes competing on one node by STYLESHEET
+        /// order, not by the order tokens appear in the className attribute — so the mapping layer
+        /// must overlay class scopes sorted by this. / 类名 → 最后一条写入该类作用域的样式表规则
+        /// 的级联位置（规则序号）。CSS 用**样式表顺序**——而非 className 属性里 token 的出现
+        /// 顺序——裁定同一个节点上两个类的冲突，故映射层必须按此排序后再叠加。</summary>
+        public readonly Dictionary<string, int> ClassOrder =
+            new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         /// <summary>class name → the base64 SVG data URI from its ::before mask-image.
         /// 类名 → 其 ::before mask-image 中的 base64 SVG data URI。</summary>
         public readonly Dictionary<string, string> IconSvg =
@@ -175,12 +183,21 @@ namespace JipperKeyViewer.KeyViewer
             return sb.ToString();
         }
 
-        /// <summary>Split into `selector { … }` chunks, skipping at-rule preludes but still
-        /// yielding their bodies as ordinary chunks — an @media wrapper is a plain scope in every
-        /// preset that uses one, and treating its contents as unconditional matches that.
-        /// 切成 `选择器 { … }` 块；跳过 at-rule 前导但仍产出其内容——用到 @media 的预设里它就是
-        /// 普通作用域，把其内容当作无条件规则处理与实际用法一致。
-        /// </summary>
+        /// <summary>Split into `selector { … }` chunks. At-rule blocks (and their BODIES) are
+        /// dropped with a warning: an @media wrapper's inner rules never reach the parser as
+        /// ordinary chunks, because the wrapper arrives here as ONE block whose body still contains
+        /// `selector { … }` pairs — yielding that body verbatim would feed nested braces into
+        /// ParseBlock, and evaluating the condition is out of scope. Dropping is the fail-closed
+        /// choice, consistent with the compound-class decision: a style that is visibly missing
+        /// beats one silently applied to screens the theme author scoped out. The warning must say
+        /// DROPPED — it used to claim the rule was "applied unconditionally" while the code threw
+        /// the body away, a self-contradicting diagnostic (compat audit core F7).
+        /// / 切成 `选择器 { … }` 块。at-rule 块（连同其**主体**）被丢弃并警告：@media 包装的内部
+        /// 规则不会作为普通块到达解析器——包装在这里是**一个**块，其主体里仍是成对的
+        /// `选择器 { … }`，原样产出会把嵌套花括号喂给 ParseBlock，而求值条件本身超出范围。
+        /// 丢弃是 fail-closed 的选择，与复合类那次的决策一致：明显缺失的样式胜过被静默套到
+        /// 主题作者圈定屏幕之外的样式上。警告必须说**丢弃**——过去它声称规则「被无条件套用」，
+        /// 而代码把主体扔了，诊断自相矛盾（兼容审计 core F7）。</summary>
         private static IEnumerable<string> SplitBlocks(string css, DmNoteCssTheme theme)
         {
             var results = new List<string>();
@@ -208,7 +225,7 @@ namespace JipperKeyViewer.KeyViewer
                             theme.Warnings.Add("css: @keyframes not animated");
                         else if (sel.StartsWith("@media", StringComparison.OrdinalIgnoreCase)
                               || sel.StartsWith("@supports", StringComparison.OrdinalIgnoreCase))
-                            theme.Warnings.Add("css: conditional rule applied unconditionally");
+                            theme.Warnings.Add("css: conditional rule dropped (media/supports not evaluated)");
                         else theme.Warnings.Add("css: at-rule ignored (" + sel.Split(' ')[0] + ")");
                     }
                     else results.Add(sel + "{" + body + "}");
@@ -436,6 +453,19 @@ namespace JipperKeyViewer.KeyViewer
                 rule.Counter = true;
                 rule.State = rule.CounterState;
             }
+            // `data-counter-emphasis` is the same kind of attribution as the state axis: DmNote
+            // only ever writes it on counters, and the official state-based table spells it with
+            // no `.counter` class. Without this fold such a rule has no class, no state and is not
+            // a counter rule, so it falls through to the SHARED scope at the bottom of Apply —
+            // i.e. an emphasis rule would silently repaint EVERY node's base colours, which is
+            // worse than being dropped. The VALUE keeps its own meaning ("false"/"0"/"no"/"off"
+            // mean the variant is OFF), resolved in the counter branch.
+            // `data-counter-emphasis` 与状态轴同属归属信息：DmNote 只把它写在计数器上，官方
+            // 「基于状态的样式」表也不带 `.counter` 类。缺了这一步，规则既无类也无状态、又不是
+            // 计数规则，于是落到 Apply 末尾的**共享**作用域——即强调规则会静默重绘**每个**节点的
+            // 基色，比被丢弃更糟。属性**值**仍保留自己的语义（"false"/"0"/"no"/"off" 表示该
+            // 变体关闭），由计数分支解析。
+            if (rule.Emphasis != null) rule.Counter = true;
             return true;
         }
 
@@ -489,7 +519,19 @@ namespace JipperKeyViewer.KeyViewer
 
             if (rule.Counter)
             {
-                bool emphasis = !string.IsNullOrEmpty(rule.Emphasis);
+                // An explicit `data-counter-emphasis="false"` must not read as "emphasised": the
+                // attribute's VALUE is the toggle, not its mere presence. DmNote themes write
+                // ="false"/="0" to turn the variant OFF; the old emptiness-only test made every
+                // spelled-out false value switch emphasis ON.
+                // 显式的 `data-counter-emphasis="false"` 不能读成「强调」：属性的**值**才是开关，
+                // 而不是它的存在。DmNote 主题会写 ="false"/="0" 来关闭该变体；旧的「非空即真」
+                // 判定让每一个写明 false 的值都变成了开启强调。
+                string emphasisRaw = (rule.Emphasis ?? "").Trim();
+                bool emphasizedFalse = emphasisRaw.Equals("false", StringComparison.OrdinalIgnoreCase)
+                    || emphasisRaw == "0"
+                    || emphasisRaw.Equals("no", StringComparison.OrdinalIgnoreCase)
+                    || emphasisRaw.Equals("off", StringComparison.OrdinalIgnoreCase);
+                bool emphasis = emphasisRaw.Length > 0 && !emphasizedFalse;
                 Merge(emphasis ? theme.CounterEmphasisIdle : theme.CounterIdle, rule, "inactive");
                 Merge(emphasis ? theme.CounterEmphasisActive : theme.CounterActive, rule, "active");
                 return;
@@ -505,6 +547,14 @@ namespace JipperKeyViewer.KeyViewer
                     if (cls.Equals("counter", StringComparison.OrdinalIgnoreCase)) continue;
                     Merge(ClassScope(theme.ClassIdle, cls), rule, "inactive");
                     Merge(ClassScope(theme.ClassActive, cls), rule, "active");
+                    // Record this rule's cascade position for the class. Rules are applied in
+                    // ascending order, so the last write is the class's LAST rule — exactly the
+                    // position the stylesheet cascade uses to decide conflicts between two classes
+                    // one node carries. See DmNoteCssTheme.ClassOrder.
+                    // 为该类记录这条规则的级联位置。规则按序号升序套用，故最后一次写入就是该类
+                    // **最后一条**规则——正是样式表级联用来裁定「一个节点带的两个类」之间冲突的
+                    // 位置。见 DmNoteCssTheme.ClassOrder。
+                    theme.ClassOrder[cls] = rule.Order;
                 }
                 return;
             }
@@ -728,11 +778,23 @@ namespace JipperKeyViewer.KeyViewer
                 int colorStart = rgbStart >= 0 ? rgbStart : s.IndexOf('#');
                 if (rgbStart < 0)
                 {
-                    if (colorStart < 0) continue;
-                    int end = colorStart;
-                    while (end < s.Length && s[end] != ' ') end++;
-                    color = ParseColor(s.Substring(colorStart, end - colorStart));
+                    // No rgb()/hex either: the colour may be a NAMED one (`box-shadow: 0 6px 18px
+                    // black`), which ParseColor understands — the border parser already relies on
+                    // that. Take the LAST space-separated token as the colour candidate and treat
+                    // whatever precedes it as the lengths; a non-colour token fails ParseColor and
+                    // the layer is skipped exactly as before, so nothing new is accepted by
+                    // accident. The old code only looked for `rgb(`/`#` and silently dropped the
+                    // glow for every named-colour theme.
+                    // 连 rgb()/十六进制都没有：颜色可能是**命名色**（`box-shadow: 0 6px 18px
+                    // black`），ParseColor 认识它——边框解析早已依赖这一点。取最后一个空格分隔
+                    // 的 token 作为颜色候选，其余前缀当作长度；非颜色 token 会让 ParseColor 失败，
+                    // 该层照旧被跳过，因此不会意外接受任何新东西。旧代码只找 `rgb(`/`#`，所有
+                    // 命名色主题的光效都被静默丢掉。
+                    int lastSpace = s.LastIndexOf(' ');
+                    if (lastSpace <= 0) continue;
+                    color = ParseColor(s.Substring(lastSpace + 1).Trim());
                     if (color == null) continue;
+                    colorStart = lastSpace;
                 }
                 else
                 {

@@ -1362,14 +1362,26 @@ namespace JipperKeyViewer.KeyViewer
             // 坐标，表现为节点卡住不动。键盘路径原本已清理，**工具栏按钮没有**，于是同一个撤销
             // 因触发方式不同而行为不同。清理是幂等的，两处都做没有代价。
             ClearEditorInteractionState();
-            string current = SnapshotEditorDocument();
+            // Same guard as every other snapshot path (PushEditorHistory / ReplaceTop): a
+            // serialization throw here used to escape into OnGUI on EVERY Ctrl+Z/Y — and the
+            // interaction state was already cleared, so the gesture state was lost with nothing
+            // undone. Undo aborts instead, exactly like a failed push.
+            // 与其余所有快照路径同一保护（PushEditorHistory / ReplaceTop）：过去这里的序列化
+            // 异常会在**每次** Ctrl+Z/Y 时逃进 OnGUI——且交互态已先被清掉，什么都没撤销还丢了
+            // 手势状态。改为放弃本次撤销，与失败的压栈行为一致。
+            string current;
+            try { current = SnapshotEditorDocument(); }
+            catch (Exception e) { Loader.Warning($"KeyViewer: editor snapshot failed: {e.Message}"); return; }
             RestoreEditorSnapshot(editorHistory.Undo(current));
         }
 
         private void EditorRedo()
         {
             ClearEditorInteractionState();
-            string current = SnapshotEditorDocument();
+            // Same guard as EditorUndo — see there. / 与 EditorUndo 同一保护，见彼处注释。
+            string current;
+            try { current = SnapshotEditorDocument(); }
+            catch (Exception e) { Loader.Warning($"KeyViewer: editor snapshot failed: {e.Message}"); return; }
             RestoreEditorSnapshot(editorHistory.Redo(current));
         }
 
@@ -1857,6 +1869,18 @@ namespace JipperKeyViewer.KeyViewer
             for (int i = 0; i < dirs.Length; i++)
             {
                 Vector2 sp = EditorScreenOf(canvasScreenRect, FmHandlePoint(bbox, dirs[i].dx, dirs[i].dy));
+                // Clamp EXACTLY like DrawEditorResizeHandles does. The draw clamps the handle
+                // 4px inside the canvas, so a selection hanging off-screen shows a visible,
+                // clickable-looking handle — while this hit test used to look for the cursor at
+                // the REAL off-screen position. Clicking the drawn handle hit nothing and fell
+                // through to picking/marquee, so the user dragged a selection band instead of
+                // resizing, with no error.
+                // 与 DrawEditorResizeHandles 完全一致地钳制。绘制端把手柄钳进画布内 4px，于是
+                // 悬在画布外的选区会显示一个看似可点的手柄——而这里的命中判定却去找**画布外**
+                // 的真实位置。点绘出来的手柄什么也点不中，落入拾取/框选分支，用户想缩放却拖出了
+                // 一个选区带，且毫无报错。
+                sp.x = Mathf.Clamp(sp.x, canvasScreenRect.x + 4f, canvasScreenRect.xMax - 4f);
+                sp.y = Mathf.Clamp(sp.y, canvasScreenRect.y + 4f, canvasScreenRect.yMax - 4f);
                 if (Mathf.Abs(screen.x - sp.x) <= 7f && Mathf.Abs(screen.y - sp.y) <= 7f) return i;
             }
             return -1;
@@ -2177,7 +2201,39 @@ namespace JipperKeyViewer.KeyViewer
                 string assignTip = string.Format(I18n.Tr("fm_gtip_assign"), editorSelection.Count, g.Name);
                 if (GUILayout.Button(new GUIContent("＋" + editorSelection.Count, assignTip), GUILayout.Width(52f)))
                 {
-                    foreach (FmNode n in editorSelection) n.GroupId = g.Id;
+                    // Enforce the same per-group budgets every other mutation (add/paste/array)
+                    // checks up front. The bare loop used to move ALL selected nodes into the
+                    // target group, and the immediate EditorMutated → EnsureCustomNodes walk then
+                    // SILENTLY DELETED the excess — irreversibly, since undo restores into the
+                    // same trim. Assigning a full 108-key group onto a non-empty group reached
+                    // that with one click.
+                    // 施加与其它所有变更（新增/粘贴/阵列）一致上的每组预算。过去这个裸循环把全部
+                    // 选中节点移入目标组，紧随的 EditorMutated → EnsureCustomNodes 走查随即**静默
+                    // 删除**超额者——且不可恢复，因为撤销恢复后同样会被裁剪。把整组 108 键指派到
+                    // 一个非空组上，一次点击即可触发。
+                    int keyRoom = CustomKeyNodeCap - KeyLikeCountInGroup(g.Id);
+                    int imageRoom = 8 - UnboundImageCountInGroup(g.Id);
+                    int skipped = 0;
+                    foreach (FmNode n in editorSelection)
+                    {
+                        if (n == null) continue;
+                        // Already a member: a no-op move must not consume budget twice.
+                        // 已是成员：空操作不得重复占用预算。
+                        if ((n.GroupId ?? "") == g.Id) continue;
+                        if (CustomNodeHasKey(n))
+                        {
+                            if (keyRoom <= 0) { skipped++; continue; }
+                            keyRoom--;
+                        }
+                        else
+                        {
+                            if (imageRoom <= 0) { skipped++; continue; }
+                            imageRoom--;
+                        }
+                        n.GroupId = g.Id;
+                    }
+                    if (skipped > 0)
+                        Loader.Warning($"KeyViewer: group assign skipped {skipped} node(s) — per-group cap reached");
                     PushEditorHistory(false);
                     EditorMutated();
                 }
@@ -2191,6 +2247,16 @@ namespace JipperKeyViewer.KeyViewer
                     if (fmActiveGroupId == deadId) fmActiveGroupId = "";
                     PushEditorHistory(false);
                     EditorMutated();
+                    // Close the row BEFORE leaving the loop: the old bare `break` skipped the
+                    // EndHorizontal below, so everything drawn afterwards in this pass (the
+                    // add-group button, EndScrollView, DragWindow) was laid out inside a stray
+                    // group — mismatched-LayoutGroup errors and a mangled panel on every group
+                    // delete. This was the only unbalanced Begin/End pair in the file.
+                    // 必须先闭合该行再跳出：过去裸 `break` 跳过了下面的 EndHorizontal，本次 pass
+                    // 之后绘制的一切（加组按钮、EndScrollView、DragWindow）都被排进一个游离的
+                    // 布局组——每次删组都报 mismatched-LayoutGroup、面板下缘错乱。这是全文件唯一
+                    // 一处不配对的 Begin/End。
+                    GUILayout.EndHorizontal();
                     break;
                 }
                 GUILayout.EndHorizontal();
@@ -2916,6 +2982,21 @@ namespace JipperKeyViewer.KeyViewer
         private void HandleEditorShortcuts(Event e)
         {
             if (EditorHasFocusedTextField()) return;
+            // Escape must ALWAYS be able to cancel an armed capture — the capture row handles it
+            // when drawn, but between arming and the next properties pass (or in any state where
+            // the row is not drawn) the gate below used to swallow Escape along with everything
+            // else, leaving an armed state with no visible way out. With this, an armed capture
+            // can at worst eat ONE keypress before Escape recovers it.
+            // Escape 必须始终能取消已武装的捕获——捕获行在绘制时会处理它，但从武装到下一次
+            // 属性 pass 之间（或任何该行未绘制的状态下），下面的门会把 Escape 和其它键一起吞掉，
+            // 让武装态没有任何可见出路。有了这段，已武装的捕获最多吞掉**一次**按键，Escape 随后
+            // 总能收回控制。
+            if ((fmCaptureNode != null || fmCaptureGhostNode != null) && e.keyCode == KeyCode.Escape)
+            {
+                CancelEditorNodeCapture();
+                e.Use();
+                return;
+            }
             if (fmCaptureNode != null) return;
             if (fmCaptureGhostNode != null) return;
             bool ctrl = e.control;
@@ -3007,6 +3088,28 @@ namespace JipperKeyViewer.KeyViewer
             if (fmActiveNode == null || !editorSelection.Contains(fmActiveNode)) fmActiveNode = editorSelection[0];
             FmNode first = fmActiveNode;
             bool single = editorSelection.Count == 1;
+
+            // The capture rows below are the ONLY UI that consumes an armed capture's KeyDown, and
+            // they are drawn only for the single active node. Every selection change that makes
+            // this panel stop drawing the armed node's row (click another node, click empty
+            // canvas, Ctrl+click, marquee, group ▣, select-all, undo) used to leave the capture
+            // ARMED and INVISIBLE: HandleEditorShortcuts returns while a capture is armed, so
+            // Ctrl+Z/Y, Delete, copy/paste, arrows AND Escape all silently died until the user
+            // happened to re-select that exact node or closed the editor. Disarm here — one
+            // choke point that covers every path that changes the active node or the selection
+            // size, instead of chasing each caller.
+            // 下面的捕获行是唯一消费已武装捕获 KeyDown 的 UI，且只为「单个活动节点」绘制。任何
+            // 让本面板不再绘制该节点捕获行的选区变化（点别的节点、点空白、Ctrl 多选、框选、组▣、
+            // 全选、撤销），过去都会让捕获保持**已武装且不可见**：HandleEditorShortcuts 在捕获
+            // 武装期间直接返回，于是 Ctrl+Z/Y、Delete、复制粘贴、方向键连同 Escape 全部静默失效，
+            // 直到用户碰巧重新选中那个节点或关掉编辑器。在此解除武装——一个覆盖所有改变活动
+            // 节点/选区大小路径的 choke point，不必逐个调用点去堵。
+            if ((!single && (fmCaptureNode != null || fmCaptureGhostNode != null))
+                || (fmCaptureNode != null && fmCaptureNode != first)
+                || (fmCaptureGhostNode != null && fmCaptureGhostNode != first))
+            {
+                CancelEditorNodeCapture();
+            }
 
             GUILayout.Label(string.Format(I18n.Tr("fm_selected_count"), editorSelection.Count));
             if (!single)
@@ -4224,7 +4327,19 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     RecalculateCustomTotalCount();
                     RefreshAllCountDisplay();
-                    PushEditorHistoryNudge();
+                    // A REAL entry carrying the counters (preserveCounts:false), not a nudge:
+                    // the nudge snapshot strips counts, so (a) the typed value could never be
+                    // undone — restore re-applied the live counters, i.e. the value just typed —
+                    // and (b) when the edit landed inside the 0.4 s nudge window nothing was
+                    // pushed at all, so Ctrl+Z instead undid an UNRELATED earlier edit while the
+                    // typed count survived. This field deliberately edits the counters, so its
+                    // entry must own them (same reasoning as the reset-count button below).
+                    // 压入一条**携带计数**的真实条目（preserveCounts:false），而不是微调：微调快照
+                    // 会剥离计数，于是 (a) 输入的值永远无法撤销——恢复时回填实时计数，即刚输入的
+                    // 值本身；(b) 若落在 0.4s 微调窗口内则**什么都没压**，Ctrl+Z 反而撤销了无关的
+                    // 更早编辑，而输入的计数留存。本字段刻意编辑的就是计数，故其条目必须持有它
+                    // （与下方「重置计数」按钮同理）。
+                    PushEditorHistory(false, false);
                     SaveSettingsFromGui();
                 }
                 GUILayout.EndHorizontal();
@@ -4233,21 +4348,28 @@ namespace JipperKeyViewer.KeyViewer
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button(I18n.Tr("fm_reset_count"), GUILayout.MinWidth(140f)))
                 {
-                    // Record the PRE-reset state FIRST, while the counts are still real. EditorHistory
-                    // is a post-state timeline, and every ordinary entry is captured with
-                    // PreserveCounts=true (counters stripped) precisely so an undo never rolls a
-                    // play session's counts back. That is the right default — but it means the state
-                    // this button destroys never entered the timeline: with only a post-entry,
-                    // undoing lands on the previous (counter-less) entry and re-applies counts from
-                    // the LIVE document, which was just zeroed. One Ctrl+Z therefore permanently
-                    // wiped the entire count table and persisted the wipe through EditorMutated.
-                    // 先记录**重置前**的状态，此时计数还是真实值。EditorHistory 是后置状态时间线，
-                    // 而普通条目一律以 PreserveCounts=true 采集（剥离计数），正是为了让撤销永不
-                    // 回滚一次游玩的计数——这个默认是对的；但它意味着本按钮销毁的状态从未进过
-                    // 时间线：只压后置条目时，撤销落到前一条（无计数）并从**实时文档**回填计数，
-                    // 而实时文档刚被清零。于是按一次 Ctrl+Z 就永久抹掉整张计数表，并经
-                    // EditorMutated 落盘。
-                    PushEditorHistory(false, true);
+                    // Record the PRE-reset state FIRST, while the counts are still real — and it
+                    // must be recorded with preserveCounts:FALSE so the snapshot CARRIES those
+                    // counters. EditorHistory is a post-state timeline; ordinary entries are
+                    // captured with PreserveCounts=true (counters stripped) precisely so an undo
+                    // never rolls a play session's counts back, and restore re-applies the LIVE
+                    // document's counters. That is the right default for layout edits — but this
+                    // button DESTROYS the live counters, so a stripped pre-reset entry would
+                    // restore onto already-zeroed live values: one Ctrl+Z would change nothing
+                    // visible and the whole count table would be gone (and persisted through
+                    // EditorMutated). preserveCounts:false makes this entry the one entry in the
+                    // timeline that owns real counters; the post-reset entry below does the same
+                    // for the zeroed values, so one undo brings the counts back and a second undo
+                    // still walks the ordinary timeline.
+                    // 先记录**重置前**的状态，此时计数还是真实值——且必须以 preserveCounts:false
+                    // 记录，让快照**携带**这些计数。EditorHistory 是后置状态时间线；普通条目一律
+                    // 以 PreserveCounts=true 采集（剥离计数），恢复时回填**实时文档**的计数——这对
+                    // 布局编辑是正确默认，但本按钮销毁的正是实时计数：被剥离的重置前条目恢复时会
+                    // 套上刚被清零的实时值，一次 Ctrl+Z 看不出任何变化、整张计数表就此消失（并经
+                    // EditorMutated 落盘）。preserveCounts:false 使本条成为时间线里唯一持有真实
+                    // 计数的条目；下方 post-reset 条目同理携带清零值，于是一次撤销找回计数，
+                    // 第二次撤销仍正常走普通时间线。
+                    PushEditorHistory(false, false);
                     foreach (FmNode n in editorSelection)
                     {
                         if (n == null || (n.NodeType != 0 && !(n.NodeType == 3 && !string.IsNullOrWhiteSpace(n.KeyBind)))) continue;
@@ -4304,6 +4426,18 @@ namespace JipperKeyViewer.KeyViewer
             if ((newType == 1 && GroupHasStat(node.GroupId, 1))
                 || (newType == 2 && GroupHasStat(node.GroupId, 2)))
                 return; // one stat panel per group / 每组最多 1 个统计面板
+            // A conversion can flip which budget the node consumes: a key-like node turned into an
+            // UNBOUND image consumes an image slot; an unbound image turned into anything else
+            // consumes a key-like slot. Enforce the same budgets add/paste/assign do — the old
+            // unconditional conversion let the next EnsureCustomNodes walk silently delete the
+            // excess (and undo re-ran the same trim, so nothing came back).
+            // 转换可能改变节点占用的预算类别：按键类节点转成**未绑定**图片占用图片名额；未绑定
+            // 图片转成其它类型占用按键类名额。与新增/粘贴/指派一样先查预算——过去无条件放行，
+            // 下一次 EnsureCustomNodes 走查会静默删除超额者（撤销恢复后同样被裁剪，什么也回不来）。
+            bool wasKeyLike = CustomNodeHasKey(node);
+            bool becomesKeyLike = newType != 3 || !string.IsNullOrWhiteSpace(node.KeyBind);
+            if (wasKeyLike && !becomesKeyLike && UnboundImageCountInGroup(node.GroupId) >= 8) return;
+            if (!wasKeyLike && becomesKeyLike && KeyLikeCountInGroup(node.GroupId) >= CustomKeyNodeCap) return;
             node.NodeType = newType;
             PushEditorHistory(false);
             EditorMutated();
@@ -4721,7 +4855,16 @@ namespace JipperKeyViewer.KeyViewer
             // apply 回调所用的参照节点一致（X/Y 字段按活动节点求差）。
             float v0 = get(basis ?? editorSelection[0]);
             bool mixed = false;
-            for (int i = 1; i < editorSelection.Count; i++)
+            // When a basis node is given it IS the displayed reference, so index 0 must take part
+            // in the mixed scan — the old `i = 1` start assumed v0 was editorSelection[0]'s own
+            // value. With an active-node basis (X/Y rows) a Ctrl-multi-select whose first member
+            // differs from the active node showed no "—" marker even though the values differed,
+            // and typing then mass-applied a delta the marker exists to warn about.
+            // 传入基准节点时它就是显示参照，索引 0 必须参与混合扫描——旧的 `i = 1` 起点只在 v0
+            // 恰为 editorSelection[0] 自身值时成立。以活动节点为基准（X/Y 行）时，若 Ctrl 多选的
+            // 首个成员与活动节点不同，值不同却显示不出「—」标记，输入后会整体施加一个本该被
+            // 标记警告的差值。
+            for (int i = basis != null ? 0 : 1; i < editorSelection.Count; i++)
             {
                 if (Math.Abs(get(editorSelection[i]) - v0) > 0.001f)
                 {
@@ -4747,13 +4890,25 @@ namespace JipperKeyViewer.KeyViewer
             // never parsed — the primary multi-select flow (select many, type one value, all
             // apply) was dead. / 解析前剥掉混合标记：点击后直接输入会留下"—60"，此前永不解析
             // ——多选的主流程（选一堆、输一个值、全体生效）等于失效。
-            // Guard on a TEXT change, not a numeric difference: the field only means to apply what
-            // the user actually committed. Comparing the parsed value against the displayed seed
-            // re-triggered the apply whenever rounding made them differ. / 判定改为「文本是否变化」
-            // 而非「数值是否不同」：该字段只想施加用户真正提交的内容；拿回解值与显示种子比较会在
-            // 四舍五入造成差异时重新触发施加。
+            // Guard on a text change AND a numeric change. The text gate keeps "the user typed
+            // something" as the trigger; the numeric gate stops an equivalent RE-SPELLING of the
+            // stored value from applying. The seed is "R"-formatted (round-trip exact), so text
+            // differing while the value does not is exactly the "100.0"/"+5"/"5e1" case — and
+            // without the numeric gate every one of those re-ran apply on EVERY Layout/Repaint
+            // while the caret stayed in the field: each apply is a history push + save + full
+            // ResetKeyViewer teardown (all rain cleared), i.e. several full rebuilds per frame.
+            // "R" removed the rounding that originally justified text-only comparison; comparing
+            // values is safe again and is what actually bounds the loop. When the field is mixed,
+            // v0 is just one node's value, so a typed value is applied whenever it was committed.
+            // 以「文本变化**且**数值变化」为闸。文本闸保留「用户确实输入了内容」这一触发；数值闸
+            // 挡住对已存值的**等值改写**。种子是 "R" 格式（精确往返），故「文本不同而数值相同」
+            // 恰好就是 "100.0"/"+5"/"5e1" 这类情形——没有数值闸时，光标停在字段里的每一帧都会
+            // 重跑 apply：每次 apply = 压历史 + 存盘 + 整个 ResetKeyViewer 拆解（雨滴全清），即
+            // 每帧数次完整重建。"R" 已消除当初促成「只比文本」的四舍五入问题，现在比较数值既
+            // 安全、也正是掐断这个循环的手段。混合态下 v0 只是某个节点的值，故提交了输入就施加。
             string stripped = text.Replace("—", "").Trim();
-            if (stripped != seed && float.TryParse(stripped, out float parsed) && IsFiniteFloat(parsed))
+            if (stripped != seed && float.TryParse(stripped, out float parsed) && IsFiniteFloat(parsed)
+                && (mixed || Math.Abs(parsed - v0) > 0.001f))
                 apply(parsed);
             GUILayout.EndHorizontal();
             DrawEditorHelpBox(helpKey);

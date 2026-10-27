@@ -192,7 +192,7 @@ namespace JipperKeyViewer.KeyViewer
             if (!baseColorChanged
                 && textGradientStates.TryGetValue(text, out TextGradientState state)
                 && state.Text == value && state.Left == left && state.Right == right
-                && GradientStillApplied(text, left))
+                && GradientStillApplied(text, left, right))
                 return;
 
             // Vertex colors are multiplied by TMP_Text.color. Keep the base color white while a
@@ -240,14 +240,25 @@ namespace JipperKeyViewer.KeyViewer
         /// or re-activating a hidden label all schedule a PreRender rebuild, and
         /// GenerateTextMesh() repaints every vertex colour from the (now white) base colour — so
         /// "the inputs did not change" is NOT evidence that the rendered result did not change.
-        /// Read the first visible character's first vertex and compare it with what t=0 should be.
-        /// One array read; called only on a cache hit.
+        /// Mirror the WRITE path exactly: every visible character, Lerp(left, right, t). The old
+        /// probe compared only the FIRST visible character against Lerp(left, left, t) — with the
+        /// default white left stop that expected value IS the repainted white, so a destroyed
+        /// gradient was judged "still applied" and never re-applied (the label stayed solid white
+        /// for the session; counts escaped only because their text changes every press). A
+        /// multi-character label always has a vertex whose expected colour differs from the base,
+        /// so scanning all of them disambiguates; a SINGLE-character label with a white left stop
+        /// is visually identical either way (t=0 renders `left` = the base), so there is nothing
+        /// to lose. Runs only on a cache hit; O(visible glyphs) byte compares.
         /// 我们上次写入的着色是否还在 TMP 的 mesh 里？按压、换字体、重新激活隐藏标签都会安排一次
         /// PreRender 重建，而 GenerateTextMesh() 会用（此时为白色的）基色重绘每个顶点色——故
-        /// 「输入没变」**不能**证明「渲染结果没变」。读第一个可见字符的第一个顶点，与 t=0 应有
-        /// 的值比较。一次数组读取；仅在缓存命中时调用。
+        /// 「输入没变」**不能**证明「渲染结果没变」。与**写路径完全镜像**：逐个可见字符比较
+        /// Lerp(left, right, t)。旧探针只读第一个可见字符并与 Lerp(left, left, t) 比较——默认
+        /// 左端点是白色时，该期望值**恰好就是**重绘后的白色，于是被毁掉的渐变被判成「仍在」而
+        /// 永不重写（标签整场纯白；计数只因每次按压都变文本而幸免）。多字符标签总有顶点的期望
+        /// 颜色不同于基色，全量扫描即可区分；左端点为白的**单**字符标签两种状态视觉本就相同
+        /// （t=0 渲染 left = 基色），并无损失。仅在缓存命中时运行；O(可见字形) 次字节比较。
         /// </summary>
-        private static bool GradientStillApplied(TMP_Text text, Color left)
+        private static bool GradientStillApplied(TMP_Text text, Color left, Color right)
         {
             TMP_TextInfo info = text.textInfo;
             if (info == null || info.characterCount <= 0) return true; // nothing to tint yet
@@ -260,15 +271,16 @@ namespace JipperKeyViewer.KeyViewer
                 if (material < 0 || material >= info.meshInfo.Length) continue;
                 Color32[] colors = info.meshInfo[material].colors32;
                 int vertex = character.vertexIndex;
-                if (colors == null || vertex < 0 || vertex >= colors.Length) continue;
+                if (colors == null || vertex < 0 || vertex + 3 >= colors.Length) continue;
                 float t = charCount > 1 ? (float)i / (charCount - 1) : 0f;
                 // Color32 has no == operator in this Unity version, so compare components.
                 // 该版本 Unity 的 Color32 没有 == 运算符，故逐分量比较。
-                Color32 want = Color.Lerp(left, left, t);
+                Color32 want = Color.Lerp(left, right, t);
                 Color32 got = colors[vertex];
-                return got.r == want.r && got.g == want.g && got.b == want.b && got.a == want.a;
+                if (got.r != want.r || got.g != want.g || got.b != want.b || got.a != want.a)
+                    return false;
             }
-            return true; // no visible glyph to check
+            return true; // every visible glyph still carries our gradient
         }
 
         private static bool IsInvalidGradientColor(Color c) =>

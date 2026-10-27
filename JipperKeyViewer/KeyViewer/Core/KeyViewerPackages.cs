@@ -442,7 +442,17 @@ namespace JipperKeyViewer.KeyViewer
             try
             {
                 settingsJson = JsonConvert.SerializeObject(data, ProfileData.ProfileSerializer);
-                if (settingsJson.Length > MaxPackageSettingsBytes)
+                // The limit is in BYTES (MaxPackageSettingsBytes, and the read side at Import
+                // byte-counts the same file), but this gate counted CHARS — a string.MaxLength is
+                // chars, and UTF-8 encodes BMP characters at 1-3 bytes, so a CJK-heavy profile
+                // could serialize to up to 3× the limit and be REJECTED ON IMPORT by the very
+                // check the export thought it had passed. The mirror of the round-51 read-side
+                // fix. / 上限是**字节**（MaxPackageSettingsBytes，且读取侧 Import 对同一文件按
+                // 字节计数），而这个闸数的是**字符**——string.Length 是字符数，UTF-8 对 BMP 字符
+                // 编码为 1-3 字节，故一份 CJK 密集的配置最多能超限 3 倍，然后被导出方自以为通过
+                // 的那个检查在导入时**拒绝**。这正是第 51 轮读取侧修复的镜像。
+                long settingsBytes = System.Text.Encoding.UTF8.GetByteCount(settingsJson);
+                if (settingsBytes > MaxPackageSettingsBytes)
                     throw new InvalidDataException("Profile settings exceed the package size limit");
                 KvPackageInfo info = new KvPackageInfo
                 {
@@ -454,7 +464,7 @@ namespace JipperKeyViewer.KeyViewer
                     ExportedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                 };
                 infoJson = JsonConvert.SerializeObject(info, Formatting.Indented);
-                long expandedBytes = settingsJson.Length + infoJson.Length;
+                long expandedBytes = settingsBytes + System.Text.Encoding.UTF8.GetByteCount(infoJson);
                 int entryCount = 2 + assets.Count + (fontFile == null ? 0 : 1);
                 if (entryCount > MaxPackageEntries) throw new InvalidDataException("Profile package has too many entries");
                 foreach (string source in assets.Values)
@@ -502,8 +512,28 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 if (new FileInfo(tempPath).Length > MaxPackageFileBytes)
                     throw new InvalidDataException($"Package file exceeds {MaxPackageFileBytes} bytes");
-                if (File.Exists(outputPath)) File.Delete(outputPath);
-                File.Move(tempPath, outputPath);
+                // Publish WITHOUT the delete-then-move anti-pattern: the old code deleted the
+                // previous package BEFORE the move, so a failed move lost BOTH the old and the new
+                // archive — the exact pattern WriteAllTextSafe was changed away from in round 39.
+                // Prefer File.Replace (one-swap publish), plain Move when there is no previous
+                // file, and only degrade to delete+move where File.Replace is unimplemented
+                // (Mono/Wine/Proton, exFAT — round 39's ladder). Any other failure keeps the old
+                // package in place: the catch below then removes only the temp file.
+                // 发布时不再用「先删后移」反模式：旧代码在移动**之前**就删掉了旧包，移动一旦
+                // 失败就新旧两个归档一起丢——正是第 39 轮 WriteAllTextSafe 改掉的那个形态。
+                // 优先 File.Replace（一次交换完成发布），没有旧文件时直接 Move，仅在
+                // File.Replace 未实现的平台（Mono/Wine/Proton、exFAT——第 39 轮的阶梯）降级为
+                // 先删后移。其它任何失败都保留旧包：下方 catch 只清理临时文件。
+                if (File.Exists(outputPath))
+                {
+                    try { File.Replace(tempPath, outputPath, null); }
+                    catch (PlatformNotSupportedException)
+                    {
+                        File.Delete(outputPath);
+                        File.Move(tempPath, outputPath);
+                    }
+                }
+                else File.Move(tempPath, outputPath);
             }
             catch (Exception e)
             {
@@ -1101,6 +1131,15 @@ namespace JipperKeyViewer.KeyViewer
                 n.X *= scale;
                 n.Width *= scale;
                 n.RainOffsetX *= scale;
+                // The ghost rain's horizontal offset feeds the SAME alignment math as RainOffsetX
+                // (RawRain.OffsetXOverride) and lives on the same aspect-dependent axis; leaving it
+                // unscaled meant a package exported at 16:9 and imported at 4:3 kept the normal
+                // trail aligned while the ghost trail hung at the old offset — a horizontal
+                // misalignment that looks like a bug in the recipient's layout.
+                // 鬼雨的水平偏移与 RainOffsetX 走**同一套**对齐数学（RawRain.OffsetXOverride），
+                // 且位于同一条与宽高比相关的轴上；不缩放意味着 16:9 导出、4:3 导入的包里普通轨迹
+                // 对齐了，鬼雨轨迹却悬在旧偏移上——一种看起来像接收方布局坏掉的水平错位。
+                n.GhostRainOffsetX *= scale;
             }
         }
 

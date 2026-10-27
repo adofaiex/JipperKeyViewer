@@ -266,8 +266,25 @@ namespace JipperKeyViewer.LoaderMelon
         public MelonHandler(JipperMelonMod mod)
         {
             _mod = mod;
-            string loc = System.Reflection.Assembly.GetExecutingAssembly().Location;
-            _modPath = Path.GetDirectoryName(loc) ?? ".";
+            // NO "." fallback. ResolveModPath ACCEPTS "." (Directory.Exists(".") is true), so
+            // passing it down would land config/, assets/, CustomImages/, Packages/… in the game
+            // install directory — exactly the failure round 40 documented and banned. A
+            // byte-array-loaded assembly reports Location == "" and GetDirectoryName then yields
+            // ""/null, or can throw outright; every such case becomes null so ResolveModPath runs
+            // its LOGGED fallback policy (persistent data → temp) instead of guessing silently.
+            // 绝不兜底 "."。ResolveModPath **接受** "."（Directory.Exists(".") 为真），把它传下去
+            // 会让 config/、assets/、CustomImages/、Packages/… 全部落进游戏安装目录——正是第 40 轮
+            // 记录并明令禁止的故障。字节加载的程序集 Location 为空串，GetDirectoryName 会得到
+            // ""/null，甚至可能直接抛异常；这些情况一律归一成 null，让 ResolveModPath 走**带日志**
+            // 的兜底策略（持久化路径 → 临时目录），而不是静默猜一个目录。
+            string dir = null;
+            try
+            {
+                string loc = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                if (!string.IsNullOrEmpty(loc)) dir = Path.GetDirectoryName(loc);
+            }
+            catch (Exception) { dir = null; }
+            _modPath = string.IsNullOrEmpty(dir) ? null : dir;
         }
 
         public void Log(string msg)     => MelonLogger.Msg(msg);

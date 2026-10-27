@@ -11,7 +11,7 @@
   `Info.json` / 三个 `AssemblyInfo.cs` / `[MelonInfo]` 已是 `1.7.3-alpha.1` / `1.7.3.0`；
   `Repository.json` **刻意仍停在 1.7.2**（预览版不得推进更新检查器；`SetVersion.ps1` 在预览版
   分支会显式跳过并打印原因）。
-- Harness 回归基线 **250 passed / 0 failed**（2026-10-17，第 126 轮）。Harness 被 gitignore，只在本机。
+- Harness 回归基线 **274 passed / 0 failed**（2026-10-28，第 127 轮）。Harness 被 gitignore，只在本机。
 - **Rust 内核（原方案 Stage 1）已被 2026-10-12 的实测否决**，见第 123 轮：三处候选的绝对份额都远低于
   P/Invoke 回本线。Rust 环境本身仍可用（`D:\Rust`），不要再凭「Rust 更快」重开此议，要重开必须先测。
 
@@ -2392,9 +2392,12 @@ try/catch，故某个阶段抛异常**不会中断**后面的链——`UpdateCus
   暂存副本；move 失败时外层 catch 又删掉副本——存在「该路径上没有任何文件」的时刻，而 `.corrupt`
   恢复路径救不了直接消失的文件。降级改为**覆写复制**。
 - **否决（记录在案，免得再报）**：
-  - 「重置计数」快照剥掉了计数（`KeyViewerEditor.cs:4154`）——`PushEditorHistory(false, true)` 的
-    **第二个**参数才是 `preserveCounts`（第一个是 `allowSave`）。计数是保留的，把参数读反才会看成
-    坏的。
+  - ~~「重置计数」快照剥掉了计数~~ **【第 127 轮改判：该报告是对的，本条否决错误】**
+    `PushEditorHistory(false, true)` 的第二个参数确是 `preserveCounts`（第一个 `allowSave`），
+    否决把参数读对了、却把语义读反了：`preserveCounts=true` 意为**剥离**计数（恢复时回填实时
+    文档的计数）。重置按钮销毁的恰是实时计数，剥离后的「重置前」条目恢复时套上刚清零的实时值，
+    一次 Ctrl+Z 永久抹掉整张计数表并落盘。第 127 轮 E4 修复：重置**前**条目改
+    `PushEditorHistory(false, false)`（时间线中唯一携带真实计数的条目）；计数输入框同理（E3）。
   - 每键计数文字在只开标签渐变时被强制纯白（`KeyViewerInput.cs:643`）——两个分支判的都是
     `EnableCountTextGradient`。
   - 图片缓存从不驱逐、饿死 256 MB 预算（`KvImageLoader`）——完全拆解时会释放
@@ -3046,3 +3049,127 @@ CSS 语义是「**同时**带 blue 与 special」。而 `ExtractClasses` 把它�
   教训：**写 CHANGELOG 前必须核对被引用提交是否后来被 revert**，`git log <sha>..HEAD` 不够，
   要直接读最终代码。同时补上三块此前完全没记录的改动（`6c793ca` 外观层 +2764 行、
   `9244f84` DmNote 导入器**本身**、`d193e55` 自定义字体退化成中日韩字面）。
+
+### 四路只读审计 + 配置跨版本兼容专审（2026-10-28，第 127 轮）
+
+五个只读审计员（编辑器/渲染/核心/GUI/跨版本兼容）合计 34 条候选；逐条亲自核码后修复 24 条、
+报告存档 6 条（E7/E10、R8、D-4、C4、C5）、否决 4 条。报告存 `.audit/r127_{editor,render,core,
+gui,compat}.md`。用户本轮指令：**重点研究配置文件是否和旧版本冲突**（审计 E 即为此设）。
+
+编辑器（E 系，全部修复）：
+- **E1 已武装的改键捕获吞掉全部快捷键**：捕获行只在「单选且为活动节点」时绘制，任何让该行
+  消失的选区变化都把捕获留在**已武装且不可见**态，Ctrl+Z/Y、Delete、复制粘贴、方向键连同
+  Escape 全部静默失效。现两处：属性面板 choke point（选区大小/活动节点与捕获不符即解除）+
+  HandleEditorShortcuts 最前面的 Escape 硬出口。
+- **E2 删组按钮裸 `break` 跳过 `EndHorizontal`**：删组后本帧其后的一切都被排进游离布局组，
+  每次删组都报 mismatched-LayoutGroup、面板下缘错乱。补 EndHorizontal。
+- **E3/E4 计数编辑不可撤销**（并**改判第 116 轮的一条错误否决**，见该处）：计数输入框与
+  「重置计数」的条目都必须携带真实计数（`PushEditorHistory(false, false)`）；微调（nudge）
+  快照剥离计数，输入值永远撤不回，窗口期内更是什么都不压、Ctrl+Z 反而撤销无关编辑。
+- **E5 组指派/类型转换不做预算检查**：指派把 108 键整组塞进非空组，紧随的 EnsureCustomNodes
+  **静默删除**超额者且撤销恢复后同样被裁剪（不可逆）。指派与类型下拉（转换会改变节点占用的
+  预算类别）现都按 add/paste 同款 keyRoom/imageRoom 闸门放行，超额跳过并 `Loader.Warning` 计数。
+- **E6 浮点字段等值改写重复施加**：第 42 轮把判定改成「文本是否变化」治了 `"0.##"` 截断，但
+  `"R"` 格式消除了四舍五入后，`"100.0"`/`"+5"`/`"5e1"` 这类**等值改写**会在光标停留的每一帧
+  重跑 apply（压历史+存盘+全量拆解）。现加数值闸 `(mixed || |parsed - v0| > 0.001)`。
+- **E8 混合值扫描跳过索引 0**：传基准节点时 `i=1` 起步，首成员与基准不同却显示不出「—」。
+- **E9 缩放手柄绘制钳制、命中不钳制**：画布外的手柄看得见点不中，点击落入拾取/框选分支。
+  命中判定与绘制同款 ±4px 钳制。
+- **E11 EditorUndo/Redo 快照序列化无保护**：异常在每次 Ctrl+Z/Y 逃进 OnGUI，且交互态已被先清。
+  与 Push 同款 try/catch，失败放弃本次手势。
+
+渲染/雨滴（R 系，除 R8 外全部修复）：
+- **R1（高危）文字渐变探针永远误判「仍在」**：探针只读第一个可见字符并与 `Lerp(left,left,t)`
+  比较——默认左端点白色时该期望值**就是**重绘后的白色，TMP 重绘毁掉的渐变被判「仍在」而
+  永不补写，标签整场纯白。**修法与原报告不同**：探针改为与写路径完全镜像——逐个可见字符
+  `Lerp(left,right,t)` 全量比对（只改参数救不了 t=0 恒等于 left 的情形）。
+- **R2（高危）全局雨滴顶点预算**：每键 128 滴上限是**每键**的，mesh 是**共享**的——
+  点状+阴影+描边 288 顶点/滴时 3 个重度键即越过 uGUI 65000 上限，FillMesh **清 mesh 后**
+  抛异常，整块雨滴画布每帧消失。现 SyncCachedSpeeds 按全局点状开关**或**任何强制点状为开的
+  节点覆盖缓存单滴最坏顶点数（纯函数 `WorstRainVertsPerDrop`，12/288），创建路径按
+  `MaxTotalLiveDropsForVerts`（208/5000）饱和即放弃新滴；计数经**唯一**回收漏斗
+  `ReturnRawRain` 递减（递减置于池满早退**之前**，防预算单向收紧）。
+- **R3 形状层 65k 抛出改为预算内降级**：「112 键 ≈ 2.9 万」的前提是**按组**计数；合法大文档
+  （上限 4096 节点/64 组）会整层按键框消失+每帧异常。DrawAll 增 62000 顶点预算闸
+  （尾部槽位丢弃+每会话一次警告），sink 抛出**保留**为真缺陷的最后防线。
+- **R4 运行时图片负缓存**：被拒/超预算图片每帧重读+重解码+重刷日志（拖滑杆 60-120 次/秒）。
+  现按 mtime+length 负缓存（256 条有界、溢出整体清空），预算级拒绝记录**水位**，实时预算
+  低于水位即重试；`ReleaseAll` 一并清空。
+- **R5 逐节点速度补 1e-3 下限**（与行管线共用 `MinDropSpeed` 常量）；**R6 鬼雨起始 Y 用净化
+  行**并再次钳差值本身；**R7 反射重试戳修正**（原 `now + interval` 叠加闸内 interval，实际
+  间隔 2 倍）。
+- **R8 非循环视频重建即重启**：SUSPECTED，需实机验证，报告存档未修。
+
+GUI/加载器（D 系，除 D-4 外全部修复）：
+- **D-1 自定义字体上限按单次扫描计数**：局部计数器每次归零，每个携带字体的 .jkv 导入都能再
+  追加 24 张动态图集（各自带材质）——无界显存。现按 fontList 中已有 `Custom: ` 前缀条目数
+  播种。
+- **D-2 `resolvedPath` 无条件清空**：`if (value != null)` 门恰好架空注释点名的 null 分支，
+  Main.Shutdown() 后半拆解态仍返回旧目录，且 warnedMissingPath 已重置、诊断永远发不出。
+- **D-3 另存为三条拒绝路径静默**：新增内联瞬态提示（4 秒，与按钮同行）+ 2 个新 i18n 键
+  （三语：`profile_save_as_exists`/`profile_name_empty`）。
+- **D-5 MelonEntry 复活第 40 轮明令禁止的 `"."` 兜底**：字节加载程序集 Location 为空串时
+  `_modPath="."`，config/ 全落游戏安装目录。现归一成 null，交给 ResolveModPath 的**带日志**
+  兜底策略。
+
+持久化/包/DmNote（F 系，全部修复）：
+- **F1 LoadProfile 损坏闸对嵌套 Count 失明**：`IndexOf("\"Count\"")` 被 FreeMake 配置自带的
+  嵌套 `FmNode.Count` 永久压制——有效但被截断的大配置以构造默认值加载，下一次保存无备份覆盖
+  用户文件。改 `HasRootProperty`（与 .jkv 导入器第 40 轮同一助手）。
+- **F2 `DIGIT5`/`key_5` → `(KeyCode)5`**：前缀剥离后的裸数字落进 `Enum.TryParse`，数值串被解析
+  成枚举**值**（未定义键码，永不触发），主键盘数字键静默失绑且界面报「导入成功」。裸数字在
+  TryParse 前走与数字分支相同的 Alpha 映射。
+- **F3 导出先删后移**：move 失败新旧两个 `.jkv` 一起丢（WriteAllTextSafe 第 39 轮改掉的同款
+  反模式）。改 File.Replace 阶梯（无旧文件直接 Move；PNSE 才降级 delete+move；其它失败保留
+  旧包只清临时）。
+- **F4 导出尺寸闸数字符**：上限是字节（读取侧按字节），`string.Length` 数字符——CJK 密集
+  配置可超限 3 倍后被**自己的**检查在导入时拒绝。改 `Encoding.UTF8.GetByteCount`。
+- **F5 MigrateV3toV4 内联位移无定长**：16 脚键 v3 配置 Count[36] 直接越界抛出中止整个迁移。
+  删内联拷贝，改调共享 `MigrateFootSlots`（自带 Count/7 组色数组定长 + 间隙清除 + 推迟标记闸）。
+- **F6 box-shadow 命名色静默丢光效**：只找 rgb(/#，`0 6px 18px black` 整层跳过。最后一段
+  token 走 ParseColor（边框解析早已依赖命名色）。
+- **F7 @media 警告自相矛盾**：文案说「被无条件套用」而代码把主体**丢弃**（fail-closed，与
+  复合类决策一致）。改文案为 dropped，并修正同样撒谎的函数注释。
+- **F8 `data-counter-emphasis="false"` 读成开**：属性**值**才是开关。false/0/no/off 显式判假。
+- **F9 多类叠加按 className 属性顺序**：CSS 用**样式表顺序**裁定同节点类间冲突。现主题记录
+  每类最后一条规则的级联位置（`ClassOrder`），映射层按其排序叠加，属性顺序只作回退。
+- **F10 AdaptPackageToResolution 漏缩 GhostRainOffsetX**：与 RainOffsetX 同轴同数学，不缩则
+  跨宽高比导入后鬼雨横向错位。
+
+跨版本兼容（C 系，C1/C2/C3 修复；C4/C5 记录在案）：
+- **C1（高危，PROVEN）降级→再升级二次迁移**：1.7.2 无 `DataVersion`/`NodeDefaultsVersion`/
+  `FootSlotsMigrationDeferred` 三字段且每次场景加载重写活动配置——一次降级会话剥掉文件内标记
+  而 meta 仍是 6，再升级时惰性迁移**二次执行**：脚键计数从已清空区二次平移（≤4 脚键全归零）、
+  v5→v6 Y 翻转再翻一遍（面板镜像），全部静默且永久（文件被重新盖上 6）。**修复=边车版本戳**：
+  `config/migration-stamps.json`（放 config 而非 profiles/，避免被 SyncProfilesWithDisk 的
+  `*.json` 扫描误认）镜像三个标记；SaveCurrentProfile 写、LoadProfile 在惰性迁移**之前**
+  恢复；只有**严格更新**的边车条目可以覆盖文件内戳（相等/更旧视为陈旧），文件内戳存在时行为
+  与从前完全一致。
+- **C2 旧字段修复重置 1.7.2 用户数据**：`ApplyLegacyFmNodeDefaults` 的 22 个字段（计数动画
+  三件套、雨/鬼雨阴影描边块、轨迹淡出三件套、八个文字描边阴影字段）经 `git show 1.7.2` 取证
+  **全部在 1.7.2 就存在**，守护键 LabelScale/CountScale 却是 1.7.3 新增——每个 1.7.2 节点
+  都命中重置，用户选择被一次性抹掉并落盘。**修复=存在性哨兵**：`CounterAnimBezier != null ||
+  CounterAnimDurationMs > 0` 证明节点写于 1.7.2+，22 字段原样保留；1.6.x 节点（字段缺失）读
+  null/0，仍拿 1.7.2 初始化器默认值。**裁决记录**：本轮某个中间状态曾以「缺失字段保留构造
+  初始化器、哨兵恒真、被覆盖测试抓住」为由把此修复降级为「未修缺陷」——经 Harness 探针实证
+  该前提**错误**（字段模式对 `[Serializable]+Fields` 走未初始化构造，缺失字段读 0/null，正是
+  第 33 轮实证、第 48 轮测试头注释记载的行为；覆盖测试只清零数值字段、float[] 被跳过保持
+  非 null，且 22 字段已入其 pre172 豁免集，两种哨兵取向下都不会失败），哨兵修复已恢复并加
+  载路径探针钉死（`profile: fields-mode deserialization reads absent fields as absent`）。
+  覆盖测试的 pre172 豁免集由该中间状态引入（方向正确）但**漏了八个文字字段**——已按
+  `git show 1.7.2` 证据补全。
+- **C3 DmNote 导入盖会话 meta 版本**：迁移回滚窗口内 `Settings.Version` 被刻意压低，新生配置
+  生来 DataVersion<6 却继承**已翻转**的 FullKpsPosition → 惰性翻转二次触发。改盖
+  `KeyViewerSettings.CurrentVersion` 常量。
+- **C4 旧包拒绝**：1.7.2 无任何包上限，病态旧包（5000 节点/512MB+）现被新上限拒绝——抛在
+  落盘前、事务回滚、报错可见，**方向正确**，仅记录。反向（新包→1.7.2）安全。
+- **C5 行为差异**：字体上限 24、ResolveModPath 回退、.jkv-staging 清扫、.corrupt 轮换——
+  均为既有刻意决策，记录免得再推导。
+- 附加更正：KeyViewer.cs:890（`metaVersionOnDisk <= 0` 赋值）是无操作行，但其后果（未知版本
+  meta 跳过 Y 翻转）恰是安全方向，仅注释误导，未改。
+
+Harness 增至 **274** 项（+24：雨滴顶点预算算术与端到端 8 条、CSS 命名色/媒体丢弃/强调开关/
+样式表顺序 6 条、DmNote 数字标签 1 条、Count 根对象闸 1 条、反序列化前提探针 1 条、
+1.7.2 哨兵双向 2 条、边车版本戳 5 条）。部署：3 DLL + Info.json 哈希核验一致
+（core `BCD99B6C…`、Melon `205E2003…`、UMM `810DA824…`）。`Repository.json` 仍停 1.7.2，
+版本线未动，未打 tag（发版由用户决定）。

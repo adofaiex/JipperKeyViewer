@@ -986,7 +986,21 @@ namespace JipperKeyViewer.KeyViewer
         {
             string modPath = Loader.ResolveModPath();
             string customFontDir = Path.Combine(modPath, "CustomFont");
+            // The cap must count the custom fonts ALREADY LOADED, not what this single call adds.
+            // A local counter reset to 0 on every scan meant the cap bounded only ONE scan:
+            // RescanCustomFontsAfterImport re-runs this after every font-carrying .jkv import, so
+            // each import could append another 24 baked dynamic atlases (each with its own
+            // material) — the exact unbounded VRAM growth the cap exists to prevent. ScanGameFonts
+            // caps on the list total; this scanner now does the same for its own entries.
+            // 上限必须按**已加载**的自定义字体总数计，而不是本次调用新增多少。局部计数器每次
+            // 扫描都归零，等于上限只约束单次扫描：RescanCustomFontsAfterImport 在每个携带字体的
+            // .jkv 导入后都会重跑本方法，于是每次导入都能再追加 24 张烘焙的动态图集（各带一份
+            // 材质）——正是该上限要防的那种无界显存增长。ScanGameFonts 按列表总数设限；本扫描器
+            // 现在对自己的条目同样如此。
             int customFontCount = 0;
+            foreach (var fe in fontList)
+                if (fe.name != null && fe.name.StartsWith("Custom: ", StringComparison.OrdinalIgnoreCase))
+                    customFontCount++;
             string[] fontFiles;
             // Every directory operation is guarded: this method runs inside the overlay build
             // (TryLoadResources → EnableKeyViewer → OnEnable), so an UnauthorizedAccessException or

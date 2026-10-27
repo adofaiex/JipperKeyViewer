@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using UnityEngine;
 using JipperKeyViewer.KeyViewer.Settings;
 
@@ -31,11 +32,30 @@ namespace JipperKeyViewer.KeyViewer
             DmNoteCssScope idle = theme.Idle.Copy();
             DmNoteCssScope active = theme.Active.Copy();
             // A class-scoped block (`.clear`, `.fail`, …) only describes nodes carrying that
-            // className, and overrides the shared block for them. / 类作用域块只描述带该 className
-            // 的节点，并对它们覆盖共享块。
+            // className, and overrides the shared block for them. When a node carries SEVERAL
+            // classes, the overlays must apply in STYLESHEET order: CSS resolves two classes
+            // competing on one key by the position of their last rules, never by the order tokens
+            // happen to appear in the className attribute. The old attribute-order loop made
+            // `class="b a"` with `.a` defined later win for `.b` — the opposite of what every CSS
+            // engine does (compat audit core F9).
+            // 类作用域块（`.clear`、`.fail`…）只描述带该 className 的节点，并对它们覆盖共享块。
+            // 节点带**多个**类时，叠加必须按**样式表顺序**进行：CSS 用「各类最后一条规则的
+            // 位置」裁定同一个键上的类间冲突，而从不看 className 属性里 token 的排列顺序。
+            // 过去按属性顺序循环，使 `class="b a"`（而 `.a` 定义在后）反而是 `.b` 获胜——与所有
+            // CSS 引擎相反（兼容审计 core F9）。
             if (!string.IsNullOrWhiteSpace(className))
             {
+                var present = new List<KeyValuePair<int, string>>();
                 foreach (string token in className.Split(new[] { ' ', ',', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!theme.ClassIdle.ContainsKey(token) && !theme.ClassActive.ContainsKey(token)) continue;
+                    present.Add(new KeyValuePair<int, string>(
+                        theme.ClassOrder.TryGetValue(token, out int ord) ? ord : int.MaxValue, token));
+                }
+                // Stable sort keeps attribute order only for classes the sheet never ordered
+                // (impossible today, but the fallback must stay deterministic).
+                // 稳定排序只对样式表从未定序的类保留属性顺序（今天不可能发生，但回退必须确定）。
+                foreach (string token in present.OrderBy(p => p.Key).Select(p => p.Value))
                 {
                     if (theme.ClassIdle.TryGetValue(token, out DmNoteCssScope ci)) idle = Overlay(idle, ci);
                     if (theme.ClassActive.TryGetValue(token, out DmNoteCssScope ca)) active = Overlay(active, ca);

@@ -164,14 +164,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // buffer), and the VertexHelper branch still goes through it. The Mesh branch does
             // NOT — DoLegacyMeshGeneration calls OnPopulateMesh(mesh) directly — so without this
             // guard a runaway geometry set would stop being a loud ArgumentException and become a
-            // silently mishandled mesh. Real scale is far below: 112 keys * ~261 verts = ~29k, so
-            // this only fires on a genuine defect (e.g. a rain-drop leak feeding the shape layer).
-            //
-            // uGUI 的 VertexHelper.FillMesh 拒绝发布 >= 65000 顶点（16 位索引缓冲），而
-            // VertexHelper 分支仍经过它。Mesh 分支**不经过**——DoLegacyMeshGeneration 直接调
-            // OnPopulateMesh(mesh)——故没有本护栏时，失控的几何量会从「响亮的
-            // ArgumentException」变成「被静默错处理的 mesh」。真实规模远低于此：112 键 × 约
-            // 261 顶点 ≈ 2.9 万，故它只在真实缺陷（如雨滴泄漏灌进形状层）时才触发。
+            // silently mishandled mesh. NOTE: legal documents can also reach this size — the old
+            // "112 keys ≈ 29k" premise counted per GROUP — which is why KeyShapeLayer.DrawAll now
+            // enforces its own budget gate and skips slots BEFORE finishing. With that gate in
+            // place, this throw is reachable only by a genuine defect (e.g. a rain leak feeding
+            // the shape layer) and stays deliberately loud. / uGUI 的 VertexHelper.FillMesh 拒绝
+            // 发布 >= 65000 顶点（16 位索引缓冲），而 VertexHelper 分支仍经过它。Mesh 分支**不
+            // 经过**——DoLegacyMeshGeneration 直接调 OnPopulateMesh(mesh)——故没有本护栏时，失控
+            // 的几何量会从「响亮的 ArgumentException」变成「被静默错处理的 mesh」。注意：合法
+            // 文档也可能达到这个规模——「112 键 ≈ 2.9 万」的旧前提是**按组**计数的——这正是
+            // KeyShapeLayer.DrawAll 现在有了自己的预算闸、并在 Finish 之前跳过槽位的原因。闸就位
+            // 后，本抛出只有真缺陷（如雨滴泄漏灌进形状层）才会触达，故刻意保持响亮。
             if (vertCount >= 65000)
                 throw new System.ArgumentException("Mesh can not have more than 65000 vertices");
             if (vertCount == 0) return;

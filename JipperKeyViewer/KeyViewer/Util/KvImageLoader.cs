@@ -94,6 +94,10 @@ namespace JipperKeyViewer.KeyViewer.Util
             }
             textureCache.Clear();
             cachedOwnership.Clear();
+            // Budget refusals were judged against the OLD live budget; after a wholesale release
+            // everything fits again, so the negative cache must not outlive it.
+            // 预算级拒绝是按**旧的**实时预算判的；整体释放后一切都放得下，负缓存不得比它更长寿。
+            textureRefusals.Clear();
             // Same reasoning as the video ledger's ReleaseAll: reset outright rather than trust the
             // per-entry subtraction, so a domain reload that dropped some entries cannot leave the
             // budget permanently narrowed and silently disable images for the rest of the session.
@@ -101,6 +105,33 @@ namespace JipperKeyViewer.KeyViewer.Util
             // 预算永久变窄、从而在本次会话余下时间里悄悄禁用图片。
             liveCachedImageBytes = 0;
         }
+
+        /// <summary>Bounded negative cache for LoadTextureCached. WITHOUT it, every refused or
+        /// over-budget image was re-read, re-decoded (up to the per-file 16 MB / 4096² caps) and
+        /// re-logged on EVERY rebuild — 60-120×/s while a slider is being dragged. Keyed by
+        /// mtime+length, so fixing the file on disk invalidates the entry naturally. Two refusal
+        /// kinds: file-level (unreadable/corrupt/too large — stable for a given file) and
+        /// budget-level (decode succeeded but did not fit — retried as soon as the committed
+        /// budget DROPS below the watermark recorded at refusal time, because other images being
+        /// released may free room). Bounded to 256 paths; overflow clears wholesale (self-healing,
+        /// worst case one extra re-read per path).
+        /// / LoadTextureCached 的有界负缓存。没有它，每个被拒或超预算的图片会在**每次**重建时
+        /// 被重读、重解码（直至单文件 16MB/4096² 上限）并重刷日志——拖滑杆时即每秒 60-120 次。
+        /// 以 mtime+length 为键，用户在磁盘上修好文件即自然失效。两种拒绝：文件级（不可读/
+        /// 损坏/超限——对给定文件是稳定的）与预算级（解码成功但放不下——一旦已提交预算**低于**
+        /// 拒绝时记录的水位就重试，因为其它图片释放可能腾出空间）。上限 256 条路径；溢出整体
+        /// 清空（自愈，最坏代价是每条路径多读一次）。</summary>
+        private sealed class CachedRefusal
+        {
+            public DateTime LastWriteUtc;
+            public long Length;
+            public bool BudgetRefused;
+            public long BudgetAtRefusal;
+        }
+
+        private static readonly Dictionary<string, CachedRefusal> textureRefusals
+            = new Dictionary<string, CachedRefusal>(StringComparer.OrdinalIgnoreCase);
+        private const int MaxTextureRefusals = 256;
 
         /// <summary>Load a PNG, reusing the previous decode when the file is unchanged. For callers
         /// that re-request the same paths on every rebuild. / 加载 PNG，文件未变时复用上次的解码结果。
@@ -132,8 +163,34 @@ namespace JipperKeyViewer.KeyViewer.Util
                 liveCachedImageBytes -= (long)hit.LastWidth * hit.LastHeight * 4L;
                 if (liveCachedImageBytes < 0) liveCachedImageBytes = 0;
             }
+            // Negative-cache gate: a stat is microseconds; re-reading + re-decoding a refused file
+            // (and re-logging it) is the exact per-frame cost the rebuild loop cannot afford.
+            // 负缓存闸：一次 stat 是微秒级，而重读 + 重解码一个被拒文件（并重刷日志）正是重建
+            // 循环负担不起的逐帧成本。
+            if (textureRefusals.TryGetValue(path, out CachedRefusal refused))
+            {
+                bool fileUnchanged = false;
+                try
+                {
+                    FileInfo fi = new FileInfo(path);
+                    fileUnchanged = fi.LastWriteTimeUtc == refused.LastWriteUtc && fi.Length == refused.Length;
+                }
+                catch (Exception) { fileUnchanged = false; }
+                bool stillHopeless = !refused.BudgetRefused || liveCachedImageBytes >= refused.BudgetAtRefusal;
+                if (fileUnchanged && stillHopeless) return null;
+                textureRefusals.Remove(path);
+            }
             Texture2D loaded = LoadTexture(path);
-            if (loaded == null) return null;
+            if (loaded == null)
+            {
+                // File-level refusal (unreadable, corrupt, over the per-file caps, or vanished):
+                // stable per mtime+length, so cache it. A vanished file stats as "changed" and is
+                // cheaply re-attempted, so no special case is needed.
+                // 文件级拒绝（不可读、损坏、超单文件上限或已消失）：按 mtime+length 稳定，故缓存。
+                // 已消失的文件 stat 结果是「已变化」且重试很廉价，无需特判。
+                RecordTextureRefusal(path, budgetRefused: false, budgetAtRefusal: 0);
+                return null;
+            }
             // Read the real decoded dimensions, not the PNG header: the header is what the per-file
             // cap validates, and only the decoded texture's size is what the GPU actually reserves.
             // 读**解码后**的真实尺寸而非 PNG 头部：头部只是单文件上限校验的对象，真正由 GPU 预留的
@@ -142,12 +199,20 @@ namespace JipperKeyViewer.KeyViewer.Util
             long wanted = (long)texWidth * texHeight * 4L;
             if (liveCachedImageBytes + wanted > MaxCachedImageBytes)
             {
+                // Budget-level refusal: the decode SUCCEEDED, so this is not a file property —
+                // cache it with the committed-bytes watermark so other images being released can
+                // reopen the door (the next call retries as soon as the live budget drops below
+                // the recorded level). / 预算级拒绝：解码**成功**，故这不是文件的属性——连同
+                // 「已提交字节」水位一起缓存，其它图片释放即可重新打开大门（下一次调用只要
+                // 实时预算低于记录水位就重试）。
+                RecordTextureRefusal(path, budgetRefused: true, budgetAtRefusal: liveCachedImageBytes);
                 try { UnityEngine.Object.Destroy(loaded); }
                 catch (Exception) { /* nothing to do */ }
                 Loader.Warning($"KeyViewer: image '{path}' skipped — the custom-image texture budget "
                     + $"({MaxCachedImageBytes / (1024 * 1024)} MB) is already committed");
                 return null;
             }
+            textureRefusals.Remove(path); // the file now loads fine; any stale refusal must go / 文件已能正常加载；任何陈旧拒绝都必须清除
             try
             {
                 FileInfo fi = new FileInfo(path);
@@ -170,6 +235,38 @@ namespace JipperKeyViewer.KeyViewer.Util
                 // 持有，会照旧被销毁。
             }
             return loaded;
+        }
+
+        /// <summary>Record a refusal for the negative cache (bounded; overflow clears wholesale).
+        /// / 为负缓存记录一次拒绝（有界；溢出整体清空）。</summary>
+        private static void RecordTextureRefusal(string path, bool budgetRefused, long budgetAtRefusal)
+        {
+            try
+            {
+                if (textureRefusals.Count >= MaxTextureRefusals) textureRefusals.Clear();
+                FileInfo fi = new FileInfo(path);
+                textureRefusals[path] = new CachedRefusal
+                {
+                    LastWriteUtc = fi.LastWriteTimeUtc,
+                    Length = fi.Length,
+                    BudgetRefused = budgetRefused,
+                    BudgetAtRefusal = budgetAtRefusal,
+                };
+            }
+            catch (Exception)
+            {
+                // Unstatable path: record it with sentinels so the next call's stat compare fails
+                // and retries — a missing file is cheap to re-attempt.
+                // 无法 stat 的路径：以哨兵值记录，下一次调用的 stat 比对必然失败并重试——重试一个
+                // 不存在的文件本就很廉价。
+                textureRefusals[path] = new CachedRefusal
+                {
+                    LastWriteUtc = DateTime.MinValue,
+                    Length = -1L,
+                    BudgetRefused = budgetRefused,
+                    BudgetAtRefusal = budgetAtRefusal,
+                };
+            }
         }
 
         private static bool _loadImageCached;
@@ -458,7 +555,13 @@ namespace JipperKeyViewer.KeyViewer.Util
             _loadImageCached = true;
             if (_cachedLoadImage == null)
             {
-                _loadImageRetryAfter = now + _loadImageRetrySeconds;
+                // The gate BELOW adds the interval (`now - stamp < interval`), so stamping
+                // `now + interval` made the real wait 2× _loadImageRetrySeconds (retry allowed at
+                // now ≥ T + 20 for a documented 10 s). Stamp the failure time; the gate owns the
+                // interval. / 下面的闸**自己会加**间隔（`now - 戳 < 间隔`），因此存 `now + 间隔`
+                // 让真实等待变成 2 倍（文档写 10s，实际 now ≥ T + 20 才重试）。只记失败时刻，
+                // 间隔归闸管。
+                _loadImageRetryAfter = now;
                 if (now - _loadImageRetryLoggedAfter >= _loadImageRetrySeconds)
                 {
                     _loadImageRetryLoggedAfter = now;

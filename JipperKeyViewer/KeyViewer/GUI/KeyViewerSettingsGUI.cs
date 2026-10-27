@@ -280,25 +280,57 @@ namespace JipperKeyViewer.KeyViewer
         /// 我最初把这一档也写进判据，是 Harness 测试当场指出错的——第二段判据同样永远不会命中。
         static bool ProfileNameUnusable(string typed) => string.IsNullOrWhiteSpace(typed);
 
+        // Inline feedback for REFUSED Save-As attempts. All three refusal paths used to `return`
+        // with zero visible difference from a dead button — the same complaint the SanitizeFileName
+        // guard fix records for its sibling ("毫无提示，按钮看起来像坏了"), which that fix solved only
+        // for the empty-input case's downstream effects. The notice is transient (4 s) and inline,
+        // so it needs no new window chrome and cannot linger after the user edits the name.
+        // 拒绝另存时的**内联**反馈。三条拒绝路径过去都直接 `return`，与按钮坏掉毫无可见区别——
+        // 与 SanitizeFileName 守卫那轮修复记录的同级问题一模一样（「毫无提示，按钮看起来像坏了」），
+        // 而那一轮只治好了空输入的下游后果。提示是瞬态的（4 秒）且内联，无需新增窗口部件，
+        // 用户改名字后也不会残留。
+        private string profileSaveAsNotice;
+        private float profileSaveAsNoticeUntil;
+
+        private void ShowProfileSaveAsNotice(string i18nKey)
+        {
+            profileSaveAsNotice = i18nKey;
+            profileSaveAsNoticeUntil = Time.unscaledTime + 4f;
+        }
+
         private void DrawProfileSaveAs()
         {
             profileSaveAsBuffer = GUILayout.TextField(profileSaveAsBuffer, GUILayout.Width(120));
             if (GUILayout.Button(I18n.Tr("save_as"), GUILayout.MinWidth(60)))
             {
-                if (ProfileNameUnusable(profileSaveAsBuffer)) return;
+                if (ProfileNameUnusable(profileSaveAsBuffer))
+                {
+                    ShowProfileSaveAsNotice("profile_name_empty");
+                    return;
+                }
                 string name = SanitizeFileName(profileSaveAsBuffer.Trim());
                 bool exists = File.Exists(GetProfilePath(name));
                 if (Settings.ProfileNames != null)
+                {
                     // Case-insensitive: on NTFS "MyProfile"/"myprofile" are the same file / 大小写不敏感:
                     // NTFS 上 "MyProfile"/"myprofile" 是同一个文件
                     foreach (var p in Settings.ProfileNames)
-                        if (string.Equals(SanitizeFileName(p), name, System.StringComparison.OrdinalIgnoreCase)) return;
+                    {
+                        if (!string.Equals(SanitizeFileName(p), name, System.StringComparison.OrdinalIgnoreCase)) continue;
+                        ShowProfileSaveAsNotice("profile_save_as_exists");
+                        return;
+                    }
+                }
                 // Also refuse when the file is already on disk: ProfileNames only syncs when the
                 // list is expanded, so a manually copied (or orphaned) Profiles\*.json is invisible
                 // here and Save-As would overwrite it with the current profile's settings.
                 // 磁盘上已存在时同样拒绝：ProfileNames 只在展开列表时同步，手动拷入（或孤儿）的
                 // Profiles\*.json 在此不可见，另存为会直接用当前配置覆盖它。
-                if (exists) return;
+                if (exists)
+                {
+                    ShowProfileSaveAsNotice("profile_save_as_exists");
+                    return;
+                }
                 // Snapshot before committing, and roll back on failure. Every other lifecycle entry
                 // point already does this — DeleteProfile captures previousNames, RenameProfile
                 // captures both previousNames and previousCurrent, and both importers capture
@@ -336,6 +368,12 @@ namespace JipperKeyViewer.KeyViewer
                 profileSaveAsBuffer = "";
                 profileExpanded = false;
             }
+            // Rendered inside the same row so the notice sits next to the button the user just
+            // clicked; a refusal must be readable where the action happened, not buried in a log.
+            // 与按钮同行渲染，提示就落在用户刚点的那颗按钮旁；拒绝必须发生在行动处可读，
+            // 而不是埋进日志里。
+            if (Time.unscaledTime < profileSaveAsNoticeUntil && !string.IsNullOrEmpty(profileSaveAsNotice))
+                GUILayout.Label("<i>" + I18n.Tr(profileSaveAsNotice) + "</i>", GUILayout.ExpandWidth(true));
         }
 
         private void DrawProfileRenameButton()

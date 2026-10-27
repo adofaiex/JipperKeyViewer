@@ -89,7 +89,17 @@ namespace JipperKeyViewer
                 // 指向**旧**模组目录，读写分裂到两个文件夹。在此清空让所有缓存跟随当前加载器。
                 // null 分支同样清空：Main.Shutdown() 现在会赋 null，而若拆解时留下旧路径缓存，
                 // 后续实例读写的文件夹就会与它报告的那个不是同一个。
-                if (value != null) resolvedPath = null;
+                // The clear is UNCONDITIONAL. Gating it on `value != null` made the comment above
+                // a lie for exactly the branch it names: after Main.Shutdown() (Instance = null)
+                // the stale resolvedPath survived, so ResolveModPath's first line kept returning
+                // the OLD folder while the mod was half torn down — writes kept landing next to
+                // the game, and because warnedMissingPath WAS reset, the folder-fallback
+                // diagnostic could never fire either.
+                // 清空是**无条件**的。过去用 `value != null` 挡住它，恰好让上面点名的那个分支
+                // 不成立：Main.Shutdown()（Instance = null）之后陈旧的 resolvedPath 存活下来，
+                // ResolveModPath 的第一行在 mod 半拆解状态下仍返回**旧**目录——写入继续落在游戏
+                // 目录旁；而 warnedMissingPath 又被重置了，连「目录回退」的诊断都永远发不出来。
+                resolvedPath = null;
                 warnedMissingPath = null;
                 global::JipperKeyViewer.KeyViewer.KeyViewer.ResetCachedPaths();
             }

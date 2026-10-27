@@ -326,11 +326,40 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// <summary>The single copy of the key-box geometry. Both entry points call this, so the
         /// VertexHelper path and the Mesh path can never drift apart. / 按键框几何的唯一定义。两个
         /// 入口都调它，故 VertexHelper 路径与 Mesh 路径永远不会分叉。</summary>
+        /// <summary>Vertex budget for ONE shape layer's merged mesh, enforced by SKIPPING slots
+        /// rather than by throwing. uGUI's FillMesh throws past 65000 AFTER clearing the mesh, so
+        /// an overflow does not clip one box — it erases every key box and repeats every frame.
+        /// The old "112 keys ≈ 29k" premise behind the loud sink guard counted PER GROUP: a legal
+        /// FreeMake document (up to 4096 nodes / 64 groups, e.g. ~800 rounded keys) sails past it,
+        /// and the result was a permanently blank shape layer plus a per-frame exception —
+        /// indistinguishable from a defect. The budget is generous: 62000 keeps 3000 verts of
+        /// headroom below the limit, ~12× a worst-case rounded slot. The sink's own guard STAYS
+        /// as the last-resort invariant for genuine defects (a rain leak feeding this layer); a
+        /// legal document must degrade visibly but survive instead. Warned once per session —
+        /// this fires every rebuild otherwise.
+        /// / 单个形状层合并 mesh 的顶点预算，通过**跳过**槽位而非抛异常来执行。uGUI 的 FillMesh
+        /// 越过 65000 会先清 mesh 再抛，溢出不是裁掉一个框——而是抹掉**全部**按键框且每帧重复。
+        /// 响亮 sink 护栏背后「112 键 ≈ 2.9 万」的前提是**按组**计数：合法的 FreeMake 文档
+        /// （上限 4096 节点 / 64 组，例如约 800 个圆角键）轻松越过它，结果是整层按键框永久空白
+        /// 加每帧异常——与真缺陷无法区分。预算给得很宽：62000 在极限下留 3000 顶点余量，约为
+        /// 最坏圆角槽位的 12 倍。sink 自己的护栏**保留**，作为真缺陷（雨滴泄漏灌进本层）的
+        /// 最后一道不变量；合法文档必须可见地降级而不是死掉。每会话只警告一次——否则每次重建
+        /// 都会刷。</summary>
+        private const int KeyShapeVertBudget = 62000;
+        /// <summary>Generous upper bound on the vertices one slot can add (a full rounded ring:
+        /// outer + inner arc quads, side quads and the centre fill stay far below this). The gate
+        /// uses it so the budget check happens BEFORE the slot draws.
+        /// / 单个槽位可新增顶点的宽上限（完整圆角环：外+内弧四边形、侧边四边形与中心填充
+        /// 远低于此值）。闸在槽位绘制**之前**用它做检查。</summary>
+        private const int KeyShapeWorstSlotVerts = 1024;
+        private static bool shapeBudgetWarned;
+
         private void DrawAll(IKvMeshSink sink)
         {
             KeyShapeLayer src = owner ?? this;
             if (src.rects == null) return;
             Color[] colors = isOutline ? src.outlineColors : src.bgColors;
+            int skippedOverBudget = 0;
             for (int i = 0; i < src.count; i++)
             {
                 if (!src.visibles[i]) continue;
@@ -348,6 +377,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 缩放后复查:上方可见矩形守卫跑在未缩放矩形上,负的按压缩放(键入值不
                     // 钳制)会产生负宽高——镜像交叠的垃圾切片。同时拦截未来坏缩放数学产生的 NaN。
                     if (float.IsNaN(r.width) || float.IsNaN(r.height) || r.width <= 0f || r.height <= 0f) continue;
+                }
+                // Budget gate (see KeyShapeVertBudget): slots beyond it are dropped tail-first —
+                // slot order is the layout's draw order, so the surviving set is the document's
+                // front portion, which reads as "the far keys are missing" instead of "everything
+                // is gone".
+                // 预算闸（见 KeyShapeVertBudget）：超出预算的槽位自尾部丢弃——槽位序即布局的
+                // 绘制序，故存活集合是文档的前段，观感是「远处的键没了」而非「全都没了」。
+                if (sink.VertexCount + KeyShapeWorstSlotVerts > KeyShapeVertBudget)
+                {
+                    skippedOverBudget++;
+                    continue;
                 }
                 bool gradient = isOutline
                     ? src.outlineGradientEnabled[i]
@@ -384,6 +424,12 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 {
                     DrawSliced(sink, r, top, bottom, gradient, Sprite);
                 }
+            }
+            if (skippedOverBudget > 0 && !shapeBudgetWarned)
+            {
+                shapeBudgetWarned = true;
+                Loader.Warning($"KeyViewer: {skippedOverBudget} key box(es) skipped — the {KeyShapeVertBudget}-vertex "
+                    + "shape-mesh budget is exhausted by this document (reduce nodes or corner radii)");
             }
         }
 

@@ -1054,7 +1054,6 @@ namespace JipperKeyViewer.KeyViewer
             Settings.Version = 4;
             var d = Settings.Data;
             bool needsFootShift = d.DataVersion < 4;
-            const int oldFootBase = 20;
 
             if (d.KeyViewerStyle == KeyviewerStyle.Key24 || !needsFootShift)
             {
@@ -1107,37 +1106,23 @@ namespace JipperKeyViewer.KeyViewer
                 return;
             }
 
-            static void ShiftColorArray(Color[] arr, int from, int to, int count)
-            {
-                if (arr == null) return;
-                for (int i = count - 1; i >= 0; i--)
-                {
-                    if (to + i < arr.Length)
-                        arr[to + i] = from + i < arr.Length ? arr[from + i] : default;
-                }
-                // Clear only the GAP between the old and new base — clearing the full old range
-                // would overlap the just-written destination when count > (to - from) and wipe
-                // freshly migrated entries (footSize 8 used to zero 4 of them).
-                // 只清除新旧基线之间的间隙——清除整个旧区间会在 count > (to - from) 时与刚
-                // 写入的目标区间重叠,抹掉刚迁入的条目(footSize 为 8 时会清掉其中 4 个)。
-                int clearLen = Math.Min(count, to - from);
-                for (int i = 0; i < clearLen && from + i < arr.Length; i++)
-                    arr[from + i] = default;
-            }
-
             if (needsFootShift)
             {
-            Array.Copy(d.Count, oldFootBase, d.Count, FootKeyBase, footSize);
-            // Same gap-only clear as ShiftColorArray (full-range clear overlapped the copy).
-            // 与 ShiftColorArray 同款"仅清间隙"(全区间清除会与复制重叠)。
-            Array.Clear(d.Count, oldFootBase, Math.Min(footSize, FootKeyBase - oldFootBase));
-            ShiftColorArray(d.PerKeyBackground, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyBackgroundClicked, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyOutline, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyOutlineClicked, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyText, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyTextClicked, oldFootBase, FootKeyBase, footSize);
-            ShiftColorArray(d.PerKeyRainColor, oldFootBase, FootKeyBase, footSize);
+            // The SHARED shift (MigrateFootSlots), not an inline copy. The inline version shifted
+            // WITHOUT resizing first: a 16-foot-key v3 profile carries Count[36]/38-entry colour
+            // arrays (the 36-era shape), so Array.Copy ran past the end — an exception that
+            // aborted the whole v3→v4 migration — and with footSize 12 it silently dropped the
+            // tail slots that the shared helper's EnsureColorArray/EnsureRainColorArray resize
+            // fills. Same profile, two different results depending on which path reached it
+            // (compat audit core F5). The shared helper carries the identical gap-only clear and
+            // the deferred-marker gate for unrecognised styles.
+            // 用**共享**的平移（MigrateFootSlots），而非内联拷贝。内联版平移前**不做定长**：
+            // 16 脚键的 v3 配置带着 Count[36]/38 长的颜色数组（36 时代形态），Array.Copy 会越界
+            // ——抛出异常并中止整个 v3→v4 迁移；footSize 为 12 时又静默丢掉共享助手里由
+            // EnsureColorArray/EnsureRainColorArray 定长补足的尾部槽位。同一份配置，因到达路径
+            // 不同而结果不同（兼容审计 core F5）。共享助手带有完全相同的「仅清间隙」逻辑与
+            // 「不认识样式」的推迟标记闸门。
+            MigrateFootSlots(d);
             }
             if (d.DataVersion < 4) d.DataVersion = 4;
 
@@ -2017,6 +2002,117 @@ namespace JipperKeyViewer.KeyViewer
         }
 
         /// <summary>
+        /// Downgrade-resilient migration stamps (compat audit C1). The per-profile migration
+        /// markers (`DataVersion`, `NodeDefaultsVersion`, `FootSlotsMigrationDeferred`) live INSIDE
+        /// the profile file, but 1.7.2 has no such fields and rewrites the ACTIVE profile on every
+        /// scene load — so one downgrade session strips the stamps from the file while the meta
+        /// stays at Version 6, and the re-upgrade's lazy paths then re-run the v3→v4 foot-slot
+        /// shift (from a zone the first migration had cleared) and the v5→v6 Y flip a second time:
+        /// silent, permanent corruption. The sidecar is a copy of the three markers that 1.7.2
+        /// never touches, kept OUTSIDE `profiles\` so SyncProfilesWithDisk's `*.json` scan never
+        /// mistakes it for a profile. Consultation rule: only a STRICTLY newer sidecar entry may
+        /// override the in-file stamp — equal or older entries are stale (renames, copied files)
+        /// and the in-file stamp stays authoritative, so a present in-file stamp behaves exactly
+        /// as before and the sidecar only fills the one gap a downgrade creates.
+        /// / 抗降级的迁移版本戳（兼容审计 C1）。每配置的迁移标记（`DataVersion`、
+        /// `NodeDefaultsVersion`、`FootSlotsMigrationDeferred`）写在配置文件**内部**，但 1.7.2
+        /// 没有这些字段，且每次场景加载都会重写**活动**配置——于是一次降级会话就会把文件内的
+        /// 标记剥掉，而 meta 仍是 Version 6，再升级时惰性迁移路径会把 v3→v4 脚键平移（从第一次
+        /// 迁移清空的区域）和 v5→v6 的 Y 翻转**再跑一遍**：静默且永久损坏。边车是这三个标记的
+        /// 副本，1.7.2 永远不会碰它，且刻意放在 `profiles\` **之外**，使 SyncProfilesWithDisk 的
+        /// `*.json` 扫描不会把它误认成配置。咨询规则：只有**严格更新**的边车条目才能覆盖文件内
+        /// 版本戳——相同或更旧的是陈旧条目（改名、拷贝），文件内版本戳保持权威，因此文件内
+        /// 戳存在时行为与从前完全一致，边车只补降级造成的那一个缺口。</summary>
+        private static string MigrationStampsPath
+            => Path.Combine(Path.GetDirectoryName(ConfigPath) ?? ".", "migration-stamps.json");
+
+        private sealed class MigrationStamp
+        {
+            public int DataVersion;
+            public int NodeDefaultsVersion;
+            public bool FootSlotsDeferred;
+        }
+
+        private static Dictionary<string, MigrationStamp> ReadMigrationStamps()
+        {
+            var result = new Dictionary<string, MigrationStamp>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (!File.Exists(MigrationStampsPath)) return result;
+                var root = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(MigrationStampsPath));
+                foreach (var prop in root.Properties())
+                {
+                    if (!(prop.Value is Newtonsoft.Json.Linq.JObject o)) continue;
+                    result[prop.Name] = new MigrationStamp
+                    {
+                        DataVersion = o.Value<int?>("DataVersion") ?? 0,
+                        NodeDefaultsVersion = o.Value<int?>("NodeDefaultsVersion") ?? 0,
+                        FootSlotsDeferred = o.Value<bool?>("FootSlotsDeferred") ?? false,
+                    };
+                }
+            }
+            catch (Exception)
+            {
+                // An unreadable sidecar degrades to "no stamps" — the in-file stamps still apply,
+                // which is exactly the pre-sidecar behaviour.
+                // 边车不可读时退化为「无版本戳」——文件内版本戳照常生效，与没有边车时完全一致。
+            }
+            return result;
+        }
+
+        private static void WriteMigrationStamp(string profileName, ProfileData pd)
+        {
+            if (pd == null || string.IsNullOrEmpty(profileName)) return;
+            try
+            {
+                // Same precondition as SaveCurrentProfile: FileStream does not create directories,
+                // and the mod path may resolve to a fresh fallback (a first run in a temp dir)
+                // where config\ does not exist yet. / 与 SaveCurrentProfile 同样的前置：FileStream
+                // 不会创建目录，而 mod 路径可能解析到全新的回退目录（临时目录里的首次运行），
+                // 其 config\ 尚不存在。
+                string stampDir = Path.GetDirectoryName(MigrationStampsPath);
+                if (!string.IsNullOrEmpty(stampDir) && !Directory.Exists(stampDir)) Directory.CreateDirectory(stampDir);
+                var root = new Newtonsoft.Json.Linq.JObject();
+                try
+                {
+                    if (File.Exists(MigrationStampsPath))
+                        root = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(MigrationStampsPath));
+                }
+                catch (Exception) { /* unreadable old file: start fresh / 旧文件不可读：重新开始 */ }
+                string key = SanitizeFileName(profileName);
+                root[key] = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["DataVersion"] = pd.DataVersion,
+                    ["NodeDefaultsVersion"] = pd.NodeDefaultsVersion,
+                    ["FootSlotsDeferred"] = pd.FootSlotsMigrationDeferred,
+                };
+                WriteAllTextSafe(MigrationStampsPath, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            }
+            catch (Exception e)
+            {
+                // The sidecar is REDUNDANCY for the in-file stamps; its write must never fail the
+                // save that produced it. / 边车是文件内版本戳的**冗余**；它的写失败绝不能连累
+                // 产生它的那次保存。
+                Loader.Warning($"KeyViewer: could not update migration-stamps.json: {e.Message}");
+            }
+        }
+
+        /// <summary>Restore stamps a downgrade session stripped, BEFORE the lazy migrations consume
+        /// their version gates. / 在惰性迁移消费版本闸**之前**，恢复被降级会话剥离的版本戳。</summary>
+        private static void RestoreMigrationStampsFromSidecar(string profileName, ProfileData pd)
+        {
+            if (pd == null || string.IsNullOrEmpty(profileName)) return;
+            Dictionary<string, MigrationStamp> stamps = ReadMigrationStamps();
+            if (!stamps.TryGetValue(SanitizeFileName(profileName), out MigrationStamp s)) return;
+            // Only a STRICTLY newer sidecar entry may speak (see class doc). / 只有严格更新的
+            // 边车条目可以发言（见类注释）。
+            if (s.DataVersion <= pd.DataVersion) return;
+            pd.DataVersion = s.DataVersion;
+            if (s.NodeDefaultsVersion > pd.NodeDefaultsVersion) pd.NodeDefaultsVersion = s.NodeDefaultsVersion;
+            pd.FootSlotsMigrationDeferred = s.FootSlotsDeferred;
+        }
+
+        /// <summary>
         /// Save the current profile to its file / 将当前配置保存到文件
         /// </summary>
         private void SaveCurrentProfile()
@@ -2049,6 +2145,12 @@ namespace JipperKeyViewer.KeyViewer
             string profilePath = GetProfilePath(Settings.CurrentProfile);
             string json = JsonConvert.SerializeObject(Settings.Data, ProfileData.ProfileSerializer);
             WriteAllTextSafe(profilePath, json);
+            // Mirror the just-written stamps into the downgrade-resilient sidecar (see the
+            // MigrationStampsPath doc): 1.7.2 rewrites the active profile UNSTAMPED, so the file's
+            // own markers do not survive a downgrade session, but this file does.
+            // 把刚写入的版本戳镜像进抗降级边车（见 MigrationStampsPath 注释）：1.7.2 重写活动
+            // 配置时**不带**版本戳，文件自己的标记挺不过一次降级会话，而这个文件可以。
+            WriteMigrationStamp(Settings.CurrentProfile, Settings.Data);
         }
 
         /// <summary>
@@ -2071,14 +2173,26 @@ namespace JipperKeyViewer.KeyViewer
                 string json = File.ReadAllText(profilePath);
                 // A syntactically valid but truncated object can leave constructor defaults in
                 // place. Count has existed in every supported profile format, so its complete
-                // absence is a reliable structural-failure signal. / 可解析但被截断的对象可能留下
-                // 构造默认值；Count 存在于所有支持版本，完全缺失可作为结构损坏信号。
-                if (json.IndexOf("\"Count\"", StringComparison.OrdinalIgnoreCase) < 0)
+                // absence is a reliable structural-failure signal. The check must be a ROOT-OBJECT
+                // property test, not a whole-file substring search: every FreeMake profile carries
+                // a NESTED `"Count":` (FmNode.Count, fields-mode serialization), so the substring
+                // form could NEVER fire on the profiles that matter — a valid-but-truncated big
+                // profile loaded as constructor defaults and the next SaveSettings overwrote the
+                // user's file with no .corrupt backup. The .jkv importer learned this in round 40
+                // and uses the same helper.
+                // 可解析但被截断的对象可能留下构造默认值；Count 存在于所有支持版本，完全缺失可
+                // 作为结构损坏信号。但该判定必须落在**根对象属性**上，而不是整文件子串搜索：
+                // 每个 FreeMake 配置都带着**嵌套**的 `"Count":`（FmNode.Count，字段模式序列化），
+                // 子串形式在真正要保护的配置上**永远**不会触发——一份有效但被截断的大配置会以
+                // 构造默认值加载，下一次 SaveSettings 就把用户文件覆盖掉，连 .corrupt 备份都没有。
+                // .jkv 导入器在第 40 轮就学到了这一点，用的是同一个助手。
+                if (!HasRootProperty(json, "Count"))
                 {
                     Loader.Error($"Profile '{name}' failed validation (Count field missing)");
                     try { RotateCorruptBackup(profilePath); } catch { }
                     return false;
                 }
+
                 // Replace the instance first: FromJsonOverwrite only writes fields present in the JSON
                 // and leaves any other field/array entry from the previously loaded profile intact,
                 // which would then leak into (and be saved over) the new profile. A fresh default
@@ -2116,6 +2230,16 @@ namespace JipperKeyViewer.KeyViewer
                     pd.Count = c;
                 }
                 Settings.Data = pd;
+                // C1: a downgrade session (1.7.2 rewrites the active profile unstamped) strips the
+                // in-file migration markers while the meta stays at Version 6 — without this the
+                // lazy migrations below would re-run on the same file a second time and corrupt it
+                // permanently (foot counters re-shifted from the cleared zone, Y convention flipped
+                // back). Must run BEFORE MigrateFootSlots consumes the gates.
+                // C1：降级会话（1.7.2 重写活动配置且不带版本戳）会剥掉文件内的迁移标记，而 meta
+                // 仍是 Version 6——没有这一步，下方惰性迁移会对同一文件**再次**执行并永久损坏
+                // （脚键计数从已清空区域二次平移、Y 约定被翻回）。必须在 MigrateFootSlots 消费
+                // 这些闸门**之前**执行。
+                RestoreMigrationStampsFromSidecar(name, pd);
                 // A profile file that predates this build's schema can still arrive here even though
                 // the META was long ago upgraded: copied in by hand, restored from a backup, or
                 // unpacked from a .jkv produced on an older version. The version-bump pass only runs

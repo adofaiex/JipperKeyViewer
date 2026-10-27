@@ -280,7 +280,20 @@ namespace JipperKeyViewer.KeyViewer
                 };
                 foreach (FmNode node in imported.CustomNodes) node.GroupId = groupId;
                 imported.LayerGroupNextId = 2;
-                imported.DataVersion = Settings.Version;
+                // Stamp the constant, NOT the session's meta version. A newborn profile is by
+                // definition written in THIS build's shape; inside a migration-rollback window
+                // Settings.Version is deliberately held LOW (2..5, so a failed batch migration can
+                // retry), and a profile stamped with it would be born DataVersion<6 while carrying
+                // the current profile's ALREADY-FLIPPED FullKpsPosition — LoadProfile's lazy
+                // v5→v6 flip would then fire on it a second time and mirror the panels, persisted
+                // by the following save. KeyViewerSettings.CurrentVersion is the schema this
+                // document actually uses. / 盖常量，而不是会话的 meta 版本。新生配置按定义就是
+                // **本构建**的形态；迁移回滚窗口内 Settings.Version 会被刻意压低（2..5，好让失败
+                // 的批量迁移得以重试），用它盖章的配置会生来 DataVersion<6，却继承着当前配置
+                // **已经翻转过**的 FullKpsPosition——LoadProfile 的惰性 v5→v6 翻转就会在其上
+                // 二次触发，把面板镜像翻转并被随后的保存落盘。KeyViewerSettings.CurrentVersion
+                // 才是本文档实际使用的架构版本。
+                imported.DataVersion = KeyViewerSettings.CurrentVersion;
                 // These nodes are produced by `new FmNode { … }`, so the field initializers ran and
                 // every defaulted field already holds its intended value — there is nothing for the
                 // legacy FmNode-defaults repair to fix. Stamp it so the repair does not re-derive
@@ -924,6 +937,19 @@ namespace JipperKeyViewer.KeyViewer
                     case "EQUALS": case "EQUAL": return KeyCode.KeypadEquals.ToString();
                 }
             }
+            // A bare digit that survived the prefix strips ("DIGIT5"/"key_5" → "5") must NOT reach
+            // Enum.TryParse: numeric strings parse as enum VALUES there, so "5" became (KeyCode)5
+            // — an undefined code that never fires — while a genuinely bare "5" took the numeric
+            // branch above and correctly became Alpha5. One key, two label spellings, two
+            // outcomes; the main-row digits of an imported preset came out silently unbound with
+            // a "successfully imported" message. Route the digit through the same Alpha mapping
+            // the numeric branch uses. / 经过前缀剥离后剩下的裸数字（"DIGIT5"/"key_5" → "5"）
+            // 绝不能落到 Enum.TryParse：数值字符串在那里会被解析成枚举**值**，"5" 变成
+            // (KeyCode)5——一个永不触发的未定义键码——而真正的裸 "5" 走上方数字分支正确得到
+            // Alpha5。同一个键、两种标签拼写、两种结局；导入预设的主键盘数字键就这样静默失绑，
+            // 界面却报告「导入成功」。把数字送进与数字分支相同的 Alpha 映射。
+            if (normalized.Length == 1 && normalized[0] >= '0' && normalized[0] <= '9')
+                return ((KeyCode)((int)KeyCode.Alpha0 + (normalized[0] - '0'))).ToString();
             if (Enum.TryParse(normalized, true, out KeyCode direct) && direct != KeyCode.None)
                 return direct.ToString();
             switch (normalized)

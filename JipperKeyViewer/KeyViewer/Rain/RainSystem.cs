@@ -60,6 +60,48 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 合并 mesh。该值远高于任何正常轨迹（默认 275px/100 速度下 20 KPS 的按键约 16 滴），
         /// 又远低于任何会威胁帧时间的量。</summary>
         private const int MaxLiveDropsPerKey = 128;
+        /// <summary>Effective-speed floor shared by the row pipeline (SyncCachedSpeeds) and the
+        /// per-node path (UpdateSingleRainDrop). / 行管线（SyncCachedSpeeds）与逐节点路径
+        /// （UpdateSingleRainDrop）共用的有效速度下限。</summary>
+        private const float MinDropSpeed = 1e-3f;
+        /// <summary>Vertex ceiling for the shared merged rain mesh. uGUI's VertexHelper throws
+        /// ArgumentException in FillMesh past 65000 vertices and clears the mesh first, so an
+        /// overflow does not clip — it deletes the ENTIRE rain canvas and throws every frame.
+        /// 60000 leaves the same safety margin the shape layer's budget-style guidance uses.
+        /// / 共享合并雨滴 mesh 的顶点上限。uGUI 的 VertexHelper 在 65000 顶点以上会在 FillMesh
+        /// 抛 ArgumentException，且抛出前已 mesh.Clear()——溢出不是裁剪，而是整块雨滴画布消失
+        /// 且每帧抛异常。60000 与形状层的预算式指引取同样的安全余量。</summary>
+        private const int RainMeshVertBudget = 60000;
+        /// <summary>Worst-case vertices one drop can emit, cached by SyncCachedSpeeds: 4 verts ×
+        /// body+shadow+outline, ×24 quads for a dotted trail (the segments cap; keep in sync with
+        /// RainLayer's per-drop segment cap). Dotted is the only multiplicative unknown —
+        /// shadow/outline are counted ALWAYS (conservative), so the budget is exact only when they
+        /// are on and merely stricter when they are off.
+        /// / 单滴最坏顶点数，由 SyncCachedSpeeds 缓存：4 顶点 × 本体+阴影+描边，点状轨迹再 ×24
+        /// 段（段数上限；与 RainLayer 的每滴段数上限保持一致）。点状是唯一的乘性未知量——
+        /// 阴影/描边**恒**计入（保守），故预算只在它们开启时精确、关闭时只会更紧。</summary>
+        private int worstRainVertsPerDrop;
+        /// <summary>Worst-case vertices one drop can emit under the given dotted possibility. Pure
+        /// so the Harness can pin the arithmetic. / 给定点状可能性时单滴的最坏顶点数。纯函数，
+        /// 供 Harness 锁死算术。</summary>
+        internal static int WorstRainVertsPerDrop(bool dottedPossible) => 4 * 3 * (dottedPossible ? 24 : 1);
+        /// <summary>Global live-drop ceiling implied by the vertex budget. With dotted possible
+        /// (288 verts/drop) that is 208 drops system-wide; plain drops (12) allow 5000 — far above
+        /// normal play (~16 drops/key) and only reachable in the pathological regimes the per-key
+        /// cap alone cannot bound, because the per-key cap is PER KEY while the mesh is SHARED.
+        /// / 顶点预算推出的全局存活雨滴上限。点状可能时（288 顶点/滴）全场 208 滴；普通滴
+        /// （12 顶点）允许 5000——远高于正常游玩（约 16 滴/键），只有每键上限单独管不住的病态
+        /// 场景才会触顶：每键上限是**每键**的，而 mesh 是**共享**的。</summary>
+        internal static int MaxTotalLiveDropsForVerts(int vertsPerDrop)
+            => vertsPerDrop <= 0 ? int.MaxValue : RainMeshVertBudget / vertsPerDrop;
+        /// <summary>Exact count of LIVE drops (birth in CreateRainDropForKey, single death funnel
+        /// ReturnRawRain — verified: every removal path, including ClearActiveDrops/ClearRowDrops
+        /// and the per-key eviction, passes through it exactly once, and ReturnRawRainAndRemove
+        /// removes the record from rainList before returning). / 存活雨滴的精确计数
+        /// （出生在 CreateRainDropForKey，死亡只经 ReturnRawRain 这一个漏斗——已核实：包括
+        /// ClearActiveDrops/ClearRowDrops 与每键回收在内的所有移除路径都恰好经过它一次，
+        /// 且 ReturnRawRainAndRemove 在回收前先把记录移出 rainList）。</summary>
+        private int liveRainDropCount;
         /// <summary>Height of the old per-key rain container; drops measured their top from it / 旧每键雨滴容器的高度；雨滴顶边以此为基准</summary>
         private const float RainContainerHeight = 275f;
 
@@ -225,7 +267,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
             //   会话结束。鬼雨从不淡出，故不死鬼雨是必然的。极大但有限的速度不崩但同样错：生长
             //   期间 FinalSize.y 每帧被重新赋为当前 y，于是 sizeY 代数上塌成一个常量，雨滴永远
             //   无法越过顶端回收——用户看到的是一根卡住的全高条。
-            const float minSpeed = 1e-3f;
+            const float minSpeed = MinDropSpeed;
             const float maxSpeed = 200f;
             rowSpeeds[0] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainSpeedRow1, 300f) / 300f, minSpeed, maxSpeed);
             rowSpeeds[1] = Mathf.Clamp(SanitizeRowFloat(settings.Data.RainSpeedRow2, 300f) / 300f, minSpeed, maxSpeed);
@@ -251,6 +293,35 @@ namespace JipperKeyViewer.KeyViewer.Rain
             ghostRowStartYs[0] = SanitizeStartY(settings.Data.GhostRainStartYRow1);
             ghostRowStartYs[1] = SanitizeStartY(settings.Data.GhostRainStartYRow2);
             ghostRowStartYs[2] = SanitizeStartY(settings.Data.GhostRainStartYRow3);
+            // Global vertex budget for the shared merged mesh (see RainMeshVertBudget): a drop's
+            // worst-case size is dotted × shadow × outline, so the only variable input is whether
+            // ANY drop can be dotted — the global toggle, OR any node-level override that forces
+            // dotted ON (dot length > 0; dot length 0 is the explicit OFF from round 37). The
+            // per-key cap cannot bound this: it is per key, the mesh is shared, and 3+ dotted
+            // keys × 128 drops × 288 verts is already past uGUI's 65000-vertex FillMesh limit —
+            // which throws AFTER mesh.Clear(), wiping the whole rain canvas every frame.
+            // 共享合并 mesh 的全局顶点预算（见 RainMeshVertBudget）：单滴最坏尺寸 = 点状 × 阴影 ×
+            // 描边，唯一可变输入是「是否任何雨滴可能是点状」——全局开关，或任何把点状**强制为
+            // 开**的节点级覆盖（点长 > 0；点长 0 是第 37 轮定下的显式关）。每键上限管不住这个：
+            // 它是每键的，mesh 却是共享的，3 个以上点状键 × 128 滴 × 288 顶点已越过 uGUI 的
+            // 65000 顶点 FillMesh 极限——而该极限在 mesh.Clear() **之后**才抛，整块雨滴画布
+            // 每帧被清空。
+            bool dottedPossible = settings.Data.EnableRainDotted;
+            if (!dottedPossible && settings.Data.CustomNodes != null)
+            {
+                for (int i = 0; i < settings.Data.CustomNodes.Count; i++)
+                {
+                    FmNode n = settings.Data.CustomNodes[i];
+                    if (n == null) continue;
+                    if ((n.UseCustomRainDotted && n.RainDotLength > 0f)
+                        || (n.UseCustomGhostRainDotted && n.GhostRainDotLength > 0f))
+                    {
+                        dottedPossible = true;
+                        break;
+                    }
+                }
+            }
+            worstRainVertsPerDrop = WorstRainVertsPerDrop(dottedPossible);
             cachedRainSpeed1 = settings.Data.RainSpeedRow1;
             cachedRainSpeed2 = settings.Data.RainSpeedRow2;
             cachedRainSpeed3 = settings.Data.RainSpeedRow3;
@@ -281,8 +352,16 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // full height instantly — read as "no upward animation"). / 逐节点速度与排滑杆共用
             // 同一用户单位——排管线在 rowSpeeds 里烘焙了 /300 换算，NodeSpeed 此处必须同样
             // 缩放。原样消费会快 300 倍（种子值 100 瞬间拉满轨迹——看起来就是"没有向上动画"）。
+            // The per-node path also gets the SAME MinDropSpeed floor the row pipeline applies:
+            // NodeSpeed > 0 alone admits 1e-30, a lifetime of hours that pins the per-key cap
+            // with perpetually rebuilt drops. The floor matches the accepted global envelope, so
+            // behaviour only changes below 0.3 in node units — below anything a user can have
+            // meant to configure.
+            // 逐节点路径同样施加与行管线一致的 MinDropSpeed 下限：仅凭 NodeSpeed > 0 放得进
+            // 1e-30——数小时寿命的雨滴靠持续重建钉死每键上限。该下限与全局路径已被接受的包络
+            // 一致，故仅当节点单位值低于 0.3（低于任何用户有意配置的量）时行为才改变。
             float speed = rain.NodeSpeed > 0f
-                ? rain.NodeSpeed / 300f
+                ? Mathf.Max(MinDropSpeed, rain.NodeSpeed / 300f)
                 : (rain.isGhost ? ghostRowSpeeds[row] : rowSpeeds[row]);
             float height = rain.NodeHeight > 0f ? rain.NodeHeight : (rain.isGhost ? ghostRowHeights[row] : rowHeights[row]);
             float dt = dtSec * 1000f;
@@ -905,6 +984,18 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         public void ReturnRawRain(RawRain r)
         {
+            // The death bookkeeping happens BEFORE the pool early-out: a record dropped because
+            // the pool is full is just as dead as one that is pooled, and missing the decrement
+            // would permanently tighten the global vertex budget (rain would slowly stop spawning
+            // for the rest of the session). The `> 0` guard is pure paranoia — every removal path
+            // funnels through here exactly once — but a negative count would disable the budget
+            // check entirely (count >= Max is then never true), so drift in the WRONG direction
+            // must be impossible too.
+            // 死亡记账在池满早退**之前**：因池满而被丢弃的记录同样已经死亡，漏掉这次递减会让
+            // 全局顶点预算**永久收紧**（本场雨滴会越来越少直至不再生成）。`> 0` 守卫纯属偏执
+            // ——所有移除路径都恰好经过这里一次——但负计数会让预算检查完全失效（count >= Max
+            // 永不为真），所以反方向的漂移也必须不可能发生。
+            if (liveRainDropCount > 0) liveRainDropCount--;
             if (rawRainPool.Count >= MAX_RAWRAIN_POOL_SIZE) return;
             // `removed` is deliberately NOT cleared here. It is set by ReturnRawRainAndRemove just
             // before this call, and the renderers skip flagged records; clearing it made the flag
@@ -933,9 +1024,20 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 : (keyIndex < 8 ? 1 : (keyIndex < 16 ? 2 : 3));
 
             RawRain rawRain = GetRawRain(key.color);
-            float baseY = row == 1 ? settings.Data.RainStartYRow1 : row == 2 ? settings.Data.RainStartYRow2 : settings.Data.RainStartYRow3;
+            // Sanitized per-row start-Y (SyncCachedSpeeds), not the raw settings fields: the ghost
+            // start-Y is stored as a DIFFERENCE (ghost row start minus its own row's base), and
+            // the old raw reads could feed NaN/Inf straight into rect math — the sanitized rows
+            // have existed since the round-35 fix, this creation site just never used them. The
+            // final SanitizeStartY re-clamps the DIFFERENCE itself: two sanitized ±4000 values can
+            // still differ by ±8000, outside the same band every consumer assumes.
+            // 用净化后的按排起始 Y（SyncCachedSpeeds），而非原始设置字段：鬼雨起始 Y 以**差值**
+            // 存储（鬼雨排起点减去本排基准），旧的原始读取会把 NaN/Inf 直接送进 rect 数学——
+            // 净化行自第 35 轮修复起就存在，只是这个创建点一直没用上。末尾再用 SanitizeStartY
+            // 钳一次**差值本身**：两个净化过的 ±4000 值仍可能相差 ±8000，超出所有消费方假定的
+            // 同一带宽。
+            float baseY = row == 1 ? rowStartYs[0] : row == 2 ? rowStartYs[1] : rowStartYs[2];
             rawRain.startY = isGhost
-                ? (row == 1 ? settings.Data.GhostRainStartYRow1 : row == 2 ? settings.Data.GhostRainStartYRow2 : settings.Data.GhostRainStartYRow3) - baseY
+                ? SanitizeStartY((row == 1 ? ghostRowStartYs[0] : row == 2 ? ghostRowStartYs[1] : ghostRowStartYs[2]) - baseY)
                 : 0f;
 
             if (isGhost)
@@ -1145,6 +1247,24 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // 但高速按键配高轨道仍可能堆出远超合并 mesh 应承载的雨滴数——每滴 4 顶点（开阴影/描边
             // 再 ×2/×3）每帧上传。回收**最老**的一滴使观感稳定：轨迹是一条流，砍掉其尾部不可见，
             // 且帧时间不再取决于用户打得有多快。
+            // Global vertex-budget gate on TOP of the per-key cap. The per-key cap is per key;
+            // the merged mesh is SHARED by every key, so 105 keys × 128 = 13440 drops of worst-case
+            // geometry is 3.9M vertices — uGUI's FillMesh throws past 65000 (after clearing the
+            // mesh), erasing the whole rain canvas. Dropping the NEWEST drop when the system is
+            // saturated is the correct bias: every OTHER policy (recycle-oldest) is already
+            // per-key, and a saturated system is by definition in the pathological regime where
+            // a missing tail drop is invisible. Normal play (~16 drops/key) is orders of
+            // magnitude below the 5000-drop plain budget.
+            // 在每键上限**之上**的全局顶点预算闸。每键上限是每键的；合并 mesh 由**所有**键共享，
+            // 105 键 × 128 = 13440 滴最坏几何即 390 万顶点——uGUI 的 FillMesh 越过 65000 就抛
+            // （且抛前先清 mesh），整块雨滴画布消失。系统饱和时丢**最新**的一滴是正确的偏向：
+            // 其它策略（回收最老）本就是每键的，而饱和本身即意味着已处于病态区间，缺一滴尾滴
+            // 不可见。正常游玩（约 16 滴/键）比 5000 滴的普通预算低了两个数量级。
+            if (liveRainDropCount >= MaxTotalLiveDropsForVerts(worstRainVertsPerDrop))
+            {
+                ReturnRawRain(rawRain);
+                return;
+            }
             if (key.rainList.Count >= MaxLiveDropsPerKey)
             {
                 RawRain oldest = key.rainList[0];
@@ -1152,6 +1272,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 if (oldest != null) ReturnRawRain(oldest);
             }
             key.rainList.Add(rawRain);
+            liveRainDropCount++;
 
             if (!rainActiveSet.Contains(keyIndex))
             {
