@@ -80,14 +80,28 @@ namespace JipperKeyViewer.LoaderMelon
         {
             if (!_initialized)
             {
-                _initialized = true;
                 // Only enable when Init actually ran. If preference creation failed, EnableNow()
                 // would bring the mod up with no loader — the state that used to write the mod's
                 // files into the game install folder.
                 // 仅在 Init 确实跑过时才启用。偏好创建失败时 EnableNow() 会在没有加载器的情况下
                 // 启动 Mod——正是过去会把 Mod 文件写进游戏安装目录的状态。
                 if (_handler == null) return;
-                Main.EnableNow();
+                // Latch AFTER a SUCCESSFUL enable, not before. EnableKeyViewer swallows its own
+                // build failures into a logged clean-retry state, and Melon has no OnToggle to
+                // retry with — so a latch set before the call made a transient first-scene
+                // failure permanent: the mod stayed off for the whole session. EnableNow now
+                // reports whether the overlay is alive; a failed attempt leaves the latch open
+                // and the NEXT scene transition retries — the same recoverable direction the
+                // catch documents. A scene switch is the natural retry point because these
+                // failures are exactly the "game systems not ready during the loading screen"
+                // kind that a later scene fixes. / 闩锁在**成功**启用之后才置位，而非之前。
+                // EnableKeyViewer 会把构建失败吞成「已记日志的干净重试状态」，而 Melon 没有
+                // OnToggle 可重试——先置闩会让一次瞬态的首场景失败变成**永久**：整个会话 Mod
+                // 保持关闭。EnableNow 现在报告覆盖层是否存活；失败的尝试让闩锁保持打开，下一次
+                // 场景切换即重试——与其 catch 记载的可恢复方向一致。场景切换正是自然的重试点：
+                // 这类失败多为「加载场景期间游戏系统尚未就绪」，后续场景能自愈。
+                if (Main.EnableNow()) _initialized = true;
+                else Loader.Warning("KeyViewer: first-scene enable failed, will retry on the next scene");
             }
         }
 

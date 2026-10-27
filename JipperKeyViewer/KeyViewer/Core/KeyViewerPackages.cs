@@ -529,8 +529,17 @@ namespace JipperKeyViewer.KeyViewer
                     try { File.Replace(tempPath, outputPath, null); }
                     catch (PlatformNotSupportedException)
                     {
-                        File.Delete(outputPath);
-                        File.Move(tempPath, outputPath);
+                        // Mirror WriteAllTextSafe's round-39 downgrade EXACTLY: copy over the
+                        // target (never a "no file at this path" moment), then delete the temp.
+                        // The delete-then-move form previously here re-opened the both-packages-
+                        // lost window on Mono/Wine/Proton, where Replace throws PNSE on every
+                        // call — a failed Move after the Delete lost the old and the new archive
+                        // together. / 与 WriteAllTextSafe 第 39 轮的降级**完全一致**：覆写复制
+                        //（不存在「该路径上没有任何文件」的时刻），再删临时文件。此前这里的
+                        // 先删后移形态，在 Replace 每次都抛 PNSE 的 Mono/Wine/Proton 上，恰好
+                        // 让「移动失败 → 新旧两个归档一起丢」的窗口在每次重导出时重新打开。
+                        File.Copy(tempPath, outputPath, true);
+                        try { File.Delete(tempPath); } catch { }
                     }
                 }
                 else File.Move(tempPath, outputPath);

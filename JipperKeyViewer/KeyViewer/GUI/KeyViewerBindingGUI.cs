@@ -138,6 +138,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             GUILayout.BeginVertical("box");
             KeyCode[] ghostKeyCodes = GetGhostKeyCode();
+            // The GHOST arm needs the same cross-window disarm as the main-key arm above — the
+            // round-44 fix covered DrawKeyChangeSection only. Both windows can be open at once,
+            // and ProcessKeySelection (ghost keys included) polls Input.GetKeyDown in Update,
+            // BEFORE the editor's OnGUI KeyDown handling: one physical press then bound a ghost
+            // slot AND the FreeMake node's KeyBind, both persisted. Mirror the main-key comment.
+            // **鬼键**武装需要与上方主键武装同款的跨窗口解除——第 44 轮的修复只覆盖了
+            // DrawKeyChangeSection。两个窗口可同时打开，而 ProcessKeySelection（含鬼键）在 Update
+            // 里轮询 Input.GetKeyDown、**早于**编辑器的 OnGUI KeyDown 处理：一次物理按键会同时
+            // 绑定鬼键槽位与 FreeMake 节点的 KeyBind，且双双落盘。与主键处的注释互为镜像。
+            CancelEditorNodeCapture();
 
             GUILayout.Label(I18n.Tr("row1_keys") + ":");
             GUILayout.BeginHorizontal();

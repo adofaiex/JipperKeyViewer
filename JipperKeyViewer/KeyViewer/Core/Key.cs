@@ -46,6 +46,18 @@ namespace JipperKeyViewer.KeyViewer
         public List<RawRain> rainList = new List<RawRain>();
         /// <summary>Whether this key is currently pressed / 当前是否被按下</summary>
         public bool isPressed;
+        /// <summary>False on a freshly created Key until the input poll has seeded isPressed from
+        /// the PHYSICAL reading. Every overlay rebuild recreates all Keys with isPressed=false;
+        /// without the seed, the first poll after a rebuild treated a key the user was holding as
+        /// a brand-new press — count+1, TotalCount+1, KPS enqueue, a rain burst and a press
+        /// animation per rebuild per held key. The seed applies visuals only (colors), never the
+        /// edge side effects. Same first-sight convention the custom ghost path has always had.
+        /// / 新建的 Key 在输入轮询首次以**物理**读数播种 isPressed 之前为假。每次覆盖层重建都会
+        /// 以 isPressed=false 重建全部 Key；没有播种时，重建后的首次轮询会把用户正按住的键当成
+        /// 全新按下——每次重建、每个按住的键都白加计数、总数、KPS、雨滴爆发与按压动画。播种
+        /// 只施加视觉（颜色），绝不触发边沿副作用。与自定义鬼键路径一直以来的「首见」约定
+        /// 相同。</summary>
+        public bool PressStateSeeded;
         /// <summary>Running press-animation coroutine (null if none) / 运行中的按键动画协程（无则为 null）</summary>
         public Coroutine currentAnim;
         /// <summary>Text wrapper in the text canvas — center pivot over the key box, scaled on press / 文本画布中的文本包裹层，轴心在按键框中心，按压时缩放</summary>

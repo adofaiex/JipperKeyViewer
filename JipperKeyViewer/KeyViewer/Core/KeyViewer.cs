@@ -1523,6 +1523,13 @@ namespace JipperKeyViewer.KeyViewer
                     // 该样式时仍会被访问——那正是推迟本身许下的承诺。仅按 DataVersion 判断会让这类
                     // Profile 永远被跳过，而这恰恰是标记要修的那个 bug。
                     if (pd.DataVersion >= 4 && !pd.FootSlotsMigrationDeferred) continue;
+                    // Same sidecar consult as LoadProfile (fingerprint-gated), for the one corner
+                    // LoadProfile cannot cover: a meta restored from an older backup re-opens this
+                    // batch gate while a downgrade session had stripped the active profile's
+                    // in-file stamps. / 与 LoadProfile 同款的边车咨询（带指纹闸），覆盖 LoadProfile
+                    // 管不到的一个角落：从旧备份恢复的 meta 会重新打开这扇批量闸，而降级会话恰好
+                    // 剥掉了活动配置的文件内版本戳。
+                    RestoreMigrationStampsFromSidecar(name, pd);
                     // Shared with LoadProfile so there is exactly one implementation of the foot-slot
                     // shift. / 与 LoadProfile 共用，确保脚键槽位平移只有一份实现。
                     MigrateFootSlots(pd);
@@ -2046,6 +2053,29 @@ namespace JipperKeyViewer.KeyViewer
             public int DataVersion;
             public int NodeDefaultsVersion;
             public bool FootSlotsDeferred;
+            // Fingerprint of the profile file at stamp time. Without it the sidecar defeats its
+            // own goal on name reuse: delete "Foo" (sidecar keeps dv=6) → import an OLD-format
+            // .jkv named "Foo" → the strictly-newer rule force-stamps the genuinely-old file
+            // forward → both lazy migrations skip → v3 foot counters permanently 0 / v5 Y
+            // convention locked. Same for a cloud-sync/backup rollback of profiles\*.json.
+            // Length+mtime can only match if the file is the very one that was stamped.
+            // / 盖章时刻配置文件的指纹。没有它，边车会在「名字复用」时搬石砸脚：删除 Foo（边车
+            // 仍记 dv=6）→ 导入同名的**旧格式** .jkv → 「严格更新」规则把真正的旧文件强制前盖
+            // → 两条惰性迁移全部跳过 → v3 脚键计数永久为 0 / v5 的 Y 约定被锁死。云同步/备份
+            // 回滚 profiles\*.json 亦同。长度+mtime 只有在同是那份被盖章的文件时才会一致。
+            public long ProfileLength;
+            // The file's LastWriteTimeUtc as a raw Windows FILETIME (ToFileTimeUtc). Deliberately
+            // NOT an ISO string: this Newtonsoft build's JObject.Parse auto-converts ISO date
+            // strings into DateTime (local-time conversion + truncation), so a round-tripped
+            // string fingerprint never matched and the sidecar was permanently silent — found by
+            // the Harness probe (stored 21:38:30.3476919Z, read back 13:38:30.0000000Z on a
+            // +08:00 machine). A long survives any JSON round-trip untouched.
+            // / 文件的 LastWriteTimeUtc 原生 FILETIME（ToFileTimeUtc）。刻意**不用** ISO 字符串：
+            // 本构建的 JObject.Parse 会把 ISO 日期串自动转成 DateTime（转本地时间并截断精度），
+            // 往返后的字符串指纹永不匹配、边车永久沉默——Harness 探针实测（写入
+            // 21:38:30.3476919Z，在 +08:00 机器上读回 13:38:30.0000000Z）。long 在任何 JSON
+            // 往返中都原样无损。
+            public long ProfileMtimeFt;
         }
 
         private static Dictionary<string, MigrationStamp> ReadMigrationStamps()
@@ -2063,6 +2093,8 @@ namespace JipperKeyViewer.KeyViewer
                         DataVersion = o.Value<int?>("DataVersion") ?? 0,
                         NodeDefaultsVersion = o.Value<int?>("NodeDefaultsVersion") ?? 0,
                         FootSlotsDeferred = o.Value<bool?>("FootSlotsDeferred") ?? false,
+                        ProfileLength = o.Value<long?>("ProfileLength") ?? -1L,
+                        ProfileMtimeFt = o.Value<long?>("ProfileMtimeFt") ?? -1L,
                     };
                 }
             }
@@ -2095,11 +2127,18 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 catch (Exception) { /* unreadable old file: start fresh / 旧文件不可读：重新开始 */ }
                 string key = SanitizeFileName(profileName);
+                // Fingerprint the file we JUST wrote — the stamp may only speak for that exact
+                // file. FileTime long, not an ISO string (see MigrationStamp.ProfileMtimeFt).
+                // / 给刚写完的那份文件取指纹——版本戳只能为「正是这一份」发言。用 FileTime 的
+                // long 而非 ISO 字符串（见 MigrationStamp.ProfileMtimeFt）。
+                FileInfo stamped = new FileInfo(GetProfilePath(profileName));
                 root[key] = new Newtonsoft.Json.Linq.JObject
                 {
                     ["DataVersion"] = pd.DataVersion,
                     ["NodeDefaultsVersion"] = pd.NodeDefaultsVersion,
                     ["FootSlotsDeferred"] = pd.FootSlotsMigrationDeferred,
+                    ["ProfileLength"] = stamped.Exists ? stamped.Length : -1L,
+                    ["ProfileMtimeFt"] = stamped.Exists ? stamped.LastWriteTimeUtc.ToFileTimeUtc() : -1L,
                 };
                 WriteAllTextSafe(MigrationStampsPath, root.ToString(Newtonsoft.Json.Formatting.Indented));
             }
@@ -2119,12 +2158,56 @@ namespace JipperKeyViewer.KeyViewer
             if (pd == null || string.IsNullOrEmpty(profileName)) return;
             Dictionary<string, MigrationStamp> stamps = ReadMigrationStamps();
             if (!stamps.TryGetValue(SanitizeFileName(profileName), out MigrationStamp s)) return;
+            // Fingerprint gate: the stamp may only speak for the EXACT file it was taken from.
+            // A same-named but different file (deleted + re-imported older package, cloud/backup
+            // rollback) has a different length/mtime — for those the in-file stamps are
+            // authoritative and the lazy migrations must run. / 指纹闸：版本戳只能为「盖章时的
+            // 那份文件」发言。同名但不同的文件（删除后导入旧包、云/备份回滚）长度或时间必有一异
+            // ——这些情况以文件内版本戳为准，惰性迁移必须照常运行。
+            try
+            {
+                FileInfo current = new FileInfo(GetProfilePath(profileName));
+                if (!current.Exists
+                    || current.Length != s.ProfileLength
+                    || current.LastWriteTimeUtc.ToFileTimeUtc() != s.ProfileMtimeFt)
+                    return;
+            }
+            catch (Exception)
+            {
+                // Unstatable file: cannot prove it is the stamped one, so the sidecar stays
+                // silent — the safe direction. / 无法 stat：无法证明是盖章的那份，边车保持沉默
+                // ——这是安全方向。
+                return;
+            }
             // Only a STRICTLY newer sidecar entry may speak (see class doc). / 只有严格更新的
             // 边车条目可以发言（见类注释）。
             if (s.DataVersion <= pd.DataVersion) return;
             pd.DataVersion = s.DataVersion;
             if (s.NodeDefaultsVersion > pd.NodeDefaultsVersion) pd.NodeDefaultsVersion = s.NodeDefaultsVersion;
             pd.FootSlotsMigrationDeferred = s.FootSlotsDeferred;
+        }
+
+        /// <summary>Drop one profile's sidecar entry (delete/rename cleanup). Cheap hygiene: with
+        /// the fingerprint gate a stale entry can no longer do harm, but a dead key keeps the file
+        /// growing over a long modding session. / 删除一条配置的边车条目（删除/改名清理）。廉价
+        /// 卫生：有了指纹闸后陈旧条目已无害，但死键会让文件在长期使用中缓慢增长。</summary>
+        private static void RemoveMigrationStamp(string profileName)
+        {
+            if (string.IsNullOrEmpty(profileName)) return;
+            try
+            {
+                if (!File.Exists(MigrationStampsPath)) return;
+                var root = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(MigrationStampsPath));
+                string key = SanitizeFileName(profileName);
+                if (root[key] == null) return;
+                root.Remove(key);
+                WriteAllTextSafe(MigrationStampsPath, root.ToString(Newtonsoft.Json.Formatting.Indented));
+            }
+            catch (Exception)
+            {
+                // Same redundancy argument as WriteMigrationStamp: never fail the caller.
+                // 与 WriteMigrationStamp 同样的冗余论证：绝不连累调用方。
+            }
         }
 
         /// <summary>
@@ -2503,6 +2586,12 @@ namespace JipperKeyViewer.KeyViewer
                 string profilePath = GetProfilePath(name);
                 if (File.Exists(profilePath))
                     File.Delete(profilePath);
+                // The sidecar entry is dead the moment the file is gone — drop it so a later
+                // same-named profile starts with a clean slate (the fingerprint gate would ignore
+                // it anyway, but a dead key keeps the file growing).
+                // 文件一消失边车条目即死亡——顺手删掉，让之后的同名配置从干净状态开始（指纹闸
+                // 反正会忽略它，但死键会让文件持续增长）。
+                RemoveMigrationStamp(name);
             }
             catch (Exception e)
             {
@@ -2581,6 +2670,13 @@ namespace JipperKeyViewer.KeyViewer
                 try
                 {
                     File.Move(oldPath, newPath);
+                    // The sidecar entry is keyed by name: drop the old key so it can never be
+                    // consulted for a future different file with the old name. The moved file's
+                    // in-file stamps are intact, and SaveCurrentProfile below writes the new
+                    // name's entry.
+                    // 边车条目以名字为键：删掉旧键，免得将来某个同名**异文件**被它覆盖。被移动的
+                    // 文件其文件内版本戳原样保留，下方 SaveCurrentProfile 会写入新名的条目。
+                    RemoveMigrationStamp(oldName);
                 }
                 catch (Exception e)
                 {

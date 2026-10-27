@@ -81,6 +81,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             /// 下限 0 的钳制会随即悄悄放宽预算守卫。
             /// </summary>
             public bool BudgetReturned;
+            /// <summary>A NON-looping player that reached its end. Unity stops such a player at
+            /// loopPointReached (isPlaying → false, isPrepared stays true), which used to be
+            /// indistinguishable from "paused": the rebuild sweep's EnsurePlaying then called
+            /// Play() and the video restarted from frame 0 on every rebuild. Looping players fire
+            /// loopPointReached on every wrap and are never marked. / 到达结尾的**非循环**播放器。
+            /// Unity 会在 loopPointReached 处停止它（isPlaying → false，isPrepared 仍为真），过去
+            /// 这与「暂停」无法区分：重建扫描的 EnsurePlaying 随即调 Play()，视频每次重建都从
+            /// 第 0 帧重启。循环播放器每次回绕都触发 loopPointReached，绝不打此标。</summary>
+            public bool Finished;
         }
 
         private static readonly Dictionary<int, Entry> entries = new Dictionary<int, Entry>();
@@ -253,7 +262,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 && existing.Loop == loop && existing.Width == w && existing.Height == h)
             {
                 existing.LastGeneration = generation;
-                if (existing.Player.isLooping != loop) existing.Player.isLooping = loop;
+                if (existing.Player.isLooping != loop)
+                {
+                    existing.Player.isLooping = loop;
+                    // Defensive drift sync: if the player-level loop flag had drifted to looping,
+                    // any stale Finished mark is meaningless by definition (looping players are
+                    // never marked). / 防御性漂移同步：若播放器层面的循环标志漂移成了循环，任何
+                    // 陈旧的完成标按定义都无意义（循环播放器从不打标）。
+                    if (loop) existing.Finished = false;
+                }
                 EnsurePlaying(existing);
                 return existing.Texture;
             }
@@ -468,6 +485,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 // 后于主线程触发，此时 Play() 恒安全。同时也修掉「视频黑屏直到下次重建」。
                 player.prepareCompleted += OnVideoPrepared;
                 player.errorReceived += OnVideoError;
+                player.loopPointReached += OnVideoLoopPoint;
 
                 Entry created = new Entry
                 {
@@ -505,7 +523,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 Loader.Error($"KeyViewer: video node {nodeId} failed to start: {e.Message}");
                 if (player != null)
                 {
-                    try { player.prepareCompleted -= OnVideoPrepared; player.errorReceived -= OnVideoError; player.targetTexture = null; } catch { }
+                    try { player.prepareCompleted -= OnVideoPrepared; player.errorReceived -= OnVideoError; player.loopPointReached -= OnVideoLoopPoint; player.targetTexture = null; } catch { }
                 }
                 if (texture != null)
                 {
@@ -653,12 +671,42 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// instead. / 恢复已就绪但暂停的播放器（重建时复用的条目）。绝不在 Prepare() 进行中调
         /// Play()——那会楔死解码线程，之后游戏退出时 Stop() 卡死。未就绪的条目改由
         /// OnVideoPrepared 自动起播。</summary>
+        /// <summary>Pure predicate for the Harness: only a NON-looping player is finished when its
+        /// end is reached; a looping one has merely wrapped around. / 供 Harness 的纯谓词：只有
+        /// 非循环播放器到达结尾才算完成；循环播放器只是回绕了一次。</summary>
+        internal static bool LoopPointFinishes(bool isLooping) => !isLooping;
+
+        private static void OnVideoLoopPoint(VideoPlayer source)
+        {
+            foreach (KeyValuePair<int, Entry> pair in entries)
+            {
+                if (pair.Value == null || pair.Value.Player != source) continue;
+                pair.Value.Finished = LoopPointFinishes(source.isLooping);
+                break;
+            }
+        }
+
+        /// <summary>Pure predicate for the Harness: the rebuild sweep may auto-play a player that
+        /// is alive, not failed, not finished, and currently stopped-but-prepared. / 供 Harness
+        /// 的纯谓词：重建扫描只可自动起播「存活、未失败、未完成、已就绪但停止」的播放器。</summary>
+        internal static bool ShouldAutoPlay(bool failed, bool finished, bool isPlaying, bool isPrepared)
+            => !failed && !finished && !isPlaying && isPrepared;
+
         private static void EnsurePlaying(Entry e)
         {
-            if (e == null || e.Failed || e.Player == null || e.Player.isPlaying) return;
+            // e.Finished: a completed NON-looping player must NOT be restarted by a rebuild —
+            // Unity stops it (isPlaying → false) while isPrepared stays true, which used to read
+            // exactly like "paused" and made every rebuild replay the clip from frame 0. Only an
+            // intentional lifecycle change (overlay toggle, layout/profile switch, path/loop/size
+            // edit) destroys the entry and starts fresh. / e.Finished：播完的**非循环**播放器
+            // 绝不能被重建重启——Unity 已停止它（isPlaying → false）而 isPrepared 仍为真，过去
+            // 恰好像「暂停」，使每次重建都从第 0 帧重播。只有刻意生命周期变更（开关显示、切换
+            // 布局/配置、修改路径/循环/尺寸）会销毁条目并重新开始。
+            if (e == null || e.Player == null) return;
+            if (!ShouldAutoPlay(e.Failed, e.Finished, e.Player.isPlaying, e.Player.isPrepared)) return;
             try
             {
-                if (e.Player.isPrepared) e.Player.Play();
+                e.Player.Play();
             }
             catch (Exception ex)
             {
@@ -679,6 +727,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 会对它调 Play()，把解码线程楔死。
                     e.Player.prepareCompleted -= OnVideoPrepared;
                     e.Player.errorReceived -= OnVideoError;
+                    e.Player.loopPointReached -= OnVideoLoopPoint;
                     e.Player.Stop();
                     e.Player.targetTexture = null;
                 }

@@ -358,6 +358,21 @@ namespace JipperKeyViewer.KeyViewer
                 Key key = Keys[idx];
                 if (key == null) continue;
                 bool current = KeySource.GetKey(keyCodes[i]);
+                // First sight after a rebuild: seed the state from the PHYSICAL reading with
+                // visuals only. A held key must not register a fresh press edge per rebuild — that
+                // inflated Count, TotalCount, KPS, rain and animation for every held key on every
+                // rebuild (EnablePerKeyColors toggle, style switch, profile/preset activation,
+                // every FreeMake editor apply). / 重建后的首见：以**物理**读数播种状态、只施加
+                // 视觉。按住的键不得在每次重建时注册全新按下边沿——否则每次重建（每键颜色开关、
+                // 样式切换、配置/预设激活、FreeMake 编辑器每次 apply）都会为每个按住的键虚增
+                // 计数、总数、KPS、雨滴与动画。
+                if (!key.PressStateSeeded)
+                {
+                    key.PressStateSeeded = true;
+                    key.isPressed = current;
+                    UpdateKeyColors(idx, current, d);
+                    continue;
+                }
                 if (current != key.isPressed)
                 {
                     UpdateKeyColors(idx, current, d);

@@ -81,6 +81,20 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 段（段数上限；与 RainLayer 的每滴段数上限保持一致）。点状是唯一的乘性未知量——
         /// 阴影/描边**恒**计入（保守），故预算只在它们开启时精确、关闭时只会更紧。</summary>
         private int worstRainVertsPerDrop;
+        /// <summary>Cache-gate inputs for the vertex budget. The budget is derived inside
+        /// SyncCachedSpeeds, whose early-return compares only the 18 speed/height/start-Y values —
+        /// so toggling dotted rain mid-session (a GUI change that refreshes rain in place, no
+        /// rebuild) left a stale 12-verts/drop budget while drops actually cost 288. The global
+        /// toggle is O(1) to compare; the node-override scan is approximated by the document
+        /// LENGTH (a same-length flag flip stays stale until the next full rebuild — documented,
+        /// and the flag flip path goes through the editor which rebuilds on apply).
+        /// / 顶点预算的缓存门输入。预算在 SyncCachedSpeeds 里推导，而其提前返回只比较 18 个
+        /// 速度/高度/起始 Y 值——于是会话中途切换点状雨滴（GUI 就地刷新雨滴、不重建）时，
+        /// 12 顶点/滴的陈旧预算还在，而雨滴实际要 288。全局开关比较是 O(1)；节点覆盖扫描用
+        /// 文档**长度**近似（同长度的标志翻转在下一次完整重建前保持陈旧——已如实记录，且该
+        /// 路径经编辑器 apply 时会重建）。</summary>
+        private bool cachedDottedToggle;
+        private int cachedNodeDottedCount = -1;
         /// <summary>Worst-case vertices one drop can emit under the given dotted possibility. Pure
         /// so the Harness can pin the arithmetic. / 给定点状可能性时单滴的最坏顶点数。纯函数，
         /// 供 Harness 锁死算术。</summary>
@@ -216,7 +230,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 SameCached(cachedGhostHeight2, settings.Data.GhostRainHeightRow2) && SameCached(cachedGhostHeight3, settings.Data.GhostRainHeightRow3) &&
                 SameCached(cachedStartY1, settings.Data.RainStartYRow1) && SameCached(cachedStartY2, settings.Data.RainStartYRow2) &&
                 SameCached(cachedStartY3, settings.Data.RainStartYRow3) && SameCached(cachedGhostStartY1, settings.Data.GhostRainStartYRow1) &&
-                SameCached(cachedGhostStartY2, settings.Data.GhostRainStartYRow2) && SameCached(cachedGhostStartY3, settings.Data.GhostRainStartYRow3))
+                SameCached(cachedGhostStartY2, settings.Data.GhostRainStartYRow2) && SameCached(cachedGhostStartY3, settings.Data.GhostRainStartYRow3) &&
+                cachedDottedToggle == settings.Data.EnableRainDotted &&
+                cachedNodeDottedCount == (settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1))
                 return;
             // Floor speeds and heights: typed values are stored unclamped, and a zero/negative
             // speed never lifts the drop past the track top (y stays <= height forever) — with
@@ -322,6 +338,10 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 }
             }
             worstRainVertsPerDrop = WorstRainVertsPerDrop(dottedPossible);
+            // Record the gate inputs LAST — if this body throws midway the next frame retries it.
+            // 最后记录缓存门输入——本体中途抛出时下一帧会重试。
+            cachedDottedToggle = settings.Data.EnableRainDotted;
+            cachedNodeDottedCount = settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1;
             cachedRainSpeed1 = settings.Data.RainSpeedRow1;
             cachedRainSpeed2 = settings.Data.RainSpeedRow2;
             cachedRainSpeed3 = settings.Data.RainSpeedRow3;
@@ -1017,6 +1037,34 @@ namespace JipperKeyViewer.KeyViewer.Rain
         {
             if (KeyViewer.IsFullKeyboard) return;
 
+            // Global vertex-budget gate on TOP of the per-key cap, BEFORE anything is acquired
+            // from the pool. The per-key cap is per key; the merged mesh is SHARED by every key,
+            // so 105 keys × 128 = 13440 drops of worst-case geometry is 3.9M vertices — uGUI's
+            // FillMesh throws past 65000 (after clearing the mesh), erasing the whole rain canvas.
+            // Dropping the NEWEST drop when the system is saturated is the correct bias: every
+            // OTHER policy (recycle-oldest) is already per-key, and a saturated system is by
+            // definition in the pathological regime where a missing tail drop is invisible. Normal
+            // play (~16 drops/key) is orders of magnitude below the 5000-drop plain budget.
+            // The gate MUST sit before GetRawRain: it originally sat after full configuration and
+            // "returned" the acquired record — but ReturnRawRain decrements liveRainDropCount and
+            // the drop was never counted yet, so every saturation event was a PHANTOM death that
+            // permanently loosened the budget by one: actual live drops then grew unbounded (only
+            // the per-key 128 caps remained) and the dotted-rain mesh blowup this gate exists to
+            // prevent recursed within seconds-to-minutes of heavy play. Nothing is acquired here,
+            // so nothing has to be returned. / 全局顶点预算闸位于每键上限**之上**，且必须在从池中
+            // 获取**之前**执行。每键上限是每键的；合并 mesh 由**所有**键共享，105 键 × 128 = 13440
+            // 滴最坏几何即 390 万顶点——uGUI 的 FillMesh 越过 65000 就抛（且抛前先清 mesh），
+            // 整块雨滴画布消失。系统饱和时丢**最新**的一滴是正确的偏向：其它策略（回收最老）本就
+            // 是每键的，而饱和本身即意味着已处于病态区间，缺一滴尾滴不可见。正常游玩（约 16 滴/键）
+            // 比 5000 滴的普通预算低了两个数量级。
+            // 闸门必须放在 GetRawRain **之前**：它最初放在完整配置之后并「归还」已获取的记录——
+            // 但 ReturnRawRain 会递减 liveRainDropCount，而这滴尚未计数，于是每次饱和拒绝都是一次
+            // **幻影死亡**，让预算永久放松一格：实际存活数随之无界增长（只剩每键 128 上限），
+            // 本闸要防的点状雨滴 mesh 爆炸在重度游玩的秒到分钟内复发。这里什么都没获取，
+            // 因此什么也不用归还。
+            if (liveRainDropCount >= MaxTotalLiveDropsForVerts(worstRainVertsPerDrop))
+                return;
+
             // Custom nodes carry their own rain row; fixed layouts derive it from the slot
             // index. / 自定义节点自带雨滴排；固定布局按槽位序号推导。
             int row = key.CustomNode != null
@@ -1260,11 +1308,6 @@ namespace JipperKeyViewer.KeyViewer.Rain
             // （且抛前先清 mesh），整块雨滴画布消失。系统饱和时丢**最新**的一滴是正确的偏向：
             // 其它策略（回收最老）本就是每键的，而饱和本身即意味着已处于病态区间，缺一滴尾滴
             // 不可见。正常游玩（约 16 滴/键）比 5000 滴的普通预算低了两个数量级。
-            if (liveRainDropCount >= MaxTotalLiveDropsForVerts(worstRainVertsPerDrop))
-            {
-                ReturnRawRain(rawRain);
-                return;
-            }
             if (key.rainList.Count >= MaxLiveDropsPerKey)
             {
                 RawRain oldest = key.rainList[0];

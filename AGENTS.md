@@ -11,7 +11,7 @@
   `Info.json` / 三个 `AssemblyInfo.cs` / `[MelonInfo]` 已是 `1.7.3-alpha.1` / `1.7.3.0`；
   `Repository.json` **刻意仍停在 1.7.2**（预览版不得推进更新检查器；`SetVersion.ps1` 在预览版
   分支会显式跳过并打印原因）。
-- Harness 回归基线 **274 passed / 0 failed**（2026-10-28，第 127 轮）。Harness 被 gitignore，只在本机。
+- Harness 回归基线 **278 passed / 0 failed**（2026-10-28，第 129 轮）。Harness 被 gitignore，只在本机。
 - **Rust 内核（原方案 Stage 1）已被 2026-10-12 的实测否决**，见第 123 轮：三处候选的绝对份额都远低于
   P/Invoke 回本线。Rust 环境本身仍可用（`D:\Rust`），不要再凭「Rust 更快」重开此议，要重开必须先测。
 
@@ -3199,3 +3199,67 @@ Harness 增至 **274** 项（+24：雨滴顶点预算算术与端到端 8 条、
 - **验证局限**：`UnloadUnusedAssets` 是引擎原生行为，Harness 离线无法复现；本修复靠机制分析
   + 代码审查，**需实机确认**（选自定义字体 → 切场景 → 字面不变、日志无 warning）。
   Harness 仍 274/0。部署：core `E31D6369…`、Melon/UMM/Info.json 与第 127 轮相同（未改动）。
+
+### 第 129 轮：三个复审/补盲审计 + 12 项修复（2026-10-28）
+
+任务板 task-6/7/8（`.audit/r129_{fixreview,coverage,deferred}.md`）：**对第 127/128 轮自身
+diff 的对抗复审**、**此前未覆盖面**（两个加载器入口/Main/TgtCompat/输入深通/四块 GUI/CI）、
+**四条存档项裁决**。12 项修复、2 项否决、1 项记录。
+
+对上一轮修复的复审（F 系）——两条 HIGH 都是复审员抓到的**我自己的缺陷**：
+- **F-2（高危）雨滴预算拒绝是「幻影死亡」**：饱和闸在 `GetRawRain` **之后**调
+  `ReturnRawRain`，而递减发生在其中、递增却在 Add 之后——每次拒绝永久放松预算一格，重度
+  游玩几十秒内点状雨滴 mesh 爆炸复发。闸移到方法最顶（获取之前，什么都没拿就无需归还）。
+- **F-3（中）预算缓存门漏点状输入**：SyncCachedSpeeds 的提前返回只比 18 个速度/高度/起始 Y，
+  会话中切点状开关（GUI 就地刷新、不重建）后仍按 12 顶点/滴放行。门补 `cachedDottedToggle`
+  + `cachedNodeDottedCount`（文档长度戳近似节点覆盖，同长度翻转待下次重建自愈——注释如实
+  记录）。
+- **F-1（高危）C1 边车在「名字复用」时搬石砸脚**：删除 Foo（边车仍记 dv=6）→ 导入同名旧格式
+  .jkv → 「严格更新」规则把真旧文件强制前盖 → 两条惰性迁移全跳过 → 脚键计数归零 / Y 约定锁
+  死；云/备份回滚 profiles\*.json 亦同。修复=**文件指纹**（length + `ToFileTimeUtc()` 的
+  long）+ DeleteProfile/RemoveMigrationStamp、RenameProfile 旧键清理 + 批量路径
+  （MigrateAllProfileFiles）同款咨询。
+  **关键教训（本轮最大坑）**：指纹的 mtime 起初存 ISO 字符串——**这版游戏的 JObject.Parse 会
+  自动把 ISO 日期串转成 DateTime**（转本地时间 + 截断精度），往返后 21:38:30.3476919Z 变成
+  13:38:30.0000000Z（+08:00 机器），指纹永不匹配、边车永久沉默。Harness 探针插桩定位后改为
+  FileTime long（任何 JSON 往返无损）。**第二教训：`-v q` + `Select-Object -Last 2` 会把构建
+  失败滤成「成功」假象**（`JsonLoadSettings.DateParseHandling` 在该 Newtonsoft 版本不存在、
+  CS0117，而我连续三次没看见）——构建输出**必须全量看**。
+- **F-4（中低）F3 的 PNSE 回退重新引入先删后移**：改 File.Copy 形态（第 39 轮 WriteAllTextSafe
+  同款），移动失败不再丢双包。
+- **F-5（低）批量迁移路径补边车咨询**（指纹闸同款）。
+
+存档项裁决（deferred 审计）：
+- **E10 PROVEN**：方向键微调块是唯一不清手势的快捷键路径——拖拽中按方向键会压入微调条目、
+  被重算抹掉、ReplaceTop 替换错误的栈顶 → Ctrl+Z 恢复**拖拽中途**几何（第 35 轮要防的失效）；
+  属性框打字同路。修复=PushEditorHistoryNudge 中央手势闸（`fmDragStart/fmResizeOrig` 非空即
+  抑制；终态由手势的 ReplaceTop 提交）+ 纯谓词 `HistoryPushSuppressedForGesture` 回归。
+- **R8 PROVEN**：非循环播放器播完后 `isPlaying=false`、`isPrepared=true`，重建扫描的
+  EnsurePlaying 分不清「播完」与「暂停」→ 每次重建从第 0 帧重播（违背第 33 轮承诺）。修复=
+  `Entry.Finished` + `loopPointReached`（仅非循环打标，循环回绕不打）+ EnsurePlaying 门控 +
+  订阅/退订对称 + 纯谓词 `LoopPointFinishes`/`ShouldAutoPlay` 回归；**需实机确认一次**。
+- **E7 REFUTED-for-typical**（112 键实测每次拖动约 0.1ms 量级；cliff 只在接近 4096 导入上限
+  的病态文档）——修复设计已写入报告，暂不实施；**D-4 REFUTED-for-shipped**（两个加载器的
+  事件访问器都不可能抛，部分订阅态不可达）。
+
+补盲审计（G 系）：
+- **G1（中高）鬼键武装不解除编辑器捕获**：第 44 轮的跨窗口解除只加在主键路径；一次物理按键
+  同时绑鬼键槽位与 FreeMake 节点。DrawGhostKeyChangeSection 补 CancelEditorNodeCapture。
+- **G2（中）重建时的「幻影按下」**：CreateKey 以 isPressed=false 重建全部 Key，按住的键在
+  重建后首次轮询被当新按下——**每次重建、每个按住的键虚增计数/总数/KPS/雨滴/动画**（每键
+  颜色开关、样式切换、配置/预设激活、编辑器每次 apply 都触发）。修复=「首见播种」：新 Key
+  首次轮询以物理读数播种 isPressed（只施加颜色视觉，无边沿副作用；与自定义鬼键路径既有
+  约定一致），固定/自定义两条轮询路径都改。
+- **G3（中低）Melon 一次性启用闩锁吞掉重试**：`_initialized=true` 原在 EnableNow **之前**，
+  而其内部 catch 把失败吞成「干净重试状态」却没有重试入口（Melon 无 OnToggle）→ 首场景瞬态
+  失败 = 整个会话 Mod 关闭。EnableNow 改返回 bool（覆盖层是否存活），闩锁仅在成功后置位，
+  失败留待下一场景重试。
+- **G4（中低，UMM）已知限制**：UMM 不经 ModEntry 暴露其显隐热键，武装排除形同虚设（热键会
+  被绑进槽位）——需核对游戏实际 UMM 版本的 KeyBinding API 后再加自有热键，本轮记录不修。
+- **G5（低）发布模板/手动发布说明指向旧仓库** `2228293026` → `adofaiex`（release.yml 默认
+  文案 + RELEASE_TEMPLATE.md；adofai-libs 的 checkout 指向是正确的，未动）。
+- 另修：E5 类型下拉的预算拒绝补 `Loader.Warning`（与指派路径一致，不再无声）。
+
+Harness **278 / 0**（+4：视频双谓词 2、编辑器微调谓词 1、C1 指纹块重构并新增「同名异文件不
+继承边车戳 + 真旧文件照常平移」负例 2 → 净 4）。部署：core `4F45016E…`、Melon `1F66D0A3…`、
+UMM `810DA824…`、Info.json 不变。版本线未动，未打 tag。

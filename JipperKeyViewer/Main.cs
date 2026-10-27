@@ -91,13 +91,19 @@ namespace JipperKeyViewer
 
         /// <summary>
         /// Call this after Init() if the loader doesn't fire OnToggle (e.g. MelonLoader).
-        /// Ensures the overlay is created immediately.
-        /// 在 Init() 之后调用，用于不会触发 OnToggle 的加载器（如 MelonLoader）。
-        /// 确保立即创建覆盖层。
+        /// Ensures the overlay is created immediately. Returns whether an overlay is alive after
+        /// the call — EnableKeyViewer swallows its own build failures into a logged, clean retry
+        /// state, and a loader whose only enable hook is one-shot (Melon's OnSceneWasInitialized)
+        /// needs the RESULT to decide whether to retry on the next scene. / 在 Init() 之后调用，
+        /// 用于不会触发 OnToggle 的加载器（如 MelonLoader）。确保立即创建覆盖层。返回调用后
+        /// 覆盖层是否存活——EnableKeyViewer 会把构建失败吞成「已记日志的干净重试状态」，而只有
+        /// 一次性启用钩子的加载器（Melon 的 OnSceneWasInitialized）需要这个**结果**来决定下次
+        /// 场景是否重试。
         /// </summary>
-        public static void EnableNow()
+        public static bool EnableNow()
         {
             EnableKeyViewer();
+            return KeyViewerGO != null;
         }
 
         internal static void EnableKeyViewer()

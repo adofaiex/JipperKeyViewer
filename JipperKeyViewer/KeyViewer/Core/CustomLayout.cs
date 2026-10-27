@@ -1967,7 +1967,18 @@ namespace JipperKeyViewer.KeyViewer
                         UpdateCustomKeyText(key, node);
                     }
                     bool current = key.CustomKeyCode != KeyCode.None && KeySource.GetKey(key.CustomKeyCode);
-                    if (current != key.isPressed)
+                    // First sight after a rebuild: seed from the physical reading with visuals
+                    // only — a held key must not register a fresh press edge per rebuild (same
+                    // defect as the fixed layouts' ProcessKeyGroup). / 重建后的首见：以物理读数
+                    // 播种、只施加视觉——按住的键不得在每次重建时注册全新按下边沿（与固定布局
+                    // ProcessKeyGroup 的同款缺陷）。
+                    if (!key.PressStateSeeded)
+                    {
+                        key.PressStateSeeded = true;
+                        key.isPressed = current;
+                        ApplyCustomKeyColors(key, node, current);
+                    }
+                    else if (current != key.isPressed)
                         ApplyCustomKeyEdge(key, node, current, nowMs, d);
 
                     // Ghost binding: same edge semantics as the fixed layouts' ghost keys, and the

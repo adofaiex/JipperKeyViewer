@@ -14,7 +14,7 @@ on:
         description: 'Release notes (Markdown). Copy template from .github/RELEASE_TEMPLATE.md'
         required: true
         type: string
-        default: '**Full Changelog**: https://github.com/2228293026/JipperKeyViewer/compare/vPREV...vVERSION\n\n# :tada: JipperKeyViewer vVERSION\n## :sparkles: New Features\n\n## :bug: Bug Fixes\n\n\n# Supports Alpha latest / 支持Alpha最新 / Alpha 최신 버전 지원'
+        default: '**Full Changelog**: https://github.com/adofaiex/JipperKeyViewer/compare/vPREV...vVERSION\n\n# :tada: JipperKeyViewer vVERSION\n## :sparkles: New Features\n\n## :bug: Bug Fixes\n\n\n# Supports Alpha latest / 支持Alpha最新 / Alpha 최신 버전 지원'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

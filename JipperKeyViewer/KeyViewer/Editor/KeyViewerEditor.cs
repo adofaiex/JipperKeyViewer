@@ -1335,10 +1335,36 @@ namespace JipperKeyViewer.KeyViewer
             return true;
         }
 
+        /// <summary>Pure predicate for the nudge suppression guard, so the Harness can pin it.
+        /// / 微调抑制守卫的纯谓词，供 Harness 锁死。</summary>
+        internal static bool HistoryPushSuppressedForGesture(bool dragActive, bool resizeActive)
+            => dragActive || resizeActive;
+
         /// <summary>Nudge variant: coalesces a burst of continuous edits into one entry. /
         /// 微调变体：把一连串连续编辑合并成一条记录。</summary>
         private void PushEditorHistoryNudge()
         {
+            // Central gesture gate (deferred audit E10, PROVEN). The arrow-nudge block was the one
+            // shortcut path that did NOT clear the gesture, so an arrow press mid-drag pushed a
+            // nudge entry N on top of the drag's first-move entry D1; the next ApplyEditorDrag
+            // recomputed from fmDragStart and wiped the nudge, and EndNodeDrag's ReplaceTop then
+            // replaced N instead of D1 — Ctrl+Z restored MID-DRAG geometry, the exact failure
+            // round 35's ReplaceTop exists to prevent. Resize is symmetric, and typing into a
+            // property field while the canvas drag is held reaches here through
+            // EditorPropertyChanged the same way. Suppressing the nudge during a gesture is
+            // correct for every caller: the gesture's final ReplaceTop already commits the
+            // end-state, which includes whatever the nudge would have captured. The invariant
+            // "fmDragStart/fmResizeOrig non-empty ⟺ gesture in progress" is the same one
+            // ApplyEditorDrag itself relies on (:2291), so no new assumption is introduced.
+            // 中央手势闸（延迟审计 E10，已实锤）。方向键微调块是唯一**不**清手势的快捷键路径：
+            // 拖拽中按一次方向键，会在拖拽的首帧条目 D1 之上再压一条微调 N；下一次 ApplyEditorDrag
+            // 从 fmDragStart 重算几何并抹掉 N，而 EndNodeDrag 的 ReplaceTop 替换的是 **N** 而非
+            // D1——于是 Ctrl+Z 恢复的是**拖拽中途**的几何，正是第 35 轮 ReplaceTop 要防的那个
+            // 失效。缩放对称；画布拖拽按住时往属性框打字也经 EditorPropertyChanged 走到这里。
+            // 对所有调用点而言手势期间抑制微调都是正确的：手势结束时的 ReplaceTop 已经提交了
+            // 终态（自然包含微调本会捕获的内容）。「fmDragStart/fmResizeOrig 非空 ⟺ 手势进行中」
+            // 正是 ApplyEditorDrag 自己依赖的不变式（:2291），没有引入任何新假设。
+            if (HistoryPushSuppressedForGesture(fmDragStart.Count > 0, fmResizeOrig.Count > 0)) return;
             try
             {
                 editorHistory.PushNudge(SnapshotEditorDocument(), Time.unscaledTime);
@@ -4436,8 +4462,16 @@ namespace JipperKeyViewer.KeyViewer
             // 下一次 EnsureCustomNodes 走查会静默删除超额者（撤销恢复后同样被裁剪，什么也回不来）。
             bool wasKeyLike = CustomNodeHasKey(node);
             bool becomesKeyLike = newType != 3 || !string.IsNullOrWhiteSpace(node.KeyBind);
-            if (wasKeyLike && !becomesKeyLike && UnboundImageCountInGroup(node.GroupId) >= 8) return;
-            if (!wasKeyLike && becomesKeyLike && KeyLikeCountInGroup(node.GroupId) >= CustomKeyNodeCap) return;
+            if (wasKeyLike && !becomesKeyLike && UnboundImageCountInGroup(node.GroupId) >= 8)
+            {
+                Loader.Warning("KeyViewer: node type change refused — the group's 8-image cap is full");
+                return;
+            }
+            if (!wasKeyLike && becomesKeyLike && KeyLikeCountInGroup(node.GroupId) >= CustomKeyNodeCap)
+            {
+                Loader.Warning("KeyViewer: node type change refused — the group's key cap is full");
+                return;
+            }
             node.NodeType = newType;
             PushEditorHistory(false);
             EditorMutated();
