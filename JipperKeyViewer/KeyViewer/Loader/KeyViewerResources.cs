@@ -153,6 +153,7 @@ namespace JipperKeyViewer.KeyViewer
                 }
                 if (tmpFont != null)
                 {
+                    ProtectFontAssetFromUnload(tmpFont);
                     var entry = new FontEntry(font.name, tmpFont);
                     entry.sourceFontName = font.name;
                     fontList.Add(entry);
@@ -312,6 +313,7 @@ namespace JipperKeyViewer.KeyViewer
                 // 空行;与 ScanCustomFonts 一致地跳过。
                 if (target != null)
                 {
+                    ProtectFontAssetFromUnload(target);
                     var entry = new FontEntry(entryName, target);
                     entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
                     fontList.Add(entry);
@@ -361,6 +363,7 @@ namespace JipperKeyViewer.KeyViewer
                 // 默认槽位让给死字体。
                 if (cjkFont != null)
                 {
+                    ProtectFontAssetFromUnload(cjkFont);
                     var entry = new FontEntry(entryName, cjkFont);
                     entry.sourceFontName = Path.GetFileNameWithoutExtension(fileName);
                     fontList.Insert(0, entry);
@@ -891,7 +894,41 @@ namespace JipperKeyViewer.KeyViewer
 
         void RetainSourceFont(Font font)
         {
-            if (font != null) sourceFonts.Add(font);
+            if (font == null) return;
+            // A managed List<Font> does NOT keep a Unity object alive across
+            // Resources.UnloadUnusedAssets — that call (which the game runs on scene transitions)
+            // frees native objects by NATIVE reference count, and a runtime-created Font with
+            // default hideFlags has none. After the first scene switch the source font was gone
+            // while the dynamic TMP atlas kept pointing at it, so every glyph not already baked
+            // rasterised through TMP's fallback chain — the user-visible symptom: pick a custom
+            // font, switch a scene, and the text quietly changes face. DontUnloadUnusedAsset is
+            // the one flag that makes UnloadUnusedAssets skip an object. ReleaseSourceFonts still
+            // destroys it explicitly on teardown, so nothing leaks.
+            // 托管的 List<Font> **扛不住** Resources.UnloadUnusedAssets——该调用（游戏在切场景时
+            // 触发）按**原生**引用计数释放对象，而运行时创建、hideFlags 默认的 Font 没有任何原生
+            // 引用。第一次切场景后源字体就被卸载，动态图集却仍指向它，于是每一个尚未烘焙的字形
+            // 都走 TMP 的回退链——用户可见的症状正是：选好自定义字体，切一个场景，文字悄悄换了
+            // 字面。DontUnloadUnusedAsset 是让 UnloadUnusedAssets 跳过某个对象的唯一标志。
+            // ReleaseSourceFonts 在拆解时仍会显式销毁，故不泄漏。
+            font.hideFlags |= HideFlags.DontUnloadUnusedAsset;
+            sourceFonts.Add(font);
+        }
+
+        /// <summary>Mark a baked TMP_FontAsset so UnloadUnusedAssets cannot reclaim it either. The
+        /// baked assets are referenced natively only while some text currently uses them — every
+        /// NON-selected entry was fair game for the same scene-transition unload, after which
+        /// OnSceneLoaded pruned it and the picker silently lost that font until the next rescan.
+        /// We own these objects, the caps bound how many exist (32 game + 24 custom), and they are
+        /// resident from creation anyway — this only stops the first scene transition from
+        /// reclaiming them. / 给烘焙出的 TMP_FontAsset 打上同一保护，使 UnloadUnusedAssets 同样
+        /// 无法回收它们。烘焙资产只有在「正被某些文本使用」时才有原生引用——其余全部条目都会在
+        /// 同一次切场景卸载中被回收，随后 OnSceneLoaded 将其剪除，字体选择器里那条字体就静默
+        /// 消失，直到下一次重扫。这些对象归本 Mod 所有，数量有上限约束（32 游戏 + 24 自定义），
+        /// 且从创建那一刻起本就常驻——本保护只是不让第一次切场景把它们收走。</summary>
+        static void ProtectFontAssetFromUnload(TMP_FontAsset asset)
+        {
+            if (asset == null) return;
+            asset.hideFlags |= HideFlags.DontUnloadUnusedAsset;
         }
 
         void ReleaseSourceFonts()
@@ -1088,6 +1125,7 @@ namespace JipperKeyViewer.KeyViewer
                     }
                     if (tmpFont != null)
                     {
+                        ProtectFontAssetFromUnload(tmpFont);
                         fontList.Add(new FontEntry(entryName, tmpFont));
                         customFontCount++;
                         // DO NOT destroy the source Font here. TMP_FontAsset.CreateFontAsset builds a

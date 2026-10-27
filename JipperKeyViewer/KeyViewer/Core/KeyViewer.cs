@@ -503,6 +503,21 @@ namespace JipperKeyViewer.KeyViewer
                 UpdateAllFonts();
                 SaveSettings();
             }
+            else
+            {
+                // A set-but-unresolvable FontName used to fail in total silence: the caller had
+                // just pruned destroyed assets and clamped FontIndex, so the overlay rendered
+                // whatever slid into the slot and no log line anywhere explained why "the font
+                // changed after a scene switch". Say what happened — once per scene at most, and
+                // only while the name genuinely has no entry.
+                // 已设置却解析不到的 FontName 过去**完全静默**地失败：调用方刚剪除了已销毁资产并
+                // 钳制了 FontIndex，于是覆盖层渲染出恰好滑进那个槽位的字体，而任何日志都不会解释
+                // 「为什么切了场景字体就变了」。把发生的事说出来——每个场景至多一次，且仅在名字
+                // 确实没有对应条目时。
+                Loader.Warning($"KeyViewer: font '{Settings.Data.FontName}' has no matching entry; "
+                    + "rendering the fallback until it is re-selected (the font file may have been removed, "
+                    + "or its asset was unloaded)");
+            }
             fontRestored = true;
         }
 

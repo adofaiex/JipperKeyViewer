@@ -3173,3 +3173,29 @@ Harness 增至 **274** 项（+24：雨滴顶点预算算术与端到端 8 条、
 1.7.2 哨兵双向 2 条、边车版本戳 5 条）。部署：3 DLL + Info.json 哈希核验一致
 （core `BCD99B6C…`、Melon `205E2003…`、UMM `810DA824…`）。`Repository.json` 仍停 1.7.2，
 版本线未动，未打 tag（发版由用户决定）。
+
+### 用户报告：切场景后自定义字体变化（2026-10-28，第 128 轮）
+
+用户反馈「自定义字体存在问题，切换一个场景后字体变化」。根因是**原生对象生命周期**，不是
+字体表逻辑：
+
+- **机制**：游戏在切场景时触发 `Resources.UnloadUnusedAssets`，它按**原生**引用计数回收对象。
+  本 Mod 字体子系统里有两类对象只有托管引用：
+  ① `RetainSourceFont` 的源 `Font`（`new Font(path)`，仅存于托管 `sourceFonts` 列表）——被卸载
+  后动态图集再也无法光栅化**新**字形，TMP 沿回退链（CJK/全局回退）渲染，字面静默改变；
+  ② 未被任何文本**当前使用**的烘焙 `TMP_FontAsset`（32 游戏 + 24 自定义里除选中项外的全部）
+  ——被卸载后由 `OnSceneLoaded` 剪除，字体选择器里那条字体静默消失，选中项若恰在覆盖层关闭
+  期间切场景同样中招（没有文本持引用）。
+  `FontEntry.font` 是 TMP 资产而非源 Font，故剪除判据对 ① 完全失明——这也是它此前一直无日志
+  的原因。
+- **修复**：Mod 自有的字体对象一律打 `HideFlags.DontUnloadUnusedAsset`——这是让
+  UnloadUnusedAssets 跳过某对象的唯一标志（`RetainSourceFont` 对源 Font、
+  `ProtectFontAssetFromUnload` 新助手对四处烘焙点：ScanGameFonts / LoadFontFromFile /
+  LoadCJKFontFromFile / ScanCustomFonts）。显存代价：图集从创建起本就常驻，上限已约束数量
+  （56 × 约 4MB），本保护只是不让第一次切场景收走它们；`ReleaseSourceFonts` 拆解时仍显式
+  销毁，不泄漏。游戏自身的 Font 也被 baked 的那些同样打标（阻止游戏回收我们依赖的字面）。
+- **附带**：`RestoreFontOnce` 解析不到已设置的 FontName 时不再无声——`Loader.Warning` 一次
+  （每场景至多一次），此前的完全静默正是该类缺陷无法诊断的原因。
+- **验证局限**：`UnloadUnusedAssets` 是引擎原生行为，Harness 离线无法复现；本修复靠机制分析
+  + 代码审查，**需实机确认**（选自定义字体 → 切场景 → 字面不变、日志无 warning）。
+  Harness 仍 274/0。部署：core `E31D6369…`、Melon/UMM/Info.json 与第 127 轮相同（未改动）。
