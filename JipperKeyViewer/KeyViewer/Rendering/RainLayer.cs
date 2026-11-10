@@ -29,7 +29,6 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private float[] rainScales;
 
         private GhostRainLayer ghostLayer;
-
         public RainLayer()
         {
             raycastTarget = false;
@@ -138,6 +137,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 {
                     ghostLayer.HadGhostGeometry = hasGhost;
                     ghostLayer.SetVerticesDirty();
+                    ghostLayer.SetMaterialDirty();
                 }
             }
         }
@@ -206,7 +206,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// body carries a bottom→top two-color gradient (bottom-to-top two-color gradient); the
         /// shadow/outline stay single-color. / 输出一滴雨的阴影/描边/(本体)四边形及轨迹渐变。
         /// 本体携带底→顶双色渐变（底→顶双色渐变）；阴影/描边保持单色。</summary>
-        private static void DrawDrop(VertexHelper vh, RawRain rain, bool drawMain)
+        private void DrawDrop(VertexHelper vh, RawRain rain, bool drawMain)
         {
             Rect r = rain.rect;
             if (r.width <= 0f || r.height <= 0f) return;
@@ -224,6 +224,8 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             float span = rain.dFar - rain.dNear;
             bool simple = rain.fadePx <= 0.5f || rain.trackHeight <= 0.5f || span <= 0.0001f;
             float sf = rain.scaleF;
+            if (rain.glowEnabled)
+                DrawRainGlow(vh, rain, baseA, simple);
 
             if (rain.shadowEnabled)
             {
@@ -280,6 +282,122 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                         rain.dNear, rain.dFar, rain.trackHeight, rain.fadePx, span, simple);
             }
         }
+
+        /// <summary>Emit one soft-glow quad behind the drop body, using the same padded soft-edge
+        /// sprite model as fixed/FreeMake key glow. It stays inside the merged rain mesh, so no
+        /// per-drop Image or extra CanvasRenderer is created. / 在雨滴本体下方发出一块柔光四边形，
+        /// 沿用固定布局/FreeMake 按键光效的外扩软边模型；仍留在合并雨滴 Mesh 内，不为每滴雨创建
+        /// Image 或额外 CanvasRenderer。</summary>
+        private void DrawRainGlow(VertexHelper vh, RawRain rain, float baseA, bool simple)
+        {
+            float range = rain.glowRange;
+            float opacity = rain.glowOpacity;
+            if (!IsFinite(range) || !IsFinite(opacity)) return;
+            range = Mathf.Clamp(range, 0f, 50f);
+            opacity = Mathf.Clamp01(opacity);
+            if (range <= 0f || opacity <= 0f) return;
+
+            float pad = range * Mathf.Max(rain.scaleF, 0f);
+            if (!IsFinite(pad) || pad <= 0f) return;
+            Rect glow = new Rect(rain.rect.xMin - pad, rain.rect.yMin - pad,
+                rain.rect.width + pad * 2f, rain.rect.height + pad * 2f);
+            if (!IsFiniteRect(glow)) return;
+
+            Color color = rain.glowColor;
+            if (!IsFinite(color.r) || !IsFinite(color.g) || !IsFinite(color.b) || !IsFinite(color.a))
+                color = rain.mainColor;
+            color.a *= baseA * opacity;
+            color.a = Mathf.Clamp01(color.a);
+            if (color.a <= 0f) return;
+
+            float innerRadius = Mathf.Clamp(rain.outlineCornerRadius, 0f,
+                Mathf.Min(glow.width, glow.height) * 0.5f);
+            DrawRoundedRainGlowRing(vh, glow, innerRadius, color, rain.dNear, rain.dFar,
+                rain.trackHeight, rain.fadePx, rain.dFar - rain.dNear, simple);
+        }
+
+        /// <summary>Soft rounded halo: a ring whose alpha runs from full at the drop edge to zero
+        /// at the outer edge. Using the same rounded-corner model as the rain outline keeps the
+        /// halo from turning rounded rain back into a rectangle. / 柔和圆角光环：内缘不透明度完整、
+        /// 向外线性衰减到 0；使用与雨滴描边一致的圆角模型，避免圆角雨滴被矩形光晕破坏。</summary>
+        private static void DrawRoundedRainGlowRing(VertexHelper vh, Rect inner, float innerRadius, Color color,
+            float dNear, float dFar, float trackH, float fade, float span, bool simple)
+        {
+            if (inner.width <= 0f || inner.height <= 0f) return;
+            Rect outer = new Rect(inner.xMin, inner.yMin, inner.width, inner.height);
+            float innerR = Mathf.Clamp(innerRadius, 0f, Mathf.Min(inner.width, inner.height) * 0.5f);
+            float outerR = innerR;
+            if (IsFiniteRect(outer))
+            {
+                outer.xMin -= outerR;
+                outer.yMin -= outerR;
+                outer.xMax += outerR;
+                outer.yMax += outerR;
+            }
+            if (!IsFiniteRect(outer) || outer.width <= 0f || outer.height <= 0f) return;
+
+            Color transparent = color;
+            transparent.a = 0f;
+            Color innerBottom = RainColorAtY(color, inner.yMin, outer, dNear, dFar, trackH, fade, simple);
+            Color innerTop = RainColorAtY(color, inner.yMax, outer, dNear, dFar, trackH, fade, simple);
+
+            AddRainPoly4(vh, inner.xMin + innerR, inner.yMax, inner.xMax - innerR, inner.yMax,
+                inner.xMax - innerR, outer.yMax, inner.xMin + innerR, outer.yMax,
+                innerTop, innerTop, transparent, transparent);
+            AddRainPoly4(vh, inner.xMin + innerR, inner.yMin, inner.xMax - innerR, inner.yMin,
+                inner.xMax - innerR, outer.yMin, inner.xMin + innerR, outer.yMin,
+                innerBottom, innerBottom, transparent, transparent);
+
+            float sideY0 = inner.yMin + innerR;
+            float sideY1 = inner.yMax - innerR;
+            Color sideBottom = RainColorAtY(color, sideY0, outer, dNear, dFar, trackH, fade, simple);
+            Color sideTop = RainColorAtY(color, sideY1, outer, dNear, dFar, trackH, fade, simple);
+            AddRainPoly4(vh, inner.xMin, sideY0, outer.xMin, sideY0,
+                outer.xMin, sideY1, inner.xMin, sideY1,
+                sideBottom, transparent, transparent, sideTop);
+            AddRainPoly4(vh, inner.xMax, sideY0, outer.xMax, sideY0,
+                outer.xMax, sideY1, inner.xMax, sideY1,
+                sideBottom, transparent, transparent, sideTop);
+
+            if (innerR <= 0.01f) return;
+            AddGlowArc(vh, inner.xMax - innerR, inner.yMax - innerR, innerR, outerR, 0f, Mathf.PI * 0.5f,
+                color, outer, dNear, dFar, trackH, fade, simple);
+            AddGlowArc(vh, inner.xMin + innerR, inner.yMax - innerR, innerR, outerR, Mathf.PI * 0.5f, Mathf.PI,
+                color, outer, dNear, dFar, trackH, fade, simple);
+            AddGlowArc(vh, inner.xMin + innerR, inner.yMin + innerR, innerR, outerR, Mathf.PI, Mathf.PI * 1.5f,
+                color, outer, dNear, dFar, trackH, fade, simple);
+            AddGlowArc(vh, inner.xMax - innerR, inner.yMin + innerR, innerR, outerR, Mathf.PI * 1.5f, Mathf.PI * 2f,
+                color, outer, dNear, dFar, trackH, fade, simple);
+        }
+
+        private static void AddGlowArc(VertexHelper vh, float cx, float cy, float innerRadius, float outerRadius,
+            float a0, float a1, Color color, Rect outer, float dNear, float dFar, float trackH, float fade,
+            bool simple)
+        {
+            int steps = Mathf.Clamp(Mathf.CeilToInt(outerRadius * 0.35f), 3, 8);
+            float previousCos = Mathf.Cos(a0);
+            float previousSin = Mathf.Sin(a0);
+            for (int i = 1; i <= steps; i++)
+            {
+                float angle = Mathf.Lerp(a0, a1, i / (float)steps);
+                float c = Mathf.Cos(angle);
+                float s = Mathf.Sin(angle);
+                Color inner0 = RainColorAtY(color, cy + previousSin * innerRadius, outer, dNear, dFar, trackH, fade, simple);
+                Color inner1 = RainColorAtY(color, cy + s * innerRadius, outer, dNear, dFar, trackH, fade, simple);
+                Color outer0 = transparentGlow;
+                Color outer1 = transparentGlow;
+                AddRainPoly4(vh,
+                    cx + previousCos * innerRadius, cy + previousSin * innerRadius,
+                    cx + previousCos * outerRadius, cy + previousSin * outerRadius,
+                    cx + c * outerRadius, cy + s * outerRadius,
+                    cx + c * innerRadius, cy + s * innerRadius,
+                    inner0, outer0, outer1, inner1);
+                previousCos = c;
+                previousSin = s;
+            }
+        }
+
+        private static readonly Color transparentGlow = new Color(0f, 0f, 0f, 0f);
 
         /// <summary>Trail-gradient quad, ported verbatim from the old RainGraphic and extended to
         /// a bottom→top two-color body (single-color callers pass the same color twice). /
@@ -575,19 +693,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             int i = vh.currentVertCount;
             UIVertex vert = UIVertex.simpleVert;
+            Vector4 centreUv = new Vector4((u0 + u1) * 0.5f, (v0 + v1) * 0.5f, 0f, 0f);
             vert.position = new Vector3(x0, y0, 0f);
-            vert.uv0 = new Vector4(u0, v0, 0f, 0f);
+            vert.uv0 = centreUv;
             vert.color = bot;
             vh.AddVert(vert);
             vert.position = new Vector3(x1, y0, 0f);
-            vert.uv0 = new Vector4(u1, v0, 0f, 0f);
+            vert.uv0 = centreUv;
             vh.AddVert(vert);
             vert.position = new Vector3(x1, y1, 0f);
-            vert.uv0 = new Vector4(u1, v1, 0f, 0f);
+            vert.uv0 = centreUv;
             vert.color = top;
             vh.AddVert(vert);
             vert.position = new Vector3(x0, y1, 0f);
-            vert.uv0 = new Vector4(u0, v1, 0f, 0f);
+            vert.uv0 = centreUv;
             vh.AddVert(vert);
             vh.AddTriangle(i, i + 1, i + 2);
             vh.AddTriangle(i, i + 2, i + 3);

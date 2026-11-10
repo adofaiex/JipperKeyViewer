@@ -176,6 +176,11 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public float RainDotLength = 12f;
         public float RainGapLength = 8f;
         public float RainFadePx = 40f;
+        public bool EnableRainGlow;
+        public bool RainGlowFollowBody = true;
+        public Color RainGlowColor = Color.white;
+        public float RainGlowRange = 20f;
+        public float RainGlowOpacity = 0.7f;
         public bool EnableRainForRow1 = true;
         public bool EnableRainForRow2 = true;
         public bool EnableRainForRow3 = true;
@@ -723,6 +728,9 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.GlowFollowBodyPressed = true;
             node.GlowSizePressed = 20f;
             node.GlowOpacityPressed = 0.7f;
+            node.RainGlowFollowBody = true;
+            node.RainGlowRange = 20f;
+            node.RainGlowOpacity = 0.7f;
             // ---- 1.7.2-era sentinel (compat audit C2, FIXED). The 22 fields below verifiably
             // existed at 1.7.2 and 1.7.2's field-mode writer serialized EVERY one of them on every
             // node — so their presence with any value is proof the node was written by 1.7.2 or
@@ -1379,6 +1387,12 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool GhostRainOutlineEnabled;
         public float[] GhostRainOutlineColor;
         public float GhostRainOutlineWidth = 2f;
+        public bool UseCustomRainGlow;
+        public bool RainGlowEnabled;
+        public bool RainGlowFollowBody = true;
+        public float[] RainGlowColor;
+        public float RainGlowRange = 20f;
+        public float RainGlowOpacity = 0.7f;
         // Per-node GHOST rain shape/offset params: off → ghost shares the node's normal rain
         // overrides (and the ghost row fallbacks); on → fully independent. /
         // 节点级鬼雨形状/偏移参数：关闭 → 鬼雨共用节点的普通雨覆盖（及鬼雨排回退）；开启 → 完全独立。

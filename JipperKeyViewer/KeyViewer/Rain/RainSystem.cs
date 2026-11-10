@@ -95,10 +95,13 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 路径经编辑器 apply 时会重建）。</summary>
         private bool cachedDottedToggle;
         private int cachedNodeDottedCount = -1;
+        private bool cachedRainGlowToggle;
+        private int cachedRainGlowNodeCount = -1;
         /// <summary>Worst-case vertices one drop can emit under the given dotted possibility. Pure
         /// so the Harness can pin the arithmetic. / 给定点状可能性时单滴的最坏顶点数。纯函数，
         /// 供 Harness 锁死算术。</summary>
-        internal static int WorstRainVertsPerDrop(bool dottedPossible) => 4 * 3 * (dottedPossible ? 24 : 1);
+        internal static int WorstRainVertsPerDrop(bool dottedPossible, bool glowPossible)
+            => 4 * (glowPossible ? 4 : 3) * (dottedPossible ? 24 : 1);
         /// <summary>Global live-drop ceiling implied by the vertex budget. With dotted possible
         /// (288 verts/drop) that is 208 drops system-wide; plain drops (12) allow 5000 — far above
         /// normal play (~16 drops/key) and only reachable in the pathological regimes the per-key
@@ -232,7 +235,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 SameCached(cachedStartY3, settings.Data.RainStartYRow3) && SameCached(cachedGhostStartY1, settings.Data.GhostRainStartYRow1) &&
                 SameCached(cachedGhostStartY2, settings.Data.GhostRainStartYRow2) && SameCached(cachedGhostStartY3, settings.Data.GhostRainStartYRow3) &&
                 cachedDottedToggle == settings.Data.EnableRainDotted &&
-                cachedNodeDottedCount == (settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1))
+                cachedNodeDottedCount == (settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1) &&
+                cachedRainGlowToggle == settings.Data.EnableRainGlow &&
+                cachedRainGlowNodeCount == (settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1))
                 return;
             // Floor speeds and heights: typed values are stored unclamped, and a zero/negative
             // speed never lifts the drop past the track top (y stays <= height forever) — with
@@ -337,11 +342,26 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     }
                 }
             }
-            worstRainVertsPerDrop = WorstRainVertsPerDrop(dottedPossible);
+            bool glowPossible = settings.Data.EnableRainGlow;
+            if (!glowPossible && settings.Data.CustomNodes != null)
+            {
+                for (int i = 0; i < settings.Data.CustomNodes.Count; i++)
+                {
+                    FmNode n = settings.Data.CustomNodes[i];
+                    if (n != null && n.UseCustomRainGlow && n.RainGlowEnabled)
+                    {
+                        glowPossible = true;
+                        break;
+                    }
+                }
+            }
+            worstRainVertsPerDrop = WorstRainVertsPerDrop(dottedPossible, glowPossible);
             // Record the gate inputs LAST — if this body throws midway the next frame retries it.
             // 最后记录缓存门输入——本体中途抛出时下一帧会重试。
             cachedDottedToggle = settings.Data.EnableRainDotted;
             cachedNodeDottedCount = settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1;
+            cachedRainGlowToggle = settings.Data.EnableRainGlow;
+            cachedRainGlowNodeCount = settings.Data.CustomNodes != null ? settings.Data.CustomNodes.Count : -1;
             cachedRainSpeed1 = settings.Data.RainSpeedRow1;
             cachedRainSpeed2 = settings.Data.RainSpeedRow2;
             cachedRainSpeed3 = settings.Data.RainSpeedRow3;
@@ -759,6 +779,22 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     changed |= rawRain.outlineWidth != ow;
                     rawRain.outlineWidth = ow;
                 }
+                if (cn.UseCustomRainGlow)
+                {
+                    bool enabled = cn.RainGlowEnabled;
+                    changed |= rawRain.glowEnabled != enabled;
+                    rawRain.glowEnabled = enabled;
+                    float range = Mathf.Max(0f, cn.RainGlowRange);
+                    changed |= rawRain.glowRange != range;
+                    rawRain.glowRange = range;
+                    float opacity = Mathf.Clamp01(cn.RainGlowOpacity);
+                    changed |= rawRain.glowOpacity != opacity;
+                    rawRain.glowOpacity = opacity;
+                    bool followBody = cn.RainGlowFollowBody;
+                    Color wantedGlow = followBody ? rawRain.mainColor : KeyViewer.NodeColor(cn.RainGlowColor, rawRain.mainColor);
+                    changed |= rawRain.glowColor != wantedGlow;
+                    rawRain.glowColor = followBody ? rawRain.mainColor : KeyViewer.NodeColor(cn.RainGlowColor, rawRain.mainColor);
+                }
             }
             else
             {
@@ -989,6 +1025,10 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 r.outlineEnabled = false;
                 r.outlineColor = default;
                 r.outlineWidth = 0f;
+                r.glowEnabled = false;
+                r.glowColor = default;
+                r.glowRange = 0f;
+                r.glowOpacity = 0.7f;
                 r.outlineCornerRadius = 0f;
                 r.outlineSides = 0;
                 r.dotted = false;
@@ -1175,6 +1215,12 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 ? SanitizeRainGeometry(settings.Data.RainOutlineCornerRadius, 0f, 0f, 20f)
                 : 0f;
             rawRain.outlineSides = Mathf.Clamp(settings.Data.RainOutlineSides, 0, 2);
+            rawRain.glowEnabled = settings.Data.EnableRainGlow;
+            rawRain.glowRange = SanitizeRainGeometry(settings.Data.RainGlowRange, 20f, 0f, 50f);
+            rawRain.glowOpacity = Mathf.Clamp01(SanitizeRowFloat(settings.Data.RainGlowOpacity, 0.7f));
+            rawRain.glowColor = settings.Data.RainGlowFollowBody
+                ? rawRain.mainColor
+                : settings.Data.RainGlowColor;
             rawRain.dotted = settings.Data.EnableRainDotted;
             rawRain.dotLength = settings.Data.EnableRainDotted
                 ? SanitizeRainGeometry(settings.Data.RainDotLength, 12f, 1f, 100f) : 0f;
@@ -1200,6 +1246,15 @@ namespace JipperKeyViewer.KeyViewer.Rain
                         rawRain.outlineSides = Mathf.Clamp(node.RainBorderSides, 0, 2);
                     if (node.UseCustomRainDotted)
                         ApplyNodeDotted(rawRain, node.RainDotLength, node.RainGapLength);
+                    if (node.UseCustomRainGlow)
+                    {
+                        rawRain.glowEnabled = node.RainGlowEnabled;
+                        rawRain.glowRange = SanitizeRainGeometry(node.RainGlowRange, 20f, 0f, 50f);
+                        rawRain.glowOpacity = Mathf.Clamp01(SanitizeRowFloat(node.RainGlowOpacity, 0.7f));
+                        rawRain.glowColor = node.RainGlowFollowBody
+                            ? rawRain.mainColor
+                            : KeyViewer.NodeColor(node.RainGlowColor, rawRain.glowColor);
+                    }
                 }
             }
 

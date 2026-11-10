@@ -379,6 +379,48 @@ namespace JipperKeyViewer.KeyViewer
                 }
             }
 
+            bool newRainGlow = GUILayout.Toggle(Settings.Data.EnableRainGlow, I18n.Tr("rain_glow"));
+            if (newRainGlow != Settings.Data.EnableRainGlow)
+            {
+                Settings.Data.EnableRainGlow = newRainGlow;
+                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                SaveSettingsFromGui();
+            }
+            if (Settings.Data.EnableRainGlow)
+            {
+                bool newGlowFollow = GUILayout.Toggle(Settings.Data.RainGlowFollowBody, I18n.Tr("rain_glow_follow"));
+                if (newGlowFollow != Settings.Data.RainGlowFollowBody)
+                {
+                    Settings.Data.RainGlowFollowBody = newGlowFollow;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+                if (!Settings.Data.RainGlowFollowBody)
+                {
+                    Color newGlowColor = DrawColorPicker(I18n.Tr("rain_glow_color"), Settings.Data.RainGlowColor, Color.white);
+                    if (newGlowColor != Settings.Data.RainGlowColor)
+                    {
+                        Settings.Data.RainGlowColor = newGlowColor;
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                        SaveSettingsFromGui();
+                    }
+                }
+                float newGlowRange = FloatSliderField(I18n.Tr("rain_glow_range"), Settings.Data.RainGlowRange, 0f, 50f, "F0");
+                if (!Mathf.Approximately(newGlowRange, Settings.Data.RainGlowRange))
+                {
+                    Settings.Data.RainGlowRange = newGlowRange;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+                float newGlowOpacity = FloatSliderField(I18n.Tr("rain_glow_opacity"), Settings.Data.RainGlowOpacity * 100f, 0f, 100f, "F0");
+                if (!Mathf.Approximately(newGlowOpacity, Settings.Data.RainGlowOpacity * 100f))
+                {
+                    Settings.Data.RainGlowOpacity = Mathf.Clamp01(newGlowOpacity / 100f);
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    SaveSettingsFromGui();
+                }
+            }
+
             GUILayout.Label(I18n.Tr("rain_start_y") + ":");
             // Start-Y is read live at render time — sliders apply to existing drops directly. It
             // still persists through the debounced save like every other slider on this page: the

@@ -67,6 +67,11 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public bool outlineEnabled;
         public Color outlineColor;
         public float outlineWidth;
+        /// <summary>Optional Quartz-style soft glow emitted behind the drop body / 可选的 Quartz 风格雨滴柔光，绘制在本体之下</summary>
+        public bool glowEnabled;
+        public Color glowColor = Color.white;
+        public float glowRange;
+        public float glowOpacity = 0.7f;
         /// <summary>Optional rounded outline corner radius (0 = square) / 可选圆角描边半径</summary>
         public float outlineCornerRadius;
         /// <summary>0 = all, 1 = vertical, 2 = horizontal / 描边方向</summary>

@@ -673,6 +673,19 @@ namespace JipperKeyViewer.KeyViewer
             n.RainOutlineWidth = row == 1 ? d.RainOutlineWidthRow1 : row == 2 ? d.RainOutlineWidthRow2 : d.RainOutlineWidthRow3;
         }
 
+        /// <summary>Seed a node's per-node rain glow from the global glow settings. /
+        /// 用全局雨滴光效设置为节点级光效做种子。</summary>
+        private void SeedRainGlowFromGlobals(FmNode n)
+        {
+            ProfileData d = Settings.Data;
+            n.RainGlowEnabled = d.EnableRainGlow;
+            n.RainGlowFollowBody = d.RainGlowFollowBody;
+            Color c = d.RainGlowFollowBody ? rainSystem.GetRainColor(CustomRainRowByte(n)) : d.RainGlowColor;
+            n.RainGlowColor = new[] { c.r, c.g, c.b, c.a };
+            n.RainGlowRange = d.RainGlowRange;
+            n.RainGlowOpacity = d.RainGlowOpacity;
+        }
+
         /// <summary>Seed a node's per-node GHOST rain shadow from its selected ghost rain row. /
         /// 用节点所选排的鬼雨阴影设置为其节点级鬼雨阴影做种子。</summary>
         private static void SeedGhostRainShadowFromRow(FmNode n)
@@ -3643,6 +3656,31 @@ namespace JipperKeyViewer.KeyViewer
                         // 见 DrawEditorFloatField。
                         EditorPropertyChanged();
                     }, "fm_help_rain_dotted");
+                }
+                DrawEditorToggle(I18n.Tr("fm_rain_glow_custom"), first.UseCustomRainGlow, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseCustomRainGlow = v;
+                        if (v) SeedRainGlowFromGlobals(n);
+                    }
+                }, "fm_help_rain_glow");
+                if (first.UseCustomRainGlow)
+                {
+                    DrawEditorToggle(I18n.Tr("fm_rain_glow"), first.RainGlowEnabled, v => { foreach (FmNode n in editorSelection) n.RainGlowEnabled = v; }, "fm_help_rain_glow");
+                    DrawEditorToggle(I18n.Tr("fm_rain_glow_follow_body"), first.RainGlowFollowBody, v => { foreach (FmNode n in editorSelection) n.RainGlowFollowBody = v; });
+                    if (!first.RainGlowFollowBody)
+                        DrawEditorColorField(I18n.Tr("fm_rain_glow_color"), first.RainGlowColor, Color.white, arr => { foreach (FmNode n in editorSelection) n.RainGlowColor = arr; });
+                    DrawEditorFloatField(I18n.Tr("fm_rain_glow_range"), "fme_rgr_" + first.Id, n => n.RainGlowRange, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainGlowRange = Mathf.Clamp(v, 0f, 50f);
+                        EditorPropertyChanged();
+                    }, "fm_help_rain_glow");
+                    DrawEditorPercentField(I18n.Tr("fm_rain_glow_opacity"), "fme_rgo_" + first.Id, n => n.RainGlowOpacity, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainGlowOpacity = Mathf.Clamp01(v);
+                        EditorPropertyChanged();
+                    }, "fm_help_rain_glow");
                 }
                 // Per-node GHOST rain shadow/outline — only meaningful with a ghost key bound. /
                 // 节点级鬼雨阴影/描边——仅在绑定了鬼键时有意义。

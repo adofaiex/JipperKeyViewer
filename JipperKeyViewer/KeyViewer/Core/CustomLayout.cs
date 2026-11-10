@@ -593,12 +593,15 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainColorBottom = SanitizeNodeColor(node.RainColorBottom);
                 node.RainShadowColor = SanitizeNodeColor(node.RainShadowColor);
                 node.RainOutlineColor = SanitizeNodeColor(node.RainOutlineColor);
+                node.RainGlowColor = SanitizeNodeColor(node.RainGlowColor);
                 node.GhostRainShadowColor = SanitizeNodeColor(node.GhostRainShadowColor);
                 node.GhostRainOutlineColor = SanitizeNodeColor(node.GhostRainOutlineColor);
                 node.PressAnimScale = float.IsNaN(node.PressAnimScale) ? 0.9f : Mathf.Clamp(node.PressAnimScale, 0.3f, 2f);
                 node.RainShadowOffsetX = float.IsNaN(node.RainShadowOffsetX) ? 3f : Mathf.Clamp(node.RainShadowOffsetX, -50f, 50f);
                 node.RainShadowOffsetY = float.IsNaN(node.RainShadowOffsetY) ? -3f : Mathf.Clamp(node.RainShadowOffsetY, -50f, 50f);
                 node.RainOutlineWidth = float.IsNaN(node.RainOutlineWidth) ? 2f : Mathf.Clamp(node.RainOutlineWidth, 0f, 50f);
+                node.RainGlowRange = float.IsNaN(node.RainGlowRange) || float.IsInfinity(node.RainGlowRange) ? 20f : Mathf.Clamp(node.RainGlowRange, 0f, 50f);
+                node.RainGlowOpacity = float.IsNaN(node.RainGlowOpacity) || float.IsInfinity(node.RainGlowOpacity) ? 0.7f : Mathf.Clamp01(node.RainGlowOpacity);
                 // The per-node geometry trio was the ONLY rain field left unsanitized — every other
                 // Rain*/GhostRain* value above gets NaN/Inf scrubbed and clamped. These three reach
                 // RawRain.UpdateLocation raw, and there the failure is not "a wrong number": a huge
