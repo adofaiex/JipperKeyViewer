@@ -72,10 +72,29 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public Color glowColor = Color.white;
         public float glowRange;
         public float glowOpacity = 0.7f;
+        /// <summary>Optional per-drop sprite override from a rain image list; null = legacy quad. /
+        /// 来自雨滴贴图列表的可选精灵覆盖；null = 旧矩形。</summary>
+        public Sprite sprite;
+        /// <summary>Per-node sprite transform (sprite drops only), sampled from the node's eased
+        /// press/release values at creation. Scale is a MULTIPLIER: 1 = natural size and is the
+        /// neutral value the renderer tests against — 0 must never be the default here, or every
+        /// sprite drop without a transform (ghost drops, nodes with the feature off) would be
+        /// clamped to 5% in the transformed path. /
+        /// 逐滴贴图变换（仅贴图雨滴），创建时按节点缓动的按下/松开值取样。缩放是**乘数**：
+        /// 1 = 原始尺寸，也是渲染器判定的中性值——默认值绝不能是 0，否则一切没有变换的贴图
+        /// 雨滴（鬼雨、未开启该功能的节点）都会在变换路径里被钳到 5%。</summary>
+        public float spriteScale = 1f;
+        public float spriteOffsetX;
+        public float spriteOffsetY;
+        public float spriteRotation;
         /// <summary>Optional rounded outline corner radius (0 = square) / 可选圆角描边半径</summary>
         public float outlineCornerRadius;
         /// <summary>0 = all, 1 = vertical, 2 = horizontal / 描边方向</summary>
         public int outlineSides;
+        /// <summary>0 = Up (legacy), 1 = Down, 2 = Left, 3 = Right. Rect math stays in
+        /// RainSystem; this only records the resolved direction for renderers that need it. /
+        /// 0=上（旧行为），1=下，2=左，3=右。矩形数学留在 RainSystem；该字段供需要方向的渲染器读取。</summary>
+        public int direction;
         /// <summary>Optional dotted trail pattern / 可选点状轨迹参数</summary>
         public bool dotted;
         public float dotLength;

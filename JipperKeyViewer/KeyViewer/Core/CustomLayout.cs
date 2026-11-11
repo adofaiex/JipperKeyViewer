@@ -472,6 +472,12 @@ namespace JipperKeyViewer.KeyViewer
                 // NaN 永不成立，于是该层还会每帧重新标脏。
                 node.CornerRadius = float.IsNaN(node.CornerRadius) || float.IsInfinity(node.CornerRadius) ? 0f : Mathf.Max(0f, node.CornerRadius);
                 node.BorderThickness = float.IsNaN(node.BorderThickness) || float.IsInfinity(node.BorderThickness) ? 0f : Mathf.Max(0f, node.BorderThickness);
+                node.RotationX = float.IsNaN(node.RotationX) || float.IsInfinity(node.RotationX) ? 0f : Mathf.Clamp(node.RotationX, -180f, 180f);
+                node.RotationY = float.IsNaN(node.RotationY) || float.IsInfinity(node.RotationY) ? 0f : Mathf.Clamp(node.RotationY, -180f, 180f);
+                node.RotationZ = float.IsNaN(node.RotationZ) || float.IsInfinity(node.RotationZ) ? 0f : Mathf.Clamp(node.RotationZ, -180f, 180f);
+                node.RotationXPressed = float.IsNaN(node.RotationXPressed) || float.IsInfinity(node.RotationXPressed) ? 0f : Mathf.Clamp(node.RotationXPressed, -180f, 180f);
+                node.RotationYPressed = float.IsNaN(node.RotationYPressed) || float.IsInfinity(node.RotationYPressed) ? 0f : Mathf.Clamp(node.RotationYPressed, -180f, 180f);
+                node.RotationZPressed = float.IsNaN(node.RotationZPressed) || float.IsInfinity(node.RotationZPressed) ? 0f : Mathf.Clamp(node.RotationZPressed, -180f, 180f);
                 // The 1.7.2 text outline/shadow block. These are per-node overrides of the GLOBAL
                 // text style, pushed into the cached font material by ApplyFontMaterial — a NaN
                 // outline width or shadow offset reaches the material properties and the glyph
@@ -585,12 +591,25 @@ namespace JipperKeyViewer.KeyViewer
                 node.TextGradientRight = SanitizeNodeColor(node.TextGradientRight);
                 node.TextGradientLeftPressed = SanitizeNodeColor(node.TextGradientLeftPressed);
                 node.TextGradientRightPressed = SanitizeNodeColor(node.TextGradientRightPressed);
+                node.TextGradientTopLeft = SanitizeNodeColor(node.TextGradientTopLeft);
+                node.TextGradientTopRight = SanitizeNodeColor(node.TextGradientTopRight);
+                node.TextGradientBottomLeft = SanitizeNodeColor(node.TextGradientBottomLeft);
+                node.TextGradientBottomRight = SanitizeNodeColor(node.TextGradientBottomRight);
                 node.CountTextGradientLeft = SanitizeNodeColor(node.CountTextGradientLeft);
                 node.CountTextGradientRight = SanitizeNodeColor(node.CountTextGradientRight);
                 node.CountTextGradientLeftPressed = SanitizeNodeColor(node.CountTextGradientLeftPressed);
                 node.CountTextGradientRightPressed = SanitizeNodeColor(node.CountTextGradientRightPressed);
+                node.CountTextGradientTopLeft = SanitizeNodeColor(node.CountTextGradientTopLeft);
+                node.CountTextGradientTopRight = SanitizeNodeColor(node.CountTextGradientTopRight);
+                node.CountTextGradientBottomLeft = SanitizeNodeColor(node.CountTextGradientBottomLeft);
+                node.CountTextGradientBottomRight = SanitizeNodeColor(node.CountTextGradientBottomRight);
                 node.RainColorTop = SanitizeNodeColor(node.RainColorTop);
                 node.RainColorBottom = SanitizeNodeColor(node.RainColorBottom);
+                node.RainColorTopPressed = SanitizeNodeColor(node.RainColorTopPressed);
+                node.RainColorBottomPressed = SanitizeNodeColor(node.RainColorBottomPressed);
+                node.BackgroundBlurRadius = float.IsNaN(node.BackgroundBlurRadius) || float.IsInfinity(node.BackgroundBlurRadius) ? 8f : Mathf.Clamp(node.BackgroundBlurRadius, 0f, 64f);
+                node.BackgroundBlurVibrancy = float.IsNaN(node.BackgroundBlurVibrancy) || float.IsInfinity(node.BackgroundBlurVibrancy) ? 1f : Mathf.Clamp(node.BackgroundBlurVibrancy, 0f, 2f);
+                node.RainSprites?.RemoveAll(r => r == null || string.IsNullOrWhiteSpace(r.Path) || r.Count <= 0);
                 node.RainShadowColor = SanitizeNodeColor(node.RainShadowColor);
                 node.RainOutlineColor = SanitizeNodeColor(node.RainOutlineColor);
                 node.RainGlowColor = SanitizeNodeColor(node.RainGlowColor);
@@ -621,6 +640,38 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainWidth = float.IsNaN(node.RainWidth) || float.IsInfinity(node.RainWidth) ? 0f : Mathf.Clamp(node.RainWidth, 0f, 2000f);
                 node.RainHeight = float.IsNaN(node.RainHeight) || float.IsInfinity(node.RainHeight) ? 0f : Mathf.Clamp(node.RainHeight, 0f, 2000f);
                 node.RainSpeed = float.IsNaN(node.RainSpeed) || float.IsInfinity(node.RainSpeed) ? 0f : Mathf.Clamp(node.RainSpeed, 0f, 5000f);
+                node.RainWidthPressed = float.IsNaN(node.RainWidthPressed) || float.IsInfinity(node.RainWidthPressed) ? 0f : Mathf.Clamp(node.RainWidthPressed, 0f, 2000f);
+                node.RainHeightPressed = float.IsNaN(node.RainHeightPressed) || float.IsInfinity(node.RainHeightPressed) ? 0f : Mathf.Clamp(node.RainHeightPressed, 0f, 2000f);
+                node.RainSpeedPressed = float.IsNaN(node.RainSpeedPressed) || float.IsInfinity(node.RainSpeedPressed) ? 0f : Mathf.Clamp(node.RainSpeedPressed, 0f, 5000f);
+                // Eased pressed-rain transition times: ms, 0 = instant. A NaN duration would make
+                // the tween's (now - edge) / duration NaN, and KvEasing.Ease would hand NaN on to
+                // Mathf.Lerp — both endpoints poisoned for every drop born during that window. /
+                // 缓动按下雨滴的过渡时长：毫秒，0 = 即时。NaN 时长会让补间的 (now - edge) / duration
+                // 变成 NaN，KvEasing.Ease 再把 NaN 交给 Mathf.Lerp——该窗口内出生的每一滴都会带毒。
+                node.RainWidthDurPress = float.IsNaN(node.RainWidthDurPress) || float.IsInfinity(node.RainWidthDurPress) ? 0f : Mathf.Clamp(node.RainWidthDurPress, 0f, 2000f);
+                node.RainWidthDurRelease = float.IsNaN(node.RainWidthDurRelease) || float.IsInfinity(node.RainWidthDurRelease) ? 0f : Mathf.Clamp(node.RainWidthDurRelease, 0f, 2000f);
+                node.RainHeightDurPress = float.IsNaN(node.RainHeightDurPress) || float.IsInfinity(node.RainHeightDurPress) ? 0f : Mathf.Clamp(node.RainHeightDurPress, 0f, 2000f);
+                node.RainHeightDurRelease = float.IsNaN(node.RainHeightDurRelease) || float.IsInfinity(node.RainHeightDurRelease) ? 0f : Mathf.Clamp(node.RainHeightDurRelease, 0f, 2000f);
+                node.RainSpeedDurPress = float.IsNaN(node.RainSpeedDurPress) || float.IsInfinity(node.RainSpeedDurPress) ? 0f : Mathf.Clamp(node.RainSpeedDurPress, 0f, 2000f);
+                node.RainSpeedDurRelease = float.IsNaN(node.RainSpeedDurRelease) || float.IsInfinity(node.RainSpeedDurRelease) ? 0f : Mathf.Clamp(node.RainSpeedDurRelease, 0f, 2000f);
+                node.RainColorDurPress = float.IsNaN(node.RainColorDurPress) || float.IsInfinity(node.RainColorDurPress) ? 0f : Mathf.Clamp(node.RainColorDurPress, 0f, 2000f);
+                node.RainColorDurRelease = float.IsNaN(node.RainColorDurRelease) || float.IsInfinity(node.RainColorDurRelease) ? 0f : Mathf.Clamp(node.RainColorDurRelease, 0f, 2000f);
+                // Sprite transform: scale 0 means "natural size" (1.0 at resolution), offsets px,
+                // rotation degrees. A NaN scale would reach the merged rain mesh as NaN vertex
+                // positions (the renderer's IsFinite guard would drop the drop, but the stored
+                // value would stay poisoned). / 贴图变换：缩放 0 = 原始尺寸（解析时按 1.0），
+                // 偏移像素、旋转角度。NaN 缩放会以 NaN 顶点位置到达合并雨滴 mesh（渲染器的
+                // IsFinite 守卫会丢掉该截，但存储值仍是毒值）。
+                node.RainSpriteScale = float.IsNaN(node.RainSpriteScale) || float.IsInfinity(node.RainSpriteScale) ? 0f : Mathf.Clamp(node.RainSpriteScale, 0f, 10f);
+                node.RainSpriteScalePressed = float.IsNaN(node.RainSpriteScalePressed) || float.IsInfinity(node.RainSpriteScalePressed) ? 0f : Mathf.Clamp(node.RainSpriteScalePressed, 0f, 10f);
+                node.RainSpriteOffsetX = float.IsNaN(node.RainSpriteOffsetX) || float.IsInfinity(node.RainSpriteOffsetX) ? 0f : Mathf.Clamp(node.RainSpriteOffsetX, -200f, 200f);
+                node.RainSpriteOffsetY = float.IsNaN(node.RainSpriteOffsetY) || float.IsInfinity(node.RainSpriteOffsetY) ? 0f : Mathf.Clamp(node.RainSpriteOffsetY, -200f, 200f);
+                node.RainSpriteRotation = float.IsNaN(node.RainSpriteRotation) || float.IsInfinity(node.RainSpriteRotation) ? 0f : Mathf.Clamp(node.RainSpriteRotation, -180f, 180f);
+                node.RainSpriteOffsetXPressed = float.IsNaN(node.RainSpriteOffsetXPressed) || float.IsInfinity(node.RainSpriteOffsetXPressed) ? 0f : Mathf.Clamp(node.RainSpriteOffsetXPressed, -200f, 200f);
+                node.RainSpriteOffsetYPressed = float.IsNaN(node.RainSpriteOffsetYPressed) || float.IsInfinity(node.RainSpriteOffsetYPressed) ? 0f : Mathf.Clamp(node.RainSpriteOffsetYPressed, -200f, 200f);
+                node.RainSpriteRotationPressed = float.IsNaN(node.RainSpriteRotationPressed) || float.IsInfinity(node.RainSpriteRotationPressed) ? 0f : Mathf.Clamp(node.RainSpriteRotationPressed, -180f, 180f);
+                node.RainSpriteDurPress = float.IsNaN(node.RainSpriteDurPress) || float.IsInfinity(node.RainSpriteDurPress) ? 0f : Mathf.Clamp(node.RainSpriteDurPress, 0f, 2000f);
+                node.RainSpriteDurRelease = float.IsNaN(node.RainSpriteDurRelease) || float.IsInfinity(node.RainSpriteDurRelease) ? 0f : Mathf.Clamp(node.RainSpriteDurRelease, 0f, 2000f);
                 node.GhostRainShadowOffsetX = float.IsNaN(node.GhostRainShadowOffsetX) ? 3f : Mathf.Clamp(node.GhostRainShadowOffsetX, -50f, 50f);
                 node.GhostRainShadowOffsetY = float.IsNaN(node.GhostRainShadowOffsetY) ? -3f : Mathf.Clamp(node.GhostRainShadowOffsetY, -50f, 50f);
                 node.GhostRainOutlineWidth = float.IsNaN(node.GhostRainOutlineWidth) ? 2f : Mathf.Clamp(node.GhostRainOutlineWidth, 0f, 50f);
@@ -1013,6 +1064,56 @@ namespace JipperKeyViewer.KeyViewer
             keyShapeLayer.SetBackgroundGradient(key.shapeSlot, d.EnableFixedBackgroundGradient,
                 usePressed ? d.FixedBackgroundGradientTopPressed : d.FixedBackgroundGradientTop,
                 usePressed ? d.FixedBackgroundGradientBottomPressed : d.FixedBackgroundGradientBottom);
+        }
+
+        /// <summary>Re-apply the fixed-layout background-blur flags after a toggle/radius change.
+        /// In-place (no overlay rebuild) — the same convention as the gradient and glow
+        /// refreshers above. Custom layouts re-derive per-node flags in ApplyCustomShapeStyle
+        /// instead. / 全局开关或半径变化后就地重涂固定布局的背景模糊标记。就地刷新（不重建
+        /// 覆盖层）——与上方渐变/光效刷新器同一约定。自定义布局改为在 ApplyCustomShapeStyle
+        /// 中逐节点重推导。</summary>
+        internal void ApplyBackgroundBlurSettings()
+        {
+            if (IsCustomLayout || keyShapeLayer == null || Keys == null) return;
+            bool on = BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
+            for (int i = 0; i < Keys.Length; i++)
+            {
+                Key k = Keys[i];
+                if (k == null || k.shapeSlot < 0) continue;
+                keyShapeLayer.SetBlurEnabled(k.shapeSlot, on);
+                if (on)
+                    keyShapeLayer.SetBlurParams(k.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
+            }
+            // KPS/Total panels use explicit slots in the merged layer; they follow the same
+            // profile-level toggle. / KPS/Total 面板在合并层里用显式槽位；跟随同一 Profile 级开关。
+            ApplyFixedKeyBlurSlot(Kps);
+            ApplyFixedKeyBlurSlot(Total);
+        }
+
+        private void ApplyFixedKeyBlurSlot(Key key)
+        {
+            if (key == null || keyShapeLayer == null || key.shapeSlot < 0) return;
+            bool on = BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
+            keyShapeLayer.SetBlurEnabled(key.shapeSlot, on);
+            if (on)
+                keyShapeLayer.SetBlurParams(key.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
+        }
+
+        /// <summary>In-place re-apply of ONE custom node's background-blur flag/params — the
+        /// FreeMake editor's blur sliders use this so dragging radius never rebuilds the overlay.
+        /// A node whose runtime key is not built yet is a silent no-op (the build path derives
+        /// the same state in ApplyCustomShapeStyle). / 就地重涂**单个**自定义节点的背景模糊
+        /// 标记与参数——FreeMake 编辑器的模糊滑杆走这条路，拖动半径绝不重建覆盖层。运行时
+        /// 按键尚未构建时静默无操作（构建路径在 ApplyCustomShapeStyle 里推导同一状态）。</summary>
+        internal void ApplyCustomNodeBlur(FmNode node)
+        {
+            if (node == null || keyShapeLayer == null) return;
+            Key key = node.RuntimeKey;
+            if (key == null || key.shapeSlot < 0) return;
+            bool on = BlurMaterial != null && node.EnableBackgroundBlur;
+            keyShapeLayer.SetBlurEnabled(key.shapeSlot, on);
+            if (on)
+                keyShapeLayer.SetBlurParams(key.shapeSlot, node.BackgroundBlurRadius, node.BackgroundBlurVibrancy);
         }
 
         private void ApplyFixedOutlineGradients()
@@ -1434,6 +1535,53 @@ namespace JipperKeyViewer.KeyViewer
                 key.CustomImage = raw;
             }
             customImageRects[node] = rt;
+            ApplyImageCornerGradient(node, raw);
+        }
+
+        /// <summary>Attach/update/remove the four-corner gradient effect on an image node's
+        /// RawImage. Missing corner arrays degrade to white (no-op) — same convention as the
+        /// text corner gradient. Called at creation and from the editor's in-place colour commit;
+        /// never rebuilds the overlay. / 在图片节点的 RawImage 上挂载/更新/移除四角渐变效果。
+        /// 角色数组缺失退化为白色（无操作）——与文字四角渐变同一约定。创建时与编辑器就地取色
+        /// 提交时调用；从不重建覆盖层。</summary>
+        private void ApplyImageCornerGradient(FmNode node, RawImage raw)
+        {
+            if (node == null || raw == null) return;
+            KvImageCornerGradient effect = raw.GetComponent<KvImageCornerGradient>();
+            if (!node.UseImageCornerGradient)
+            {
+                if (effect != null) Destroy(effect);
+                return;
+            }
+            if (effect == null) effect = raw.gameObject.AddComponent<KvImageCornerGradient>();
+            effect.SetCorners(NodeCornerColor(node.ImageGradientTopLeft), NodeCornerColor(node.ImageGradientTopRight),
+                NodeCornerColor(node.ImageGradientBottomLeft), NodeCornerColor(node.ImageGradientBottomRight));
+        }
+
+        /// <summary>In-place refresh of one node's image corner gradient — the editor's colour
+        /// commit path (slider drags) calls this so a corner colour change never rebuilds the
+        /// overlay. Missing runtime image (node not built yet) is a silent no-op. /
+        /// 就地刷新单个节点的图片四角渐变——编辑器取色提交路径（滑杆拖动）调用此方法，使四角
+        /// 改色永不重建覆盖层。运行时图片缺失（节点尚未构建）时静默无操作。</summary>
+        internal void RefreshImageCornerGradient(FmNode node)
+        {
+            if (node == null || !customImageRects.TryGetValue(node, out RectTransform rt) || rt == null) return;
+            ApplyImageCornerGradient(node, rt.GetComponent<RawImage>());
+        }
+
+        /// <summary>One corner colour: null/short arrays fall back to white (untinted), matching
+        /// how the text corner gradient treats absent data. / 单个角色：null/短数组回退白色
+        /// （不染色），与文字四角渐变对缺失数据的处理一致。</summary>
+        internal static Color NodeCornerColor(float[] rgba)
+        {
+            const float def = 1f;
+            if (rgba == null || rgba.Length < 4) return new Color(def, def, def, def);
+            float r = rgba[0], g = rgba[1], b = rgba[2], a = rgba[3];
+            if (float.IsNaN(r) || float.IsInfinity(r)) r = def;
+            if (float.IsNaN(g) || float.IsInfinity(g)) g = def;
+            if (float.IsNaN(b) || float.IsInfinity(b)) b = def;
+            if (float.IsNaN(a) || float.IsInfinity(a)) a = def;
+            return new Color(r, g, b, a);
         }
 
         /// <summary>Place all image RawImages below the shape layers in stable Depth order.
@@ -1664,6 +1812,19 @@ namespace JipperKeyViewer.KeyViewer
             if (node.NodeType == 3) return;
             keyShapeLayer.SetCornerRadius(key.shapeSlot, node.CornerRadius);
             keyShapeLayer.SetBorderThickness(key.shapeSlot, node.BorderThickness);
+            bool pressed = key.isPressed;
+            Vector3 rotation = pressed && node.UsePressedRotation
+                ? new Vector3(node.RotationXPressed, node.RotationYPressed, node.RotationZPressed)
+                : new Vector3(node.RotationX, node.RotationY, node.RotationZ);
+            keyShapeLayer.SetRotation(key.shapeSlot, rotation);
+            // Per-node background blur: replaces this slot's background fill with the GrabPass
+            // blur window. Without a blur material (bundle missing) the flag stays off so no
+            // solid duplicate background is drawn. / 逐节点背景模糊：用 GrabPass 模糊窗口取代
+            // 该槽位的背景填充。无模糊材质（bundle 缺失）时标记保持关闭，绝不画出实心重复背景。
+            bool blur = BlurMaterial != null && node.EnableBackgroundBlur;
+            keyShapeLayer.SetBlurEnabled(key.shapeSlot, blur);
+            if (blur)
+                keyShapeLayer.SetBlurParams(key.shapeSlot, node.BackgroundBlurRadius, node.BackgroundBlurVibrancy);
         }
 
         /// <summary>A label/count opacity of 0 does not mean "make it invisible" — it means the

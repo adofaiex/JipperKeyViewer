@@ -519,6 +519,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 : (rain.isGhost ? ghostRowStartYs[ri] : rowStartYs[ri]) + rain.StartOffsetY;
             float travel = rain.anchoredPosition.Value.y - rain.startY;
             float ox = rain.HasOffsetX ? rain.OffsetXOverride : key.rainOffsetX;
+            int direction = Mathf.Clamp(rain.direction, 0, 3);
             float alignOffset = 0f;
             if (key.CustomNode != null)
             {
@@ -564,7 +565,125 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 topY = keyPos.y + (topY - keyPos.y) * s;
                 h *= s;
             }
-            rain.rect = new Rect(cx - w * 0.5f, topY - h, w, h);
+            // Horizontal directions mirror the vertical model, axis-swapped: the trail's LENGTH is
+            // h (the same motion-model length the Up direction uses), the cross-axis EXTENT is the
+            // drop's width w (centred vertically on the node), and the motion recycles by the same
+            // height track. The legacy Up path is byte-for-byte unchanged. /
+            // 水平方向是垂直模型的轴交换版：轨迹**长度**取 h（与 Up 方向同一运动模型长度），横轴
+            // **跨度**取雨滴宽度 w（以节点垂直居中），回收仍按同一 height 轨道。旧的向上路径逐字节
+            // 不变。
+            //
+            // The key root is built with pivot (0, 0.5) (CreateKey): `keyPos.x` is the node's LEFT
+            // EDGE and `keyPos.y` is its vertical CENTRE. The first cut wrote `keyPos.y + half`
+            // here, i.e. the TOP edge, and thereby shoved every horizontal trail up by half a node
+            // height — for a tall node the trail did not even intersect the node's side. Down had
+            // the mirrored mistake: it subtracted `(baseStart + container)` — the Up track's
+            // top-edge offset, which already equals node height + 2 — from the BOTTOM edge, landing
+            // a full node height too low, so its trail floated detached below the key instead of
+            // growing from it. / 按键根以 pivot (0, 0.5) 创建（CreateKey）：`keyPos.x` 是节点**左缘**、
+            // `keyPos.y` 是**垂直中心**。第一版在此写了 `keyPos.y + half`（即顶边），把每条水平
+            // 轨迹整体上移半个节点高——节点较高时轨迹甚至完全不与该节点的侧边相交。向下是镜像的
+            // 同一类错误：它从**底边**减去了 `(baseStart + container)`（Up 轨道的顶边偏移，其值
+            // 本就是节点高 + 2），结果低了整整一个节点高，轨迹悬在按键下方而不是从按键长出。
+            float crossCenterY = keyPos.y;
+            rain.rect = ComputeDirectionalRect(direction, cx, keyPos, key.keySize, w, h,
+                baseStart, travel, ox, topY, crossCenterY, RainContainerHeight);
+        }
+
+        /// <summary>The rect for one rain direction, as a pure function so the Harness can pin the
+        /// mapping without a Unity scene. The vertical Up/Down drops are centred horizontally on
+        /// `cx`; the horizontal Left/Right drops are centred vertically on `crossCenterY`. /
+        /// 单个雨滴方向的矩形，抽为纯函数使 Harness 无需 Unity 场景即可钉死该映射。垂直 Up/Down
+        /// 雨滴以 `cx` 水平居中；水平 Left/Right 雨滴以 `crossCenterY` 垂直居中。</summary>
+        internal static Rect ComputeDirectionalRect(int direction, float cx, Vector2 keyPos,
+            Vector2 keySize, float w, float h, float baseStart, float travel, float ox,
+            float topY, float crossCenterY, float containerHeight)
+        {
+            switch (direction)
+            {
+                case 1:
+                {
+                    // Up's near edge is `keyBottom + baseStart + container` = keyTop + 2 +
+                    // StartOffsetY for a custom node (baseStart carries the node height). Down
+                    // must start the same outward gap outside its OWN face: bottom edge − gap.
+                    // Subtracting (baseStart + container) straight from the bottom edge — what
+                    // the first cut did — removes node height + 2 there and leaves the trail a
+                    // FULL NODE HEIGHT too low, floating detached under the key. Using the TOP
+                    // edge (keyPos.y + half) as the start point cancels the node height baked
+                    // into baseStart; the rect then grows DOWNWARD from the bottom face,
+                    // mirroring Up. /
+                    // Up 的近端 = `keyBottom + baseStart + container`，对自定义节点即
+                    // keyTop + 2 + StartOffsetY（baseStart 里已含节点高）。Down 必须从**自己的**
+                    // 面（底边）向外留同样的间隙。第一版直接从底边减去 (baseStart + container)，
+                    // 等于多减了节点高 + 2，轨迹因此低了整整一个节点高、悬在按键下方。改从**顶边**
+                    //（keyPos.y + half）起算即可抵消 baseStart 烙入的节点高，矩形随后从底面
+                    //**向下**生长，与 Up 镜像。
+                    float downBottom = keyPos.y + keySize.y * 0.5f
+                        - baseStart - containerHeight - travel;
+                    return new Rect(cx - w * 0.5f, downBottom, w, h);
+                }
+                case 2:
+                    // Axis-swapped Up model: `travel` is the HEAD's distance from the node edge —
+                    // equal to the drawn length while the drop grows, still advancing after
+                    // release, then pinned once the head reaches the track end. Anchoring the HEAD
+                    // (not the near edge) is what makes a released drop fly on and slide out: the
+                    // near edge = head + h keeps moving away from the node. The first cut anchored
+                    // the near edge at the node and placed the far edge with `h` alone — the two
+                    // coincide only while growing, so on release the trail froze, and once the
+                    // pinned head let `h` shrink it RETRACTED back into the key: "the rain runs
+                    // back toward the key and vanishes". /
+                    // 轴交换的上方向模型：`travel` 是**头部**距节点边缘的距离——生长期间恰等于绘制
+                    // 长度，松开后继续推进，头部抵达轨道末端后钳定。锚定**头部**（而非近端）才能让
+                    // 松开后的雨滴继续飞离并滑出：近端 = 头部 + h 持续远离节点。第一版把近端锚在
+                    // 节点上、只用 `h` 摆远端——两者仅在生长期间重合，于是松开瞬间轨迹冻住，紧接
+                    // 着钳定的头部让 `h` 收缩，轨迹**倒退回按键里**，即「雨滴往按键方向缩回消失」。
+                    return new Rect(keyPos.x + ox - travel, crossCenterY - w * 0.5f, h, w);
+                case 3:
+                    // Mirrored: head = node's right edge + travel, near edge = head − h. /
+                    // 镜像：头部 = 节点右缘 + travel，近端 = 头部 − h。
+                    return new Rect(keyPos.x + keySize.x + ox + travel - h, crossCenterY - w * 0.5f, h, w);
+                default:
+                    return new Rect(cx - w * 0.5f, topY - h, w, h);
+            }
+        }
+
+        /// <summary>Resolve a node's rain direction. 0 = Up / 1 = Down / 2 = Left / 3 = Right;
+        /// anything else falls back to Up. / 解析节点的雨滴方向。0=上、1=下、2=左、3=右；
+        /// 其余值回退为上。</summary>
+        private static int ResolveRainDirection(Key key, bool isGhost)
+        {
+            FmNode node = key?.CustomNode;
+            if (node == null || isGhost) return 0;
+            return node.RainDirection >= 0 && node.RainDirection <= 3 ? node.RainDirection : 0;
+        }
+
+        /// <summary>Bake the node's pressed rain geometry into the drop, EASED per channel: each
+        /// of width/height/speed tweens from its current (released) value toward the pressed one
+        /// with its own press easing while the key is held, and back with its own release easing
+        /// on release. The drop samples the animated value at birth, so a stream born during the
+        /// transition visibly sweeps from the old geometry to the new. An empty ease name or a
+        /// zero duration collapses to the previous instant switch. Ghost rain carries no pressed
+        /// geometry. / 把节点的按下雨滴几何**逐通道缓动地**烙进雨滴：按住时宽度/高度/速度各自
+        /// 以自己的按压缓动从当前（常态）值趋向按下值，松开时以各自的松开缓动返回。雨滴在出生
+        /// 时刻对动画值取样，故过渡期间生成的雨流会肉眼可见地从旧几何扫到新几何。缓动名为空或
+        /// 时长为 0 时塌缩为此前的即时切换。鬼雨不携带按压几何。</summary>
+        private static void ApplyNodeRainPressParams(RawRain rawRain, Key key, bool isGhost)
+        {
+            FmNode node = key?.CustomNode;
+            if (node == null || isGhost || !node.UseRainPressParams) return;
+            bool pressed = key.isPressed;
+            if (node.RainWidthPressed > 0f)
+                rawRain.NodeWidth = Mathf.Lerp(rawRain.NodeWidth, node.RainWidthPressed,
+                    SampleRainEase(key, node.RainWidthEasePress, node.RainWidthDurPress,
+                        node.RainWidthEaseRelease, node.RainWidthDurRelease, pressed));
+            if (node.RainHeightPressed > 0f)
+                rawRain.NodeHeight = Mathf.Lerp(rawRain.NodeHeight, node.RainHeightPressed,
+                    SampleRainEase(key, node.RainHeightEasePress, node.RainHeightDurPress,
+                        node.RainHeightEaseRelease, node.RainHeightDurRelease, pressed));
+            if (node.RainSpeedPressed > 0f)
+                rawRain.NodeSpeed = Mathf.Lerp(rawRain.NodeSpeed, node.RainSpeedPressed,
+                    SampleRainEase(key, node.RainSpeedEasePress, node.RainSpeedDurPress,
+                        node.RainSpeedEaseRelease, node.RainSpeedDurRelease, pressed));
         }
 
         private void ReturnRawRainAndRemove(RawRain rain, Key key, int listIndex)
@@ -577,6 +696,12 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public void TriggerRainEffect(int keyIndex, Key key)
         {
             if (key == null) return;
+            // Record the press edge BEFORE any gating: the eased pressed-rain params anchor
+            // their tween to this moment, and it must exist even when this specific press
+            // spawns no drop (row disabled, budget gate, etc.). / 在任何闸门**之前**记录按下
+            // 边沿：按下雨滴参数的缓动以这一刻为锚点，即使本次按压因排开关/预算闸等原因
+            // 没有生成雨滴，锚点也必须存在。
+            key.rainPressEdgeTime = Time.unscaledTime;
             // Custom nodes carry both a per-node gate and the global row gate. / Custom 节点同时
             // 受逐节点开关和全局雨排开关约束。
             if (key.CustomNode != null)
@@ -592,7 +717,10 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         public void ReleaseRainEffect(int keyIndex, Key key)
         {
-            if (key == null || key.rainList.Count == 0) return;
+            if (key == null) return;
+            // Same edge-anchor rule as the press side. / 与按下侧同样的边沿锚点规则。
+            key.rainReleaseEdgeTime = Time.unscaledTime;
+            if (key.rainList.Count == 0) return;
             for (int i = key.rainList.Count - 1; i >= 0; i--)
             {
                 if (key.rainList[i].isGhost) continue;
@@ -614,6 +742,7 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public void TriggerGhostRain(int keyIndex, Key key)
         {
             if (key == null) return;
+            key.rainPressEdgeTime = Time.unscaledTime;
             if (key.CustomNode != null)
             {
                 if (!key.CustomNode.RainEnabled || !IsCustomRainRowEnabled(key.CustomNode, isGhost: true)) return;
@@ -626,7 +755,9 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
         public void ReleaseGhostRain(int keyIndex, Key key)
         {
-            if (key == null || key.rainList.Count == 0) return;
+            if (key == null) return;
+            key.rainReleaseEdgeTime = Time.unscaledTime;
+            if (key.rainList.Count == 0) return;
             for (int i = key.rainList.Count - 1; i >= 0; i--)
             {
                 if (key.rainList[i].isGhost)
@@ -701,10 +832,21 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// </summary>
         private static Color ResolveRainMainColor(Key key, Color fallback)
         {
-            return key.CustomNode != null && key.CustomNode.UseCustomRainColor
-                && key.CustomNode.RainColorBottom != null
-                ? KeyViewer.NodeColor(key.CustomNode.RainColorBottom, fallback)
+            FmNode node = key?.CustomNode;
+            if (node == null || !node.UseCustomRainColor) return fallback;
+            Color released = node.RainColorBottom != null
+                ? KeyViewer.NodeColor(node.RainColorBottom, fallback)
                 : fallback;
+            // Eased pressed colour: the drop samples the animated value at birth, so a trail
+            // born during the transition shows the colour mid-sweep instead of snapping. No
+            // pressed colour (or zero duration) = the previous instant behaviour. /
+            // 缓动的按下雨色：雨滴在出生时刻对动画值取样，故过渡期间出生的轨迹呈现扫动中途的
+            // 颜色而非瞬跳。无按下雨色（或零时长）= 此前的即时行为。
+            if (!node.UseRainColorPressed || node.RainColorBottomPressed == null) return released;
+            float e = SampleRainEase(key, node.RainColorEasePress, node.RainColorDurPress,
+                node.RainColorEaseRelease, node.RainColorDurRelease, key.isPressed);
+            Color pressed = KeyViewer.NodeColor(node.RainColorBottomPressed, fallback);
+            return Color.Lerp(released, pressed, e);
         }
 
         /// <summary>The TOP colour stop. Mirrors CreateRainDropForKey's assignment exactly: the
@@ -713,10 +855,33 @@ namespace JipperKeyViewer.KeyViewer.Rain
         /// 节点有双色本体渐变时用节点顶色，否则用底色（故单色雨滴保持单色）。</summary>
         private static Color ResolveRainTopColor(Key key, Color main)
         {
-            return key.CustomNode != null && key.CustomNode.UseCustomRainColor
-                && key.CustomNode.RainColorTop != null
-                ? KeyViewer.NodeColor(key.CustomNode.RainColorTop, main)
-                : main;
+            FmNode node = key?.CustomNode;
+            if (node == null || !node.UseCustomRainColor) return main;
+            Color released = node.RainColorTop != null ? KeyViewer.NodeColor(node.RainColorTop, main) : main;
+            if (!node.UseRainColorPressed || node.RainColorTopPressed == null) return released;
+            float e = SampleRainEase(key, node.RainColorEasePress, node.RainColorDurPress,
+                node.RainColorEaseRelease, node.RainColorDurRelease, key.isPressed);
+            Color pressed = KeyViewer.NodeColor(node.RainColorTopPressed, main);
+            return Color.Lerp(released, pressed, e);
+        }
+
+        /// <summary>Stateless eased progress of one pressed-rain channel toward its CURRENT
+        /// target (pressed while held, released when up): progress = (now - edge) / duration
+        /// through KvEasing. Anchors live on the Key and are recorded by Trigger/ReleaseRainEffect
+        /// before any gating. An unrecorded edge snaps to the target (a key held across an overlay
+        /// rebuild has no fresh edge); zero/invalid duration = the old instant switch. /
+        /// 单个按下雨滴通道朝**当前目标**（按住→按下值，松开→常态值）的无状态缓动进度：
+        /// progress = (now - edge) / duration 经 KvEasing。锚点在 Key 上，由
+        /// Trigger/ReleaseRainEffect 在任何闸门之前记录。未记录的边沿直接取目标（跨覆盖层重建
+        /// 按住的键没有新边沿）；零/非法时长 = 旧的即时切换。</summary>
+        private static float SampleRainEase(Key key, string easePress, float durPressMs, string easeRelease, float durReleaseMs, bool isPressed)
+        {
+            float anchor = isPressed ? key.rainPressEdgeTime : key.rainReleaseEdgeTime;
+            if (anchor < 0f) return isPressed ? 1f : 0f;
+            float dur = isPressed ? durPressMs : durReleaseMs;
+            if (float.IsNaN(dur) || float.IsInfinity(dur) || dur <= 0f) return 1f;
+            float t = (Time.unscaledTime - anchor) / (dur / 1000f);
+            return Util.KvEasing.Ease(isPressed ? easePress : easeRelease, t);
         }
 
         /// <summary>Apply the per-node rain shadow/outline overrides on top of whatever the row
@@ -1034,6 +1199,16 @@ namespace JipperKeyViewer.KeyViewer.Rain
                 r.dotted = false;
                 r.dotLength = 0f;
                 r.gapLength = 0f;
+                r.direction = 0;
+                // Neutral scale is 1 (natural size), not 0: the renderer treats "scale != 1" as
+                // "a transform is present", so a reset-to-0 record with a sprite would be drawn
+                // through the transformed path clamped to 5% — a tiny dot instead of the drop.
+                // / 中性缩放是 1（原始尺寸），不是 0：渲染器以「缩放 != 1」判定存在变换，故把
+                // 记录重置为 0 且带贴图时，会走进变换路径并被钳到 5%——一颗小点而不是雨滴。
+                r.spriteScale = 1f;
+                r.spriteOffsetX = 0f;
+                r.spriteOffsetY = 0f;
+                r.spriteRotation = 0f;
             }
             else
             {
@@ -1070,6 +1245,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
             r.anchoredPosition = null;
             r.isGhost = false;
             r.growing = false;
+            r.sprite = null;
+            // Neutral scale is 1 — see the matching comment in GetRawRain (0 would make the
+            // renderer take the transformed path and clamp a sprite drop to 5%).
+            // / 中性缩放为 1——见 GetRawRain 中对应注释（0 会让渲染器走变换路径并把贴图雨滴钳到 5%）。
+            r.spriteScale = 1f;
+            r.spriteOffsetX = 0f;
+            r.spriteOffsetY = 0f;
+            r.spriteRotation = 0f;
             rawRainPool.Push(r);
         }
 
@@ -1339,6 +1522,13 @@ namespace JipperKeyViewer.KeyViewer.Rain
 
             rawRain.isGhost = isGhost;
             rawRain.growing = true;
+            rawRain.direction = ResolveRainDirection(key, isGhost);
+            ApplyNodeRainPressParams(rawRain, key, isGhost);
+            if (!isGhost)
+            {
+                ApplyRainSpriteList(rawRain, key);
+                ApplyRainSpriteTransform(rawRain, key);
+            }
 
             // Hard ceiling on LIVE drops per key, independent of every setting. The height clamp
             // in SyncCachedSpeeds bounds the lifetime, but a fast key at an extreme speed with a
@@ -1400,6 +1590,95 @@ namespace JipperKeyViewer.KeyViewer.Rain
             rain.dotLength = 0f;
             rain.gapLength = 0f;
         }
+
+        /// <summary>Pick the ordered rain image for a new drop. Node lists win over the global
+        /// list; entries repeat by Count and the list restarts after every drop, matching the
+        /// documented sequence/random-cycle intent without allocating per drop. / 为新雨滴选取
+        /// 有序雨滴贴图。节点列表优先于全局列表；按 Count 重复并在每滴后从列表开头继续，
+        /// 不逐滴分配。</summary>
+        private void ApplyRainSpriteList(RawRain rawRain, Key key)
+        {
+            FmNode node = key?.CustomNode;
+            List<RainSpriteConfig> list = node != null && node.UseRainSpriteList
+                ? node.RainSprites
+                : settings.Data.UseRainSpriteList ? settings.Data.RainSprites : null;
+            if (list == null || list.Count == 0)
+            {
+                rawRain.sprite = null;
+                return;
+            }
+            int total = 0;
+            for (int i = 0; i < list.Count; i++)
+            {
+                RainSpriteConfig entry = list[i];
+                if (entry != null && !string.IsNullOrWhiteSpace(entry.Path) && entry.Count > 0)
+                    total += entry.Count;
+            }
+            if (total <= 0)
+            {
+                rawRain.sprite = null;
+                return;
+            }
+            int slot = key.rainList.Count % total;
+            for (int i = 0; i < list.Count; i++)
+            {
+                RainSpriteConfig entry = list[i];
+                if (entry == null || string.IsNullOrWhiteSpace(entry.Path) || entry.Count <= 0)
+                    continue;
+                if (slot >= entry.Count)
+                {
+                    slot -= entry.Count;
+                    continue;
+                }
+                string resolved = KeyViewer.ResolveCustomImagePath(entry.Path);
+                Sprite sprite = string.IsNullOrEmpty(resolved)
+                    ? null
+                    : Util.KvImageLoader.GetOrCreateRainSprite(resolved);
+                rawRain.sprite = sprite;
+                return;
+            }
+            rawRain.sprite = null;
+        }
+
+        /// <summary>Resolve the per-node sprite transform for a new drop: scale / offset /
+        /// rotation of the image inside the drop's trail rect, eased between the node's idle and
+        /// pressed values with its own press/release easing pair (sampled at birth, like every
+        /// other eased rain channel). Applies to SPRITE drops only; solid trails keep their
+        /// motion-model geometry. Non-finite inputs degrade to "no transform". /
+        /// 为新雨滴解析节点级贴图变换：贴图在轨迹矩形内的缩放/偏移/旋转，按节点自有按压/松开
+        /// 缓动组在常态值与按下值间过渡（与其它缓动雨滴通道一样在出生时刻取样）。仅作用于
+        /// **贴图**雨滴；实心轨迹保持其运动模型几何。非有限输入一律退化为「无变换」。</summary>
+        private static void ApplyRainSpriteTransform(RawRain rawRain, Key key)
+        {
+            FmNode node = key?.CustomNode;
+            if (node == null || !node.UseRainSpriteTransform || rawRain.sprite == null) return;
+            float e = SampleRainEase(key, node.RainSpriteEasePress, node.RainSpriteDurPress,
+                node.RainSpriteEaseRelease, node.RainSpriteDurRelease, key.isPressed);
+            // Scale is a multiplier where <= 0 means 1.0 ("keep the natural size"), which is the
+            // only coherent default: a user who enables the transform and only types a ROTATION
+            // must get a normal-sized rotated drop, not one clamped to 5% — that is exactly what
+            // "0 = no transform" produced once any other channel was non-zero. Offsets default
+            // to 0 (neutral) and rotation to 0 degrees. Clamps keep a mistyped value from
+            // exploding the merged mesh. / 缩放是乘数，<= 0 表示 1.0（"保持原始尺寸"）——这是唯一
+            // 自洽的默认值：用户开启变换后只填**旋转**时必须得到正常大小的旋转雨滴，而不是被
+            // 钳到 5% 的小点，而这正是「0 = 无变换」在其它通道非零时产生的结果。偏移默认 0
+            // （中性）、旋转默认 0 度。钳制防止键入值撑爆合并 mesh。
+            float fromScale = node.RainSpriteScale > 0f ? SanitizeSpriteTransform(node.RainSpriteScale, 1f) : 1f;
+            float toScale = node.RainSpriteScalePressed > 0f ? SanitizeSpriteTransform(node.RainSpriteScalePressed, 1f) : 1f;
+            rawRain.spriteScale = Mathf.Clamp(Mathf.Lerp(fromScale, toScale, e), 0.05f, 10f);
+            float fromOx = SanitizeSpriteTransform(node.RainSpriteOffsetX, 0f);
+            float toOx = SanitizeSpriteTransform(node.RainSpriteOffsetXPressed, fromOx);
+            rawRain.spriteOffsetX = Mathf.Clamp(Mathf.Lerp(fromOx, toOx, e), -200f, 200f);
+            float fromOy = SanitizeSpriteTransform(node.RainSpriteOffsetY, 0f);
+            float toOy = SanitizeSpriteTransform(node.RainSpriteOffsetYPressed, fromOy);
+            rawRain.spriteOffsetY = Mathf.Clamp(Mathf.Lerp(fromOy, toOy, e), -200f, 200f);
+            float fromRot = SanitizeSpriteTransform(node.RainSpriteRotation, 0f);
+            float toRot = SanitizeSpriteTransform(node.RainSpriteRotationPressed, fromRot);
+            rawRain.spriteRotation = Mathf.Clamp(Mathf.Lerp(fromRot, toRot, e), -180f, 180f);
+        }
+
+        private static float SanitizeSpriteTransform(float v, float fallback)
+            => float.IsNaN(v) || float.IsInfinity(v) ? fallback : v;
 
         private bool IsCustomRainRowEnabled(FmNode node, bool isGhost)
         {

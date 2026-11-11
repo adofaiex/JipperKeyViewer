@@ -83,9 +83,24 @@ namespace JipperKeyViewer.KeyViewer
             scaler.referenceResolution = new Vector2(1920, 1080);
             scaler.matchWidthOrHeight = 1f; // Match height so vertical positions are resolution-independent / 匹配高度使垂直位置不受分辨率影响
             // SizeObject applies the Size scale and serves as parent for all keys / SizeObject 应用大小缩放并作为所有按键的父级
+            // The press-transform wrapper sits between the canvas and SizeObject: a fresh node can
+            // safely use a CENTER pivot, so the overlay-wide press transform rotates and scales
+            // around the overlay's centre instead of the bottom-left corner SizeObject must keep
+            // (its pivot choice protects child coordinates under the Size scale). Identity while
+            // the feature is off — the hierarchy change is layout-neutral.
+            // 按压变换包装层位于画布与 SizeObject 之间：新建节点可以放心用**中心**轴心，使覆盖层
+            // 整体按下变换绕覆盖层中心旋转/缩放，而不是 SizeObject 必须保留的左下角（其轴心选择
+            // 是为了保护 Size 缩放下的子元素坐标）。功能关闭时为恒等——该层级改动对布局中性。
+            KeyViewerPressObject = new GameObject("PressObject");
+            RectTransform pressRect = KeyViewerPressObject.AddComponent<RectTransform>();
+            pressRect.SetParent(KeyViewerObject.transform, false);
+            pressRect.anchorMin = Vector2.zero;
+            pressRect.anchorMax = Vector2.one;
+            pressRect.pivot = new Vector2(0.5f, 0.5f);
+            pressRect.offsetMin = pressRect.offsetMax = Vector2.zero;
             KeyViewerSizeObject = new GameObject("SizeObject");
             RectTransform rectTransform = KeyViewerSizeObject.AddComponent<RectTransform>();
-            rectTransform.SetParent(KeyViewerObject.transform);
+            rectTransform.SetParent(KeyViewerPressObject.transform, false);
             rectTransform.localScale = new Vector3(Settings.Data.Size, Settings.Data.Size, 1);
             // Fill full canvas with bottom-left pivot so localScale doesn't shift child positions / 填满画布，左下角轴心，使缩放不改变子元素位置
             rectTransform.anchorMin = Vector2.zero;
@@ -101,9 +116,23 @@ namespace JipperKeyViewer.KeyViewer
             // （位置锚点 + 雨滴状态），在所有图层之后创建。
             keyGlowLayer = CreateFullStretchRect("KeyGlow");
             keyShapeLayer = CreateFullStretchRect("KeyShapes").gameObject.AddComponent<KeyShapeLayer>();
+            // The blur layer shares the shape layer's slot state and draws ONLY blur-enabled
+            // slots, replacing their background fill with the GrabPass blur window. Sibling order
+            // = draw order: behind the outlines, above the plain backgrounds' slot (which skips
+            // blur slots anyway). Material may be null (bundle missing) — the layer then simply
+            // never receives blur flags, so nothing solid is double-drawn.
+            // 模糊层共享形状层的槽位状态，**只**绘制启用模糊的槽位，以 GrabPass 模糊窗口取代其
+            // 背景填充。兄弟序 = 绘制序：在描边之下、普通背景槽位之上（后者本就跳过模糊槽位）。
+            // 材质可能为 null（bundle 缺失）——此时该层收不到模糊标记，绝不会画出实心重复背景。
+            keyBlurLayer = CreateFullStretchRect("KeyBlurs").gameObject.AddComponent<KeyShapeLayer>();
+            if (BlurMaterial != null)
+            {
+                keyBlurLayer.material = BlurMaterial;
+                keyShapeLayer.AttachBlurLayer(keyBlurLayer);
+            }
             keyOutlineLayer = CreateFullStretchRect("KeyOutlines").gameObject.AddComponent<KeyShapeLayer>();
             keyShapeLayer.AttachOutlineLayer(keyOutlineLayer);
-            keyShapeLayer.SetSprites(keyBackgroundSprite, keyOutlineSprite);
+            keyShapeLayer.SetSprites(keyBackgroundSprite, OutlineSprite);
             GameObject textGo = CreateFullStretchRect("TextLayer").gameObject;
             Canvas textCanvas = textGo.AddComponent<Canvas>();
             textCanvas.additionalShaderChannels = Canvas.additionalShaderChannels; // match TMP input channels of the root canvas / 与根画布的 TMP 通道一致
@@ -123,6 +152,12 @@ namespace JipperKeyViewer.KeyViewer
             keyShapeLayer.Init(Keys.Length + CustomStatSlotCount()); // + stat panel slots (custom: one per panel / 面板槽位：自定义每面板一个)
             rainLayer.Init(Keys.Length); // per-key rain press scales / 每键雨滴按压缩放
             InitializeMainKeys(GetLayout(Settings.Data.KeyViewerStyle));
+            // The press transform must pivot on the overlay's OWN content centre, not the screen
+            // centre: a left-aligned KeyViewer sits far from (0.5, 0.5), and rotating/scaling around
+            // the screen centre flings it sideways. Computed AFTER the keys exist. /
+            // 按下变换必须绕覆盖层**自身**内容中心转，而非屏幕中心：左对齐的 KeyViewer 远离
+            // (0.5,0.5)，绕屏幕中心旋转/缩放会把它甩偏。在按键创建**之后**计算。
+            overlayContentCenter = ComputeOverlayContentCenter();
             // Initialize foot keys based on selected layout (full keyboard and the FreeMake custom
             // layout have none — a leftover foot style would draw fixed-position foot keys mixed
             // into the node canvas). / 根据选中的布局初始化脚键（全键盘与 FreeMake 自定义布局
@@ -151,6 +186,7 @@ namespace JipperKeyViewer.KeyViewer
             lastPerKeyKps = new int[MaxKeySlots];
             Stopwatch = System.Diagnostics.Stopwatch.StartNew();
             RefreshAllCountDisplay();
+            ResetOverlayPressPose();
             TickTextGradients();
         }
 
@@ -204,10 +240,15 @@ namespace JipperKeyViewer.KeyViewer
             // 在此。ReleaseCustomTextures 刻意没动那些贴图（缓存会把同一个实例交给下一次构建）；
             // 若不在此释放，它们会比覆盖层活得更久。
             Util.KvImageLoader.ReleaseCachedTextures();
+            // Same single-shared-resource lifecycle as the image cache: the blur material+bundle
+            // survive rebuilds and are freed only on full teardown. / 与图片缓存相同的单一共享
+            // 资源生命周期：模糊材质与 bundle 跨重建存活，只在完全拆解时释放。
+            UnloadBlurBundle();
             ReleaseCustomGlowSprite();
             Object.Destroy(KeyViewerObject);
             KeyViewerObject = null;
             KeyViewerSizeObject = null;
+            KeyViewerPressObject = null;
             rainSystem.DetachLayers();
             // Video players live on their own DontDestroyOnLoad root, NOT under KeyViewerObject —
             // they must be torn down explicitly or the decoder keeps running with no visible quad.
@@ -219,6 +260,7 @@ namespace JipperKeyViewer.KeyViewer
             Canvas = null;
             keyShapeLayer = null;
             keyOutlineLayer = null;
+            keyBlurLayer = null;
             keyGlowLayer = null;
             textLayer = null;
             rainLayer = null;
@@ -933,6 +975,16 @@ namespace JipperKeyViewer.KeyViewer
             {
                 keyShapeLayer.SetRect(key.shapeSlot, x, y - h * 0.5f, sizeX, h);
                 keyShapeLayer.SetVisible(key.shapeSlot, true);
+                // Background blur (fixed layouts): one profile-level toggle, one global radius +
+                // vibrancy — keys AND the KPS/Total panels (they are background boxes too).
+                // Custom nodes set their own per-node flags in ApplyCustomShapeStyle instead;
+                // a material-less install never blurs. / 背景模糊（固定布局）：单一 Profile 级开关、
+                // 全局唯一的半径与浓度——按键与 KPS/Total 面板（同为背景框）皆可。自定义节点改为
+                // 在 ApplyCustomShapeStyle 里设置自己的逐节点标记；无材质的安装永不模糊。
+                bool blur = !IsCustomLayout && BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
+                keyShapeLayer.SetBlurEnabled(key.shapeSlot, blur);
+                if (blur)
+                    keyShapeLayer.SetBlurParams(key.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
             }
             // Text wrapper in the text canvas: same rect the old per-key Visuals had (center pivot
             // over the box), so press scaling stays centered and the text layout math is unchanged.
@@ -1383,6 +1435,151 @@ namespace JipperKeyViewer.KeyViewer
             float bottomBaseY = -GetMinMainKeyOffset(layout);
             float baseY = Mathf.Lerp(bottomBaseY, topBaseY, 1f - norm.y);
             RepositionMainKeys(layout, baseX, baseY);
+        }
+
+        /// <summary>Reset the overlay-wide press transform to its resting pose and clear the
+        /// edge anchor (called from BuildOverlay so a rebuild never inherits a mid-tween pose). /
+        /// 把覆盖层整体按下变换复位到常态位姿并清掉边沿锚点（由 BuildOverlay 调用，重建绝不
+        /// 继承补间中途的位姿）。</summary>
+        private void ResetOverlayPressPose()
+        {
+            overlayPressAny = false;
+            overlayPressEdgeTime = 0f;
+            if (KeyViewerPressObject == null) return;
+            RectTransform rt = (RectTransform)KeyViewerPressObject.transform;
+            rt.localScale = Vector3.one;
+            rt.localEulerAngles = Vector3.zero;
+            rt.anchoredPosition = Vector2.zero;
+        }
+
+        /// <summary>Profile-level press transform for the WHOLE overlay: while any key is held,
+        /// the PressObject wrapper eases from identity to the configured rotation/offset/scale
+        /// and back on release — the reference mod's Profile VectorConfig. The tween is
+        /// STATELESS: only the edge time is stored, and the pose is recomputed each frame from
+        /// (now - edge) / duration through KvEasing, so rebuilds, layout switches and GUI edits
+        /// cannot desync a coroutine. / 覆盖层整体的 Profile 级按压变换：任一按键按住期间，
+        /// PressObject 包装层从恒等位姿缓动到配置的旋转/偏移/缩放，松开时缓回——对齐参考
+        /// 模组的 Profile 级 VectorConfig。补间是**无状态**的：只存边沿时间，每帧由
+        /// (now - edge) / duration 经 KvEasing 重算位姿，重建、切布局与 GUI 编辑都不可能让
+        /// 协程失步。</summary>
+        private void TickOverlayPressTransform()
+        {
+            if (KeyViewerPressObject == null) return;
+            ProfileData d = Settings.Data;
+            if (!d.UseOverlayPressTransform)
+            {
+                // Feature off: make sure the pose IS identity (one write when it already is —
+                // RectTransform setters no-op on unchanged values). / 功能关闭：确保位姿确为恒等
+                // （值未变时 RectTransform setter 本身无操作）。
+                ResetOverlayPressPose();
+                return;
+            }
+            // "Any key held" scan. Keys covers fixed main/foot keys AND custom bound keys; stat
+            // panels are separate fields and are never pressable. An O(n) scan over ≤ a few
+            // hundred bools is nothing next to the frame's other work.
+            // 「任一按键按住」扫描。Keys 覆盖固定主/脚键与自定义绑定键；统计面板是独立字段，
+            // 永不可按。对 ≤ 几百个布尔的 O(n) 扫描相对本帧其余工作可忽略。
+            bool any = false;
+            if (Keys != null)
+            {
+                for (int i = 0; i < Keys.Length; i++)
+                {
+                    Key k = Keys[i];
+                    if (k != null && k.isPressed) { any = true; break; }
+                }
+            }
+            if (any != overlayPressAny)
+            {
+                overlayPressAny = any;
+                overlayPressEdgeTime = Time.unscaledTime;
+            }
+            string easeName = any ? d.OverlayPressEasing : d.OverlayReleaseEasing;
+            float durMs = any ? d.OverlayPressDurationMs : d.OverlayReleaseDurationMs;
+            if (float.IsNaN(durMs) || float.IsInfinity(durMs) || durMs < 0f) durMs = 0f;
+            float e;
+            if (durMs <= 0f)
+            {
+                // Zero duration = instant switch (matches the reference's invalid-EaseConfig
+                // shortcut). / 零时长 = 立即切换（对齐参考模组无效 EaseConfig 的捷径）。
+                e = 1f;
+            }
+            else
+            {
+                float t = (Time.unscaledTime - overlayPressEdgeTime) / (durMs / 1000f);
+                e = Util.KvEasing.Ease(easeName, t);
+            }
+            float sx = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressScaleX : 1f, 1f), 0.1f, 5f);
+            float sy = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressScaleY : 1f, 1f), 0.1f, 5f);
+            float rx = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressRotationX : 0f, 0f), -360f, 360f);
+            float ry = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressRotationY : 0f, 0f), -360f, 360f);
+            float rz = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressRotationZ : 0f, 0f), -360f, 360f);
+            float ox = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressOffsetX : 0f, 0f), -2000f, 2000f);
+            float oy = Mathf.Clamp(SafeTransformValue(any ? d.OverlayPressOffsetY : 0f, 0f), -2000f, 2000f);
+            RectTransform pressRect = (RectTransform)KeyViewerPressObject.transform;
+            float scaleX = 1f + (sx - 1f) * e, scaleY = 1f + (sy - 1f) * e;
+            float rotZ = rz * e;
+            pressRect.localScale = new Vector3(scaleX, scaleY, 1f);
+            // X/Y rotations flip the flat overlay; keep them, they read as a tilt. /
+            // X/Y 旋转会让平面覆盖层翻面；保留，观感是倾斜。
+            pressRect.localEulerAngles = new Vector3(rx * e, ry * e, rotZ);
+            // Pivot the rotation+scale on the overlay's content centre, not the RectTransform pivot
+            // (which is the screen centre for this full-stretch wrapper). Transforming around a pivot
+            // P shifts the object by P − M·P; add the configured offset on top. With no keys the
+            // centre falls back to (0,0) = the legacy behaviour. /
+            // 让旋转+缩放绕覆盖层**内容中心**转，而非 RectTransform 轴心（这个全幅拉伸包装层的轴心
+            // 是屏幕中心）。绕轴心 P 变换会产生位移 P − M·P；再叠加配置的偏移。无按键时中心回退
+            // 为 (0,0) = 旧行为。
+            Vector2 c = overlayContentCenter;
+            if (c != Vector2.zero)
+            {
+                float rad = rotZ * Mathf.Deg2Rad;
+                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
+                // M·c with per-axis scale then Z rotation / M·c：先逐轴缩放再做 Z 旋转
+                float mx = c.x * scaleX, my = c.y * scaleY;
+                float px = mx * cos - my * sin;
+                float py = mx * sin + my * cos;
+                pressRect.anchoredPosition = new Vector2(c.x - px + ox * e, c.y - py + oy * e);
+            }
+            else
+            {
+                pressRect.anchoredPosition = new Vector2(ox * e, oy * e);
+            }
+        }
+
+        /// <summary>Bounding-box centre of all key rects in PressObject (SizeObject) local space.
+        /// Keys anchor at bottom-left (0,0) with a left-centre pivot, so a key's rect is
+        /// (pos.x, pos.y − h/2, w, h). (0,0) when no key exists. / 所有按键矩形在 PressObject
+        /// （SizeObject）本地空间里的包围盒中心。按键锚在左下 (0,0)、轴心左中，故按键矩形为
+        /// (pos.x, pos.y − h/2, w, h)。无按键时返回 (0,0)。</summary>
+        private Vector2 ComputeOverlayContentCenter()
+        {
+            if (Keys == null || Keys.Length == 0) return Vector2.zero;
+            float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+            int found = 0;
+            for (int i = 0; i < Keys.Length; i++)
+            {
+                Key k = Keys[i];
+                if (k == null || k.transform == null) continue;
+                Vector2 p = ((RectTransform)k.transform).anchoredPosition;
+                float w = k.keySize.x, h = k.keySize.y;
+                if (w <= 0f || h <= 0f) continue;
+                if (p.x < minX) minX = p.x;
+                if (p.x + w > maxX) maxX = p.x + w;
+                if (p.y - h * 0.5f < minY) minY = p.y - h * 0.5f;
+                if (p.y + h * 0.5f > maxY) maxY = p.y + h * 0.5f;
+                found++;
+            }
+            if (found == 0) return Vector2.zero;
+            return new Vector2((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+        }
+
+        /// <summary>Scrub one transform input: NaN/Inf fall back to the fallback value (clamping
+        /// happens at the call site where the band is known). / 净化单个变换输入：NaN/Inf 回退到
+        /// 指定值（钳制在调用点做——那里才知道带宽）。</summary>
+        private static float SafeTransformValue(float v, float fallback)
+        {
+            if (float.IsNaN(v) || float.IsInfinity(v)) return fallback;
+            return v;
         }
 
         private static int FootKeySize(FootKeyviewerStyle style) => style switch

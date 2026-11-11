@@ -3004,6 +3004,7 @@ namespace JipperKeyViewer.KeyViewer
         // **每个位置一张表**，尽管其中两张装的是同样的三个标签：共用只有在「每张赋值后都被消费完、
         // 下一张才填」的前提下才安全，而这种「仅当……才安全」正是别人调整两行顺序就会踩塌的耦合。
         private readonly string[] editorRainRowNames = new string[3];
+        private readonly string[] editorRainDirectionNames = new string[4];
         private readonly string[] editorRainAlignNames = new string[3];
         private readonly string[] editorBorderSideNames = new string[3];
         private readonly string[] editorGhostSideNames = new string[3];
@@ -3212,6 +3213,53 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.BorderThickness = Mathf.Max(0f, v);
                     EditorPropertyChanged();
                 }, "fm_help_border_thickness");
+                GUILayout.Label(I18n.Tr("fm_rotation"));
+                DrawEditorFloatField("X", "fme_rot_x_" + first.Id, n => n.RotationX, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.RotationX = Mathf.Clamp(v, -180f, 180f);
+                    EditorPropertyChanged();
+                }, "fm_help_rotation");
+                DrawEditorFloatField("Y", "fme_rot_y_" + first.Id, n => n.RotationY, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.RotationY = Mathf.Clamp(v, -180f, 180f);
+                    EditorPropertyChanged();
+                }, "fm_help_rotation");
+                DrawEditorFloatField("Z", "fme_rot_z_" + first.Id, n => n.RotationZ, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.RotationZ = Mathf.Clamp(v, -180f, 180f);
+                    EditorPropertyChanged();
+                }, "fm_help_rotation");
+                DrawEditorToggle(I18n.Tr("fm_rotation_pressed_override"), first.UsePressedRotation, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UsePressedRotation = v;
+                        if (v)
+                        {
+                            n.RotationXPressed = n.RotationX;
+                            n.RotationYPressed = n.RotationY;
+                            n.RotationZPressed = n.RotationZ;
+                        }
+                    }
+                }, "fm_help_rotation");
+                if (first.UsePressedRotation)
+                {
+                    DrawEditorFloatField("X", "fme_rot_xp_" + first.Id, n => n.RotationXPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RotationXPressed = Mathf.Clamp(v, -180f, 180f);
+                        EditorPropertyChanged();
+                    }, "fm_help_rotation");
+                    DrawEditorFloatField("Y", "fme_rot_yp_" + first.Id, n => n.RotationYPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RotationYPressed = Mathf.Clamp(v, -180f, 180f);
+                        EditorPropertyChanged();
+                    }, "fm_help_rotation");
+                    DrawEditorFloatField("Z", "fme_rot_zp_" + first.Id, n => n.RotationZPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RotationZPressed = Mathf.Clamp(v, -180f, 180f);
+                        EditorPropertyChanged();
+                    }, "fm_help_rotation");
+                }
             }
 
             DrawEditorTextStyleSection(first);
@@ -3379,6 +3427,22 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.Opacity = Mathf.Clamp01(v);
                     EditorPropertyChanged();
                 }, "fm_help_opacity");
+                // Four-corner tint gradient, applied by a BaseMeshEffect on the RawImage — the
+                // image keeps its own texture and the existing opacity/tint path is untouched.
+                // Each corner defaults to white (no tint); it is applied in place, no rebuild. /
+                // 四角染色渐变，由 RawImage 上的 BaseMeshEffect 应用——图片保留自身贴图，既有的
+                // 不透明度/染色路径不受影响。每角默认白色（无染色）；就地生效，无需重建。
+                DrawEditorToggle(I18n.Tr("fm_image_corner_gradient"), first.UseImageCornerGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseImageCornerGradient = v;
+                }, "fm_help_image_corner_gradient");
+                if (first.UseImageCornerGradient)
+                {
+                    DrawEditorColorField(I18n.Tr("fm_image_corner_tl"), first.ImageGradientTopLeft, Color.white, arr => { foreach (FmNode n in editorSelection) n.ImageGradientTopLeft = arr; });
+                    DrawEditorColorField(I18n.Tr("fm_image_corner_tr"), first.ImageGradientTopRight, Color.white, arr => { foreach (FmNode n in editorSelection) n.ImageGradientTopRight = arr; });
+                    DrawEditorColorField(I18n.Tr("fm_image_corner_bl"), first.ImageGradientBottomLeft, Color.white, arr => { foreach (FmNode n in editorSelection) n.ImageGradientBottomLeft = arr; });
+                    DrawEditorColorField(I18n.Tr("fm_image_corner_br"), first.ImageGradientBottomRight, Color.white, arr => { foreach (FmNode n in editorSelection) n.ImageGradientBottomRight = arr; });
+                }
                 if (!single)
                     GUILayout.Label(I18n.Tr("fm_bind_image_hint"));
             }
@@ -3475,6 +3539,171 @@ namespace JipperKeyViewer.KeyViewer
                     EditorPropertyChanged();
                 }
                 DrawEditorToggle(I18n.Tr("fm_rain"), first.RainEnabled, v => { foreach (FmNode n in editorSelection) n.RainEnabled = v; }, "fm_help_rain_enable");
+                DrawEditorToggle(I18n.Tr("fm_rain_sprite_list"), first.UseRainSpriteList, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseRainSpriteList = v;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                }, "fm_help_rain_sprite_list", EditorNothing);
+                if (first.UseRainSpriteList)
+                {
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label(I18n.Tr("fm_rain_sprite_count"), EditorFieldLabelWidth);
+                    int spriteCount = first.RainSprites?.Count ?? 0;
+                    string spriteCountText = TextInputField("fme_rsn_" + first.Id, spriteCount.ToString(), EditorFieldEditWidth);
+                    int newSpriteCount = spriteCount;
+                    if (int.TryParse(spriteCountText.Trim(), out int parsedSpriteCount))
+                        newSpriteCount = Mathf.Clamp(parsedSpriteCount, 1, 64);
+                    GUILayout.EndHorizontal();
+                    if (newSpriteCount != spriteCount)
+                    {
+                        while (first.RainSprites.Count < newSpriteCount)
+                            first.RainSprites.Add(new RainSpriteConfig());
+                        if (first.RainSprites.Count > newSpriteCount)
+                            first.RainSprites.RemoveRange(newSpriteCount, first.RainSprites.Count - newSpriteCount);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                        EditorPropertyChanged();
+                    }
+                    if (first.RainSprites != null)
+                    {
+                        for (int spriteIndex = 0; spriteIndex < first.RainSprites.Count; spriteIndex++)
+                        {
+                            RainSpriteConfig sprite = first.RainSprites[spriteIndex];
+                            if (sprite == null) first.RainSprites[spriteIndex] = sprite = new RainSpriteConfig();
+                            string itemCtrl = "fme_rsp_" + first.Id + "_" + spriteIndex;
+                            GUILayout.BeginHorizontal();
+                            GUILayout.Label($"{I18n.Tr("fm_rain_sprite")} {spriteIndex + 1}", EditorFieldLabelWidth);
+                            string newPath = TextInputField(itemCtrl, sprite.Path ?? "", GUILayout.MinWidth(120f));
+                            GUILayout.EndHorizontal();
+                            if (!string.Equals(newPath, sprite.Path ?? "", StringComparison.Ordinal))
+                            {
+                                foreach (FmNode n in editorSelection)
+                                {
+                                    while (n.RainSprites.Count < first.RainSprites.Count) n.RainSprites.Add(new RainSpriteConfig());
+                                    if (n.RainSprites.Count > first.RainSprites.Count) n.RainSprites.RemoveRange(first.RainSprites.Count, n.RainSprites.Count - first.RainSprites.Count);
+                                    n.RainSprites[spriteIndex].Path = newPath;
+                                }
+                                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                                EditorPropertyChanged();
+                            }
+                            GUILayout.BeginHorizontal();
+                            GUILayout.Label(I18n.Tr("fm_rain_sprite_repeat"), EditorFieldLabelWidth);
+                            string repeatText = TextInputField(itemCtrl + "_n", sprite.Count.ToString(), EditorFieldEditWidth);
+                            int newRepeat = sprite.Count;
+                            if (int.TryParse(repeatText.Trim(), out int parsedRepeat))
+                                newRepeat = Mathf.Clamp(parsedRepeat, 1, 1000);
+                            GUILayout.EndHorizontal();
+                            if (newRepeat != sprite.Count)
+                            {
+                                foreach (FmNode n in editorSelection)
+                                    n.RainSprites[spriteIndex].Count = newRepeat;
+                                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                                EditorPropertyChanged();
+                            }
+                            GUILayout.BeginHorizontal();
+                            GUILayout.Label(I18n.Tr("fm_rain_sprite_corner"), EditorFieldLabelWidth);
+                            string cornerText = TextInputField(itemCtrl + "_c", FormatFloatForDisplayCached(itemCtrl + "_c", sprite.CornerRadius), EditorFieldEditWidth);
+                            float newCorner = sprite.CornerRadius;
+                            if (float.TryParse(cornerText.Replace("—", "").Trim(), out float parsedCorner) && IsFiniteFloat(parsedCorner))
+                                newCorner = Mathf.Clamp(parsedCorner, 0f, 20f);
+                            GUILayout.EndHorizontal();
+                            if (Math.Abs(newCorner - sprite.CornerRadius) > 0.001f)
+                            {
+                                foreach (FmNode n in editorSelection)
+                                    n.RainSprites[spriteIndex].CornerRadius = newCorner;
+                                if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                                EditorPropertyChanged();
+                            }
+                        }
+                    }
+                }
+                // ===== Rain sprite transform (sprite-list drops only) / 雨滴贴图变换（仅贴图列表雨滴）=====
+                // Scale / offset / rotation of the image inside the drop's trail rect, with
+                // optional pressed values and an independent press/release easing pair — the
+                // DOTween-style "from A to B" model used by every other eased rain channel.
+                // Scale is shown in PERCENT (0 = natural size, same as 100); offsets in px,
+                // rotation in degrees. / 贴图在轨迹矩形内的缩放/偏移/旋转，带可选按下值与
+                // 独立的按压/松开缓动组——与其它缓动雨滴通道同一套 DOTween 式「从 A 到 B」模型。
+                // 缩放按**百分比**显示（0 = 原始尺寸，与 100 等价）；偏移像素、旋转角度。
+                DrawEditorToggle(I18n.Tr("fm_rain_sprite_transform"), first.UseRainSpriteTransform, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseRainSpriteTransform = v;
+                }, "fm_help_rain_sprite_transform", () =>
+                {
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                });
+                if (first.UseRainSpriteTransform)
+                {
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_scale"), "fme_rsts_" + first.Id, n => n.RainSpriteScale * 100f, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteScale = Mathf.Clamp(v / 100f, 0f, 10f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_offset_x"), "fme_rstox_" + first.Id, n => n.RainSpriteOffsetX, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteOffsetX = Mathf.Clamp(v, -200f, 200f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_offset_y"), "fme_rstoy_" + first.Id, n => n.RainSpriteOffsetY, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteOffsetY = Mathf.Clamp(v, -200f, 200f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_rotation"), "fme_rstr_" + first.Id, n => n.RainSpriteRotation, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteRotation = Mathf.Clamp(v, -180f, 180f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    // Pressed values are absolute; leave them equal to the idle values for "no
+                    // press change". / 按下值为绝对值；与常态相同时即「按下无变化」。
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_scale_pressed"), "fme_rstsp_" + first.Id, n => n.RainSpriteScalePressed * 100f, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteScalePressed = Mathf.Clamp(v / 100f, 0f, 10f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_offset_xp"), "fme_rstoxp_" + first.Id, n => n.RainSpriteOffsetXPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteOffsetXPressed = Mathf.Clamp(v, -200f, 200f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_offset_yp"), "fme_rstoyp_" + first.Id, n => n.RainSpriteOffsetYPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteOffsetYPressed = Mathf.Clamp(v, -200f, 200f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_sprite_rotation_pressed"), "fme_rstrp_" + first.Id, n => n.RainSpriteRotationPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteRotationPressed = Mathf.Clamp(v, -180f, 180f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_sprite_transform");
+                    DrawEditorEasingSelector("fme_ease_rstp_" + first.Id, first.RainSpriteEasePress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteEasePress = v;
+                    }, "fm_rain_ease_press");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_press"), "fme_rstdp_" + first.Id, n => n.RainSpriteDurPress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteDurPress = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    DrawEditorEasingSelector("fme_ease_rstr_" + first.Id, first.RainSpriteEaseRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteEaseRelease = v;
+                    }, "fm_rain_ease_release");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_release"), "fme_rstdr_" + first.Id, n => n.RainSpriteDurRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpriteDurRelease = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                }
+                GUILayout.Label(I18n.Tr("fm_rain_direction"));
+                editorRainDirectionNames[0] = I18n.Tr("fm_rain_dir_up"); editorRainDirectionNames[1] = I18n.Tr("fm_rain_dir_down"); editorRainDirectionNames[2] = I18n.Tr("fm_rain_dir_left"); editorRainDirectionNames[3] = I18n.Tr("fm_rain_dir_right");
+                string[] rainDirections = editorRainDirectionNames;
+                int rainDirection = GUILayout.SelectionGrid(Mathf.Clamp(first.RainDirection, 0, 3), rainDirections, 4, GUILayout.Height(20f));
+                if (rainDirection >= 0 && rainDirection <= 3 && rainDirection != first.RainDirection)
+                {
+                    foreach (FmNode n in editorSelection) n.RainDirection = rainDirection;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    EditorPropertyChanged();
+                }
                 DrawEditorFloatField(I18n.Tr("rain_width"), "fme_rw_" + first.Id, n => n.RainWidth, v =>
                 {
                     foreach (FmNode n in editorSelection) n.RainWidth = Mathf.Max(0f, v);
@@ -3490,6 +3719,101 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.RainSpeed = Mathf.Max(0f, v);
                     EditorPropertyChanged();
                 }, "fm_help_rain_params");
+                DrawEditorToggle(I18n.Tr("fm_rain_press_params_custom"), first.UseRainPressParams, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseRainPressParams = v;
+                        if (v)
+                        {
+                            n.RainWidthPressed = n.RainWidth;
+                            n.RainHeightPressed = n.RainHeight;
+                            n.RainSpeedPressed = n.RainSpeed;
+                        }
+                    }
+                }, "fm_help_rain_press_params");
+                if (first.UseRainPressParams)
+                {
+                    DrawEditorFloatField(I18n.Tr("rain_width_pressed"), "fme_rwp_" + first.Id, n => n.RainWidthPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainWidthPressed = Mathf.Max(0f, v);
+                        EditorPropertyChanged();
+                    }, "fm_help_rain_press_params");
+                    DrawEditorFloatField(I18n.Tr("rain_height_pressed"), "fme_rhp_" + first.Id, n => n.RainHeightPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainHeightPressed = Mathf.Max(0f, v);
+                        EditorPropertyChanged();
+                    }, "fm_help_rain_press_params");
+                    DrawEditorFloatField(I18n.Tr("rain_speed_pressed"), "fme_rsp_" + first.Id, n => n.RainSpeedPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpeedPressed = Mathf.Max(0f, v);
+                        EditorPropertyChanged();
+                    }, "fm_help_rain_press_params");
+                    // Per-parameter, per-direction easing (DOTween-style). Each of width/height/
+                    // speed tweens from its released value to the pressed one with its OWN press
+                    // curve while held, and back with its own release curve. Empty name / zero
+                    // duration = the old instant switch, so existing nodes are unaffected.
+                    // / 逐参数、逐方向的缓动（DOTween 式）。宽度/高度/速度各自以自己的按压曲线从
+                    // 常态值过渡到按下值，松开时以自己的松开曲线返回。缓动名为空 / 时长为 0 = 旧版
+                    // 即时切换，故现有节点行为不变。
+                    GUILayout.Label("<i>" + I18n.Tr("rain_width") + "</i>");
+                    DrawEditorEasingSelector("fme_ease_rwp_" + first.Id, first.RainWidthEasePress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainWidthEasePress = v;
+                    }, "fm_rain_ease_press");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_press"), "fme_rwdp_" + first.Id, n => n.RainWidthDurPress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainWidthDurPress = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    DrawEditorEasingSelector("fme_ease_rwr_" + first.Id, first.RainWidthEaseRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainWidthEaseRelease = v;
+                    }, "fm_rain_ease_release");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_release"), "fme_rwdr_" + first.Id, n => n.RainWidthDurRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainWidthDurRelease = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    GUILayout.Label("<i>" + I18n.Tr("rain_height") + "</i>");
+                    DrawEditorEasingSelector("fme_ease_rhp_" + first.Id, first.RainHeightEasePress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainHeightEasePress = v;
+                    }, "fm_rain_ease_press");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_press"), "fme_rhdp_" + first.Id, n => n.RainHeightDurPress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainHeightDurPress = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    DrawEditorEasingSelector("fme_ease_rhr_" + first.Id, first.RainHeightEaseRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainHeightEaseRelease = v;
+                    }, "fm_rain_ease_release");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_release"), "fme_rhdr_" + first.Id, n => n.RainHeightDurRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainHeightDurRelease = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    GUILayout.Label("<i>" + I18n.Tr("rain_speed") + "</i>");
+                    DrawEditorEasingSelector("fme_ease_rsp_" + first.Id, first.RainSpeedEasePress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpeedEasePress = v;
+                    }, "fm_rain_ease_press");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_press"), "fme_rsdp_" + first.Id, n => n.RainSpeedDurPress, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpeedDurPress = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                    DrawEditorEasingSelector("fme_ease_rsr_" + first.Id, first.RainSpeedEaseRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpeedEaseRelease = v;
+                    }, "fm_rain_ease_release");
+                    DrawEditorFloatField(I18n.Tr("fm_rain_dur_release"), "fme_rsdr_" + first.Id, n => n.RainSpeedDurRelease, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.RainSpeedDurRelease = Mathf.Clamp(v, 0f, 2000f);
+                        if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    }, "fm_help_rain_ease");
+                }
                 DrawEditorToggle(I18n.Tr("fm_use_custom_rain_color"), first.UseCustomRainColor, v =>
                 {
                     foreach (FmNode n in editorSelection) n.UseCustomRainColor = v;
@@ -3501,6 +3825,44 @@ namespace JipperKeyViewer.KeyViewer
                     Color rowColor = rainSystem.GetRainColor(CustomRainRowByte(first));
                     DrawEditorColorField(I18n.Tr("fm_rain_color_top"), first.RainColorTop, rowColor, arr => { foreach (FmNode n in editorSelection) n.RainColorTop = arr; });
                     DrawEditorColorField(I18n.Tr("fm_rain_color_bottom"), first.RainColorBottom, rowColor, arr => { foreach (FmNode n in editorSelection) n.RainColorBottom = arr; });
+                    DrawEditorToggle(I18n.Tr("fm_rain_color_pressed_override"), first.UseRainColorPressed, v =>
+                    {
+                        foreach (FmNode n in editorSelection)
+                        {
+                            n.UseRainColorPressed = v;
+                            if (v)
+                            {
+                                n.RainColorTopPressed = n.RainColorTop;
+                                n.RainColorBottomPressed = n.RainColorBottom;
+                            }
+                        }
+                    }, "fm_help_rain_color");
+                    if (first.UseRainColorPressed)
+                    {
+                        DrawEditorColorField(I18n.Tr("fm_rain_color_top_pressed"), first.RainColorTopPressed, rowColor, arr => { foreach (FmNode n in editorSelection) n.RainColorTopPressed = arr; });
+                        DrawEditorColorField(I18n.Tr("fm_rain_color_bottom_pressed"), first.RainColorBottomPressed, rowColor, arr => { foreach (FmNode n in editorSelection) n.RainColorBottomPressed = arr; });
+                        // Same DOTween-style pair for the COLOUR channel: the pressed colour
+                        // eases in/out with its own curves, independent of geometry. / 颜色通道
+                        // 的同款 DOTween 式缓动组：按下颜色以独立曲线进出，与几何互不影响。
+                        DrawEditorEasingSelector("fme_ease_rcp_" + first.Id, first.RainColorEasePress, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.RainColorEasePress = v;
+                        }, "fm_rain_ease_press");
+                        DrawEditorFloatField(I18n.Tr("fm_rain_dur_press"), "fme_rcdp_" + first.Id, n => n.RainColorDurPress, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.RainColorDurPress = Mathf.Clamp(v, 0f, 2000f);
+                            if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                        }, "fm_help_rain_ease");
+                        DrawEditorEasingSelector("fme_ease_rcr_" + first.Id, first.RainColorEaseRelease, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.RainColorEaseRelease = v;
+                        }, "fm_rain_ease_release");
+                        DrawEditorFloatField(I18n.Tr("fm_rain_dur_release"), "fme_rcdr_" + first.Id, n => n.RainColorDurRelease, v =>
+                        {
+                            foreach (FmNode n in editorSelection) n.RainColorDurRelease = Mathf.Clamp(v, 0f, 2000f);
+                            if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                        }, "fm_help_rain_ease");
+                    }
                 }
                 DrawEditorFloatField(I18n.Tr("fm_rain_offset_x"), "fme_rox_" + first.Id, n => n.RainOffsetX, v =>
                 {
@@ -4126,6 +4488,44 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.TextGradientRight = arr;
                     EditorTextGradientPropertyChanged();
                 });
+                DrawEditorToggle(I18n.Tr("fm_text_corner_gradient"), first.UseTextCornerGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseTextCornerGradient = v;
+                        if (v)
+                        {
+                            n.TextGradientTopLeft = n.TextGradientLeft;
+                            n.TextGradientTopRight = n.TextGradientRight;
+                            n.TextGradientBottomLeft = n.TextGradientLeft;
+                            n.TextGradientBottomRight = n.TextGradientRight;
+                        }
+                    }
+                    EditorTextGradientPropertyChanged();
+                }, "fm_help_corner_gradient");
+                if (first.UseTextCornerGradient)
+                {
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_tl"), first.TextGradientTopLeft, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientTopLeft = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_tr"), first.TextGradientTopRight, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientTopRight = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_bl"), first.TextGradientBottomLeft, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientBottomLeft = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_text_gradient_br"), first.TextGradientBottomRight, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.TextGradientBottomRight = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                }
                 DrawEditorToggle(I18n.Tr("fm_text_gradient_pressed"), first.UsePressedTextGradient, v =>
                 {
                     foreach (FmNode n in editorSelection) n.UsePressedTextGradient = v;
@@ -4163,6 +4563,44 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.CountTextGradientRight = arr;
                     EditorTextGradientPropertyChanged();
                 });
+                DrawEditorToggle(I18n.Tr("fm_count_corner_gradient"), first.UseCountTextCornerGradient, v =>
+                {
+                    foreach (FmNode n in editorSelection)
+                    {
+                        n.UseCountTextCornerGradient = v;
+                        if (v)
+                        {
+                            n.CountTextGradientTopLeft = n.CountTextGradientLeft;
+                            n.CountTextGradientTopRight = n.CountTextGradientRight;
+                            n.CountTextGradientBottomLeft = n.CountTextGradientLeft;
+                            n.CountTextGradientBottomRight = n.CountTextGradientRight;
+                        }
+                    }
+                    EditorTextGradientPropertyChanged();
+                }, "fm_help_corner_gradient");
+                if (first.UseCountTextCornerGradient)
+                {
+                    DrawEditorColorField(I18n.Tr("fm_count_gradient_tl"), first.CountTextGradientTopLeft, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientTopLeft = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_count_gradient_tr"), first.CountTextGradientTopRight, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientTopRight = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_count_gradient_bl"), first.CountTextGradientBottomLeft, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientBottomLeft = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                    DrawEditorColorField(I18n.Tr("fm_count_gradient_br"), first.CountTextGradientBottomRight, textFallback, arr =>
+                    {
+                        foreach (FmNode n in editorSelection) n.CountTextGradientBottomRight = arr;
+                        EditorTextGradientPropertyChanged();
+                    });
+                }
                 DrawEditorToggle(I18n.Tr("fm_count_text_gradient_pressed"), first.UsePressedCountTextGradient, v =>
                 {
                     foreach (FmNode n in editorSelection) n.UsePressedCountTextGradient = v;
@@ -4257,6 +4695,31 @@ namespace JipperKeyViewer.KeyViewer
 
             if (first.NodeType != 3)
             {
+                GUILayout.Space(4f);
+                // Per-node background blur: the node's box blurs whatever is behind the overlay
+                // (GrabPass), independent of the fixed layout's profile-level setting. Silently
+                // inert when the shader bundle failed to load. / 节点级背景模糊：节点框模糊覆盖层
+                // 背后的画面（GrabPass），与固定布局的 Profile 级设置互不相干。shader bundle
+                // 加载失败时静默无效。
+                DrawEditorToggle(I18n.Tr("background_blur_enable"), first.EnableBackgroundBlur, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.EnableBackgroundBlur = v;
+                    EditorBlurPropertyChanged();
+                }, "fm_help_node_blur");
+                if (first.EnableBackgroundBlur)
+                {
+                    DrawEditorFloatField(I18n.Tr("background_blur_radius"), "fme_blr_" + first.Id, n => n.BackgroundBlurRadius, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.BackgroundBlurRadius = Mathf.Clamp(v, 1f, 40f);
+                        EditorBlurPropertyChanged();
+                    }, "fm_help_node_blur");
+                    DrawEditorFloatField(I18n.Tr("background_blur_vibrancy"), "fme_blv_" + first.Id, n => n.BackgroundBlurVibrancy * 100f, v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.BackgroundBlurVibrancy = Mathf.Clamp(v / 100f, 0f, 2f);
+                        EditorBlurPropertyChanged();
+                    }, "fm_help_node_blur");
+                }
+
                 GUILayout.Space(4f);
                 DrawEditorToggle(I18n.Tr("fm_background_gradient"), first.UseBackgroundGradient, v =>
                 {
@@ -5258,10 +5721,10 @@ namespace JipperKeyViewer.KeyViewer
         /// nested scroll view (a scroll view inside a scroll view is unusable with a mouse wheel).
         /// / 编辑器用的命名缓动选择器。与设置窗口的版本不同，它位于可滚动的属性面板内，故渲染为平铺
         /// 按钮网格而非嵌套滚动区（滚动区套滚动区用滚轮根本没法操作）。</summary>
-        private void DrawEditorEasingSelector(string ctrl, string current, Action<string> apply)
+        private void DrawEditorEasingSelector(string ctrl, string current, Action<string> apply, string labelKey = "press_anim_easing")
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("press_anim_easing"), EditorFieldLabelWidth);
+            GUILayout.Label(I18n.Tr(labelKey), EditorFieldLabelWidth);
             string shown = Util.KvEasing.Normalize(current);
             if (GUILayout.Button(shown, GUILayout.Width(140f)))
                 fmEasingPicker = fmEasingPicker == ctrl ? null : ctrl;
@@ -5344,6 +5807,21 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
+        /// <summary>Per-node blur slider commit: only flags/params of the merged blur layer
+        /// change, so the overlay is refreshed in place (see EditorGlowPropertyChanged). /
+        /// 节点级模糊滑杆提交：只改合并模糊层的标记与参数，故就地刷新覆盖层。</summary>
+        private void EditorBlurPropertyChanged()
+        {
+            editorInPlaceRefresh = true;
+            PushEditorHistoryNudge();
+            SaveSettingsFromGui();
+            foreach (FmNode node in editorSelection)
+            {
+                if (node == null) continue;
+                ApplyCustomNodeBlur(node);
+            }
+        }
+
         private void EditorTextGradientPropertyChanged()
         {
             editorInPlaceRefresh = true;
@@ -5416,6 +5894,10 @@ namespace JipperKeyViewer.KeyViewer
                 ApplyCustomGlow(node, pressed);
                 ApplyCustomBackgroundGradient(node, pressed);
                 ApplyCustomOutlineGradient(node, pressed);
+                // Image/video corner tint lives on a BaseMeshEffect, not in the merged mesh —
+                // refresh it in place like the gradients above. / 图片/视频四角染色挂在
+                // BaseMeshEffect 上而非合并 mesh 里——与上方渐变一样就地刷新。
+                if (node.NodeType == 3) RefreshImageCornerGradient(node);
             }
             // Text outline/shadow colours live in the cached font materials (same path the
             // outline-width/softness sliders use). / 文字描边/阴影颜色走缓存字体材质

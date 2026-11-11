@@ -237,6 +237,25 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // 按压动画时长（毫秒）。旧版写死的 80ms 即默认值。
         public float PressAnimationDurationMs = 80f;
 
+        // ===== Overlay-wide press transform (Profile-level) / 覆盖层整体按下变换（Profile 级） =====
+        // While ANY key is held, the whole overlay container eases from its resting pose to this
+        // transform (and back on release), exactly like the reference mod's Profile VectorConfig.
+        // Off by default; all values are consumed through clamps. / 任一按键按住期间，整个覆盖层
+        // 容器从常态位姿缓动到该变换（松开时缓回），对齐参考模组的 Profile 级 VectorConfig。
+        // 默认关闭；所有数值消费时都经钳制。
+        public bool UseOverlayPressTransform;
+        public float OverlayPressOffsetX;
+        public float OverlayPressOffsetY;
+        public float OverlayPressRotationX;
+        public float OverlayPressRotationY;
+        public float OverlayPressRotationZ;
+        public float OverlayPressScaleX = 1f;
+        public float OverlayPressScaleY = 1f;
+        public string OverlayPressEasing = "linear";
+        public float OverlayPressDurationMs = 80f;
+        public string OverlayReleaseEasing = "linear";
+        public float OverlayReleaseDurationMs = 80f;
+
         // ===== Text outline / shadow (key label and count text resolved separately) =====
         // Outline uses TMP's SDF outline (OUTLINE_ON + _OutlineWidth/_OutlineColor); shadow uses
         // the underlay pass (UNDERLAY_ON + _UnderlayColor/_UnderlayOffsetX/Y/_UnderlaySoftness).
@@ -354,6 +373,18 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public Color[] PerKeyTextClicked;
         public Color[] PerKeyRainColor;
         public Color[] PerKeyGhostRainColor;
+        /// <summary>Optional custom outline sprite path ("" = built-in outline). /
+        /// 可选自定义描边贴图路径（"" = 内置描边）。</summary>
+        public string OutlineImagePath = "";
+        /// <summary>Key shape blur settings; disabled by default so existing profiles keep their
+        /// crisp sprite. / 按键形状模糊设置；默认关闭，现有配置保持清晰贴图。</summary>
+        public bool EnableBackgroundBlur;
+        public float BackgroundBlurRadius = 8f;
+        public float BackgroundBlurVibrancy = 1f;
+        /// <summary>Optional global rain sprite list: local images with count and corner radius. /
+        /// 全局雨滴贴图列表：本地图片，带出现次数与圆角。</summary>
+        public bool UseRainSpriteList;
+        public List<RainSpriteConfig> RainSprites = new List<RainSpriteConfig>();
 
         // ===== Per-key text size / 每键字号 =====
         // PerKeyFontSize: 0 = use global KeyFontSize, >0 = override for this key.
@@ -731,6 +762,8 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.RainGlowFollowBody = true;
             node.RainGlowRange = 20f;
             node.RainGlowOpacity = 0.7f;
+            node.BackgroundBlurRadius = 8f;
+            node.BackgroundBlurVibrancy = 1f;
             // ---- 1.7.2-era sentinel (compat audit C2, FIXED). The 22 fields below verifiably
             // existed at 1.7.2 and 1.7.2's field-mode writer serialized EVERY one of them on every
             // node — so their presence with any value is proof the node was written by 1.7.2 or
@@ -1227,11 +1260,28 @@ namespace JipperKeyViewer.KeyViewer.Settings
         // 层级全部照常工作。文件缺失或格式不支持时静默回落到 ImagePath。
         public string VideoPath = "";
         public bool VideoLoop = true;
+        // Four-corner gradient tint for image/video nodes (null arrays = white, i.e. no tint).
+        // Applied by a BaseMeshEffect on the node's RawImage, so the existing opacity/tint path
+        // is untouched. / 图片/视频节点的四角渐变染色（null 数组 = 白色，即无染色）。经 RawImage
+        // 上的 BaseMeshEffect 应用，既有的不透明度/染色路径不受影响。
+        public bool UseImageCornerGradient;
+        public float[] ImageGradientTopLeft;
+        public float[] ImageGradientTopRight;
+        public float[] ImageGradientBottomLeft;
+        public float[] ImageGradientBottomRight;
         public bool UseCustomColor;
         public float[] Bg;
         public float[] BgPressed;
         public float[] Outline;
         public float[] OutlinePressed;
+        /// <summary>Key-box rotation in degrees, XYZ; pressed variants are opt-in. / 按键框旋转角度（XYZ，度），按下覆盖为可选。</summary>
+        public float RotationX;
+        public float RotationY;
+        public float RotationZ;
+        public bool UsePressedRotation;
+        public float RotationXPressed;
+        public float RotationYPressed;
+        public float RotationZPressed;
         // Per-node text colors (null = follow the global Text/TextClicked). /
         // 节点级文本颜色（null = 跟随全局 Text/TextClicked）。
         public float[] TextColor;
@@ -1281,9 +1331,19 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool UseTextGradient;
         public float[] TextGradientLeft;
         public float[] TextGradientRight;
+        public bool UseTextCornerGradient;
+        public float[] TextGradientTopLeft;
+        public float[] TextGradientTopRight;
+        public float[] TextGradientBottomLeft;
+        public float[] TextGradientBottomRight;
         public bool UseCountTextGradient;
         public float[] CountTextGradientLeft;
         public float[] CountTextGradientRight;
+        public bool UseCountTextCornerGradient;
+        public float[] CountTextGradientTopLeft;
+        public float[] CountTextGradientTopRight;
+        public float[] CountTextGradientBottomLeft;
+        public float[] CountTextGradientBottomRight;
         public bool UsePressedTextGradient;
         public float[] TextGradientLeftPressed;
         public float[] TextGradientRightPressed;
@@ -1302,6 +1362,54 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public float RainWidth;
         public float RainHeight;
         public float RainSpeed;
+        public bool UseRainPressParams;
+        public float RainWidthPressed;
+        public float RainHeightPressed;
+        public float RainSpeedPressed;
+        // Per-param, per-direction easing for the pressed rain geometry: empty name / zero
+        // duration = instant switch (the previous behaviour). Values are consumed through
+        // KvEasing, so unknown names degrade to linear. / 按下雨滴几何的逐参数、逐方向缓动：
+        // 空名/零时长 = 立即切换（即此前行为）。数值经 KvEasing 消费，未知名退化为 linear。
+        public string RainWidthEasePress = "";
+        public float RainWidthDurPress;
+        public string RainWidthEaseRelease = "";
+        public float RainWidthDurRelease;
+        public string RainHeightEasePress = "";
+        public float RainHeightDurPress;
+        public string RainHeightEaseRelease = "";
+        public float RainHeightDurRelease;
+        public string RainSpeedEasePress = "";
+        public float RainSpeedDurPress;
+        public string RainSpeedEaseRelease = "";
+        public float RainSpeedDurRelease;
+        public float[] RainColorTopPressed;
+        public float[] RainColorBottomPressed;
+        public bool UseRainColorPressed;
+        // Eased transition for the pressed rain colors (same instant default as the geometry). /
+        // 按下雨色的缓动过渡（与几何同样的即时默认）。
+        public string RainColorEasePress = "";
+        public float RainColorDurPress;
+        public string RainColorEaseRelease = "";
+        public float RainColorDurRelease;
+        // Per-node rain sprite transform (sprite-list drops only): scale / offset / rotation of
+        // the image inside the drop's trail rect, with optional pressed values and easing. All
+        // defaults are 0 = "no transform", so no legacy-repair entry is needed. /
+        // 节点级雨滴贴图变换（仅作用于贴图列表雨滴）：贴图在轨迹矩形内的缩放/偏移/旋转，
+        // 带可选按下值与缓动。默认全 0 = 无变换，故无需旧配置修复条目。
+        public bool UseRainSpriteTransform;
+        public float RainSpriteScale;
+        public float RainSpriteOffsetX;
+        public float RainSpriteOffsetY;
+        public float RainSpriteRotation;
+        public float RainSpriteScalePressed;
+        public float RainSpriteOffsetXPressed;
+        public float RainSpriteOffsetYPressed;
+        public float RainSpriteRotationPressed;
+        public string RainSpriteEasePress = "";
+        public float RainSpriteDurPress;
+        public string RainSpriteEaseRelease = "";
+        public float RainSpriteDurRelease;
+        public int RainDirection = 0;
         // Per-node rain gradient (top/bottom colors). UseCustomRainColor
         // switches both; when off the node follows its rain row's global color. /
         // 节点级雨滴渐变（顶/底双色渐变）。UseCustomRainColor 同时切换两色；关闭时
@@ -1500,6 +1608,18 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public float CountTextShadowOffsetX = 1f;
         public float CountTextShadowOffsetY = -1f;
         public float CountTextShadowSoftness;
+        /// <summary>Optional custom outline sprite path ("" = built-in outline). /
+        /// 可选自定义描边贴图路径（"" = 内置描边）。</summary>
+        public string OutlineImagePath = "";
+        /// <summary>Key shape blur settings; disabled by default so every existing profile
+        /// keeps its crisp sprite. / 按键形状模糊设置；默认关闭，所有现有配置保持清晰贴图。</summary>
+        public bool EnableBackgroundBlur;
+        public float BackgroundBlurRadius = 8f;
+        public float BackgroundBlurVibrancy = 1f;
+        /// <summary>Optional per-node rain sprite list: local images with count and corner radius. /
+        /// 节点级雨滴贴图列表：本地图片，带出现次数与圆角。</summary>
+        public bool UseRainSpriteList;
+        public List<RainSpriteConfig> RainSprites = new List<RainSpriteConfig>();
 
         /// <summary>Runtime-only back-reference to the built Key (never serialized — JsonUtility
         /// would write UnityEngine.Object references as instance IDs). / 仅运行时的 Key 反向引用
@@ -1515,6 +1635,18 @@ namespace JipperKeyViewer.KeyViewer.Settings
         {
             return JsonConvert.DeserializeObject<FmNode>(JsonConvert.SerializeObject(this));
         }
+    }
+
+    /// <summary>
+    /// One entry in a node's rain sprite list / 节点雨滴贴图列表中的一条
+    /// </summary>
+    [System.Serializable]
+    [JsonObject(MemberSerialization.Fields)]
+    public class RainSpriteConfig
+    {
+        public string Path = "";
+        public int Count = 1;
+        public float CornerRadius = 0f;
     }
 
     /// <summary>A named, visibility-toggled group of custom nodes (named visibility groups). /

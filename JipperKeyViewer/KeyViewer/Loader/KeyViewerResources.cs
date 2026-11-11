@@ -35,7 +35,27 @@ namespace JipperKeyViewer.KeyViewer
             ("JipperKeyViewer.Assets.GhostRain.png", "GhostRain.png"),
             ("JipperKeyViewer.Assets.MAPLESTORY_OTF_BOLD.OTF", "MAPLESTORY_OTF_BOLD.OTF"),
             ("JipperKeyViewer.Assets.cjkFonts-regular-normalized.otf", "cjkFonts-regular-normalized.otf"),
+            ("JipperKeyViewer.Assets.KeyViewerBlur.bundle", "KeyViewerBlur.bundle"),
         };
+
+        private Sprite customOutlineSprite;
+        private string customOutlineSpritePath;
+
+        /// <summary>Loaded blur shader bundle + material. The bundle is kept alive for the
+        /// material's lifetime (destroying the Shader a material references breaks every draw
+        /// that still uses it). Null when the bundle is missing/unloadable — background blur
+        /// silently stays off in that case. / 已加载的模糊 shader bundle 与材质。bundle 在材质的
+        /// 生命周期内保持存活（销毁材质引用的 Shader 会让所有仍在使用它的绘制坏掉）。bundle
+        /// 缺失/无法加载时为 null——此时背景模糊静默保持关闭。</summary>
+        private AssetBundle blurBundle;
+        private Material blurMaterial;
+        private bool blurLoadAttempted;
+
+        /// <summary>The background-blur material, or null when unavailable. Callers must treat
+        /// null as "feature off" (blur slots stay disabled so no solid duplicate is drawn). /
+        /// 背景模糊材质，不可用时为 null。调用方必须把 null 视作「功能关闭」（模糊槽位保持
+        /// 关闭，以免画出实心重复背景）。</summary>
+        internal Material BlurMaterial => blurMaterial;
 
         /// <summary>
         /// Extract embedded default assets into assetsDir — ONLY files that don't exist yet.
@@ -239,6 +259,8 @@ namespace JipperKeyViewer.KeyViewer
             keyBackgroundSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "KeyBackground.png"));
             keyOutlineSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "KeyOutline.png"));
             ghostRainSprite = LoadSpriteFromFile(Path.Combine(assetsDir, "GhostRain.png"));
+            LoadCustomOutlineSprite();
+            EnsureBlurMaterial(assetsDir);
 
             LoadFontFromFile(assetsDir, "MAPLESTORY_OTF_BOLD.OTF", "MapleStory", ref mapleFont, fontList);
             LoadCJKFontFromFile(assetsDir, "cjkFonts-regular-normalized.otf", "CJK (Default)", fontList);
@@ -264,6 +286,84 @@ namespace JipperKeyViewer.KeyViewer
                 fontNameIndex[fontList[i].name] = i;
 
             return true;
+        }
+
+        private void LoadCustomOutlineSprite()
+        {
+            string configured = Settings.Data?.OutlineImagePath;
+            if (string.IsNullOrWhiteSpace(configured))
+            {
+                customOutlineSprite = null;
+                customOutlineSpritePath = null;
+                return;
+            }
+            string resolved = ResolveCustomImagePath(configured);
+            if (string.IsNullOrEmpty(resolved))
+            {
+                customOutlineSprite = null;
+                customOutlineSpritePath = null;
+                Loader.Warning($"KeyViewer: custom outline image '{configured}' not found; using built-in outline");
+                return;
+            }
+            if (customOutlineSprite != null && customOutlineSpritePath == resolved) return;
+            customOutlineSprite = KvImageLoader.LoadSprite(resolved, Vector4.zero);
+            customOutlineSpritePath = resolved;
+            if (customOutlineSprite == null)
+                Loader.Warning($"KeyViewer: custom outline image '{configured}' failed to load; using built-in outline");
+        }
+
+        private Sprite OutlineSprite => customOutlineSprite != null ? customOutlineSprite : keyOutlineSprite;
+
+        /// <summary>Load the GrabPass blur shader from the embedded bundle (extracted to disk by
+        /// EnsureBundledAssets like every other bundled asset). A failure is reported once — the
+        /// blur feature is optional and its absence must not touch the rest of the build. Note the
+        /// bundle is built by a nearby Unity 6.3 editor; Unity logs a version-mismatch warning but
+        /// loads same-minor bundles, and the shader itself is version-stable. /
+        /// 从内嵌 bundle 加载 GrabPass 模糊 shader（与其余内嵌资源一样经 EnsureBundledAssets 落盘）。
+        /// 失败只报一次——模糊是可选功能，其缺席不得影响其余构建。注意 bundle 由邻近的 Unity 6.3
+        /// 编辑器构建；Unity 会记一条版本不匹配警告但可加载同一次版本号的 bundle，shader 本身
+        /// 对版本稳定。</summary>
+        private void EnsureBlurMaterial(string assetsDir)
+        {
+            if (blurMaterial != null) return;
+            if (blurLoadAttempted) return; // one attempt per session; a bad file stays bad / 每会话只试一次；坏文件不会变好
+            blurLoadAttempted = true;
+            string path = Path.Combine(assetsDir, "KeyViewerBlur.bundle");
+            if (!File.Exists(path))
+            {
+                Loader.Warning("KeyViewer: KeyViewerBlur.bundle not found in assets/ (background blur stays off; re-run tools/Build-BlurBundle.ps1)");
+                return;
+            }
+            try
+            {
+                blurBundle = AssetBundle.LoadFromFile(path);
+                Shader shader = blurBundle != null ? blurBundle.LoadAsset<Shader>("Assets/Shaders/KeyViewerBlur.shader") : null;
+                if (shader == null)
+                {
+                    Loader.Warning("KeyViewer: blur shader missing from KeyViewerBlur.bundle (background blur stays off)");
+                    UnloadBlurBundle();
+                    return;
+                }
+                blurMaterial = new Material(shader)
+                {
+                    // Survive scene changes with the overlay itself (the material is owned here and
+                    // freed in ReleaseCustomTextures). / 与覆盖层一同在场景切换中存活（材质由本处
+                    // 持有，在 ReleaseCustomTextures 中释放）。
+                    hideFlags = HideFlags.DontUnloadUnusedAsset | HideFlags.DontSave
+                };
+                Loader.Log("KeyViewer: background blur material ready");
+            }
+            catch (Exception e)
+            {
+                Loader.Warning($"KeyViewer: failed to load KeyViewerBlur.bundle (background blur stays off): {e.Message}");
+                UnloadBlurBundle();
+            }
+        }
+
+        private void UnloadBlurBundle()
+        {
+            if (blurMaterial != null) { UnityEngine.Object.Destroy(blurMaterial); blurMaterial = null; }
+            if (blurBundle != null) { blurBundle.Unload(false); blurBundle = null; }
         }
 
         /// <summary>

@@ -17,6 +17,11 @@ namespace JipperKeyViewer.KeyViewer
             public string Text;
             public Color Left;
             public Color Right;
+            public Color TopLeft;
+            public Color TopRight;
+            public Color BottomLeft;
+            public Color BottomRight;
+            public bool Corner;
         }
 
         private readonly Dictionary<TMP_Text, TextGradientState> textGradientStates =
@@ -133,13 +138,16 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (key == null) return;
             bool pressed = key.isPressed;
-            ResolveTextGradient(key, false, pressed, out bool labelOn, out Color labelLeft, out Color labelRight);
-            ResolveTextGradient(key, true, pressed, out bool countOn, out Color countLeft, out Color countRight);
-            ApplyTextGradient(key.text, labelOn, labelLeft, labelRight, key, false);
-            ApplyTextGradient(key.value, countOn, countLeft, countRight, key, true);
+            ResolveTextGradient(key, false, pressed, out bool labelOn, out Color labelLeft, out Color labelRight,
+                out bool labelCorner, out Color labelTL, out Color labelTR, out Color labelBL, out Color labelBR);
+            ResolveTextGradient(key, true, pressed, out bool countOn, out Color countLeft, out Color countRight,
+                out bool countCorner, out Color countTL, out Color countTR, out Color countBL, out Color countBR);
+            ApplyTextGradient(key.text, labelOn, labelLeft, labelRight, labelCorner, labelTL, labelTR, labelBL, labelBR, key, false);
+            ApplyTextGradient(key.value, countOn, countLeft, countRight, countCorner, countTL, countTR, countBL, countBR, key, true);
         }
 
-        private void ApplyTextGradient(TMP_Text text, bool enabled, Color left, Color right, Key key, bool count)
+        private void ApplyTextGradient(TMP_Text text, bool enabled, Color left, Color right,
+            bool corner, Color topLeft, Color topRight, Color bottomLeft, Color bottomRight, Key key, bool count)
         {
             if (text == null) return;
             if (!enabled)
@@ -189,10 +197,23 @@ namespace JipperKeyViewer.KeyViewer
             // meshInfo[].colors32，故读第一个可见字符的颜色即能以一次数组读取检测到重绘。
             bool baseColorChanged = text.color != Color.white;
             if (baseColorChanged) text.color = Color.white;
+            bool cornerChanged = corner
+                && (!IsInvalidGradientColor(topLeft) || !IsInvalidGradientColor(topRight)
+                    || !IsInvalidGradientColor(bottomLeft) || !IsInvalidGradientColor(bottomRight));
+            if (cornerChanged)
+            {
+                if (IsInvalidGradientColor(topLeft)) topLeft = left;
+                if (IsInvalidGradientColor(topRight)) topRight = right;
+                if (IsInvalidGradientColor(bottomLeft)) bottomLeft = left;
+                if (IsInvalidGradientColor(bottomRight)) bottomRight = right;
+            }
             if (!baseColorChanged
                 && textGradientStates.TryGetValue(text, out TextGradientState state)
                 && state.Text == value && state.Left == left && state.Right == right
-                && GradientStillApplied(text, left, right))
+                && state.Corner == cornerChanged
+                && (!cornerChanged || (state.TopLeft == topLeft && state.TopRight == topRight
+                    && state.BottomLeft == bottomLeft && state.BottomRight == bottomRight))
+                && GradientStillApplied(text, left, right, cornerChanged, topLeft, topRight, bottomLeft, bottomRight))
                 return;
 
             // Vertex colors are multiplied by TMP_Text.color. Keep the base color white while a
@@ -208,7 +229,11 @@ namespace JipperKeyViewer.KeyViewer
                 // Nothing to tint (empty or not yet parsed). Remember the state only when the text
                 // really is empty; otherwise drop it so a later tick retries the real build.
                 if (string.IsNullOrEmpty(value)) textGradientStates[text] =
-                    new TextGradientState { Text = value, Left = left, Right = right };
+                    new TextGradientState
+                    {
+                        Text = value, Left = left, Right = right, Corner = cornerChanged,
+                        TopLeft = topLeft, TopRight = topRight, BottomLeft = bottomLeft, BottomRight = bottomRight
+                    };
                 else textGradientStates.Remove(text);
                 return;
             }
@@ -223,8 +248,13 @@ namespace JipperKeyViewer.KeyViewer
                     continue;
                 Color32[] colors = info.meshInfo[material].colors32;
                 if (colors == null) continue;
-                float t = charCount > 1 ? (float)i / (charCount - 1) : 0f;
-                Color32 color = Color.Lerp(left, right, t);
+                float tx = charCount > 1 ? (float)i / (charCount - 1) : 0f;
+                Color32 color = cornerChanged
+                    ? Color32.Lerp(
+                        Color32.Lerp(bottomLeft, bottomRight, tx),
+                        Color32.Lerp(topLeft, topRight, tx),
+                        character.vertexIndex < 2 ? 0f : 1f)
+                    : (Color32)Color.Lerp(left, right, tx);
                 int vertex = character.vertexIndex;
                 if (vertex < 0 || vertex + 3 >= colors.Length) continue;
                 colors[vertex] = color;
@@ -233,7 +263,11 @@ namespace JipperKeyViewer.KeyViewer
                 colors[vertex + 3] = color;
             }
             text.UpdateVertexData(TMP_VertexDataUpdateFlags.Colors32);
-            textGradientStates[text] = new TextGradientState { Text = value, Left = left, Right = right };
+            textGradientStates[text] = new TextGradientState
+            {
+                Text = value, Left = left, Right = right, Corner = cornerChanged,
+                TopLeft = topLeft, TopRight = topRight, BottomLeft = bottomLeft, BottomRight = bottomRight
+            };
         }
 
         /// <summary>Is the tint we last wrote still present in TMP's mesh? A press, a font change,
@@ -258,7 +292,8 @@ namespace JipperKeyViewer.KeyViewer
         /// 颜色不同于基色，全量扫描即可区分；左端点为白的**单**字符标签两种状态视觉本就相同
         /// （t=0 渲染 left = 基色），并无损失。仅在缓存命中时运行；O(可见字形) 次字节比较。
         /// </summary>
-        private static bool GradientStillApplied(TMP_Text text, Color left, Color right)
+        private static bool GradientStillApplied(TMP_Text text, Color left, Color right,
+            bool corner, Color topLeft, Color topRight, Color bottomLeft, Color bottomRight)
         {
             TMP_TextInfo info = text.textInfo;
             if (info == null || info.characterCount <= 0) return true; // nothing to tint yet
@@ -272,10 +307,15 @@ namespace JipperKeyViewer.KeyViewer
                 Color32[] colors = info.meshInfo[material].colors32;
                 int vertex = character.vertexIndex;
                 if (colors == null || vertex < 0 || vertex + 3 >= colors.Length) continue;
-                float t = charCount > 1 ? (float)i / (charCount - 1) : 0f;
+                float tx = charCount > 1 ? (float)i / (charCount - 1) : 0f;
                 // Color32 has no == operator in this Unity version, so compare components.
                 // 该版本 Unity 的 Color32 没有 == 运算符，故逐分量比较。
-                Color32 want = Color.Lerp(left, right, t);
+                Color32 want = corner
+                    ? Color32.Lerp(
+                        Color32.Lerp(bottomLeft, bottomRight, tx),
+                        Color32.Lerp(topLeft, topRight, tx),
+                        vertex >= 2 ? 1f : 0f)
+                    : (Color32)Color.Lerp(left, right, tx);
                 Color32 got = colors[vertex];
                 if (got.r != want.r || got.g != want.g || got.b != want.b || got.a != want.a)
                     return false;
@@ -287,7 +327,8 @@ namespace JipperKeyViewer.KeyViewer
             float.IsNaN(c.r) || float.IsNaN(c.g) || float.IsNaN(c.b) || float.IsNaN(c.a)
             || float.IsInfinity(c.r) || float.IsInfinity(c.g) || float.IsInfinity(c.b) || float.IsInfinity(c.a);
 
-        private void ResolveTextGradient(Key key, bool count, bool pressed, out bool enabled, out Color left, out Color right)
+        private void ResolveTextGradient(Key key, bool count, bool pressed, out bool enabled, out Color left, out Color right,
+            out bool corner, out Color topLeft, out Color topRight, out Color bottomLeft, out Color bottomRight)
         {
             ProfileData d = Settings.Data;
             FmNode node = key?.CustomNode;
@@ -302,9 +343,15 @@ namespace JipperKeyViewer.KeyViewer
                     ? (usePressed ? node.CountTextGradientRightPressed : node.CountTextGradientRight)
                     : (usePressed ? node.TextGradientRightPressed : node.TextGradientRight);
                 Color fallback = ResolveSolidTextColor(key, count);
+                float opacity = global::JipperKeyViewer.KeyViewer.KeyViewer.EffectiveTextOpacity(node, count);
                 left = NodeColor(leftArray, fallback);
                 right = NodeColor(rightArray, fallback);
-                float opacity = global::JipperKeyViewer.KeyViewer.KeyViewer.EffectiveTextOpacity(node, count);
+                corner = count ? node.UseCountTextCornerGradient : node.UseTextCornerGradient;
+                topLeft = NodeColor(count ? node.CountTextGradientTopLeft : node.TextGradientTopLeft, left);
+                topRight = NodeColor(count ? node.CountTextGradientTopRight : node.TextGradientTopRight, right);
+                bottomLeft = NodeColor(count ? node.CountTextGradientBottomLeft : node.TextGradientBottomLeft, left);
+                bottomRight = NodeColor(count ? node.CountTextGradientBottomRight : node.TextGradientBottomRight, right);
+                topLeft.a *= opacity; topRight.a *= opacity; bottomLeft.a *= opacity; bottomRight.a *= opacity;
                 left.a *= opacity;
                 right.a *= opacity;
                 return;
@@ -317,6 +364,8 @@ namespace JipperKeyViewer.KeyViewer
             right = globalPressed
                 ? (count ? d.CountTextGradientRightPressed : d.KeyTextGradientRightPressed)
                 : (count ? d.CountTextGradientRight : d.KeyTextGradientRight);
+            corner = false;
+            topLeft = left; topRight = right; bottomLeft = left; bottomRight = right;
         }
 
         private Color ResolveSolidTextColor(Key key, bool count)

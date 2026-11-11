@@ -22,7 +22,12 @@ $files = @(
     'KeyOutline.png',
     'GhostRain.png',
     'MAPLESTORY_OTF_BOLD.OTF',
-    'cjkFonts-regular-normalized.otf'
+    'cjkFonts-regular-normalized.otf',
+    # Background-blur shader AssetBundle, produced by tools\Build-BlurBundle.ps1 (Unity
+    # batchmode). Regenerate that first whenever the shader changes. /
+    # 背景模糊 shader 的 AssetBundle，由 tools\Build-BlurBundle.ps1（Unity 批处理）生成。
+    # 改动 shader 后需先重新生成它。
+    'KeyViewerBlur.bundle'
 )
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null

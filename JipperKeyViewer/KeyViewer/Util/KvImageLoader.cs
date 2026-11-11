@@ -56,6 +56,12 @@ namespace JipperKeyViewer.KeyViewer.Util
         private static readonly Dictionary<string, CachedTexture> textureCache
             = new Dictionary<string, CachedTexture>(StringComparer.OrdinalIgnoreCase);
         private static readonly HashSet<Texture2D> cachedOwnership = new HashSet<Texture2D>();
+        /// <summary>Full-rect Sprite wrappers for cached textures. The wrapper is cheap, but
+        /// creating one per drop would churn managed/GC state; key it alongside its texture so a
+        /// texture refresh invalidates the wrapper too. / 缓存贴图的整图 Sprite 包装。包装本身
+        /// 很轻，但每滴创建会搅动托管分配；随贴图一起键控，贴图刷新时包装同步失效。</summary>
+        private static readonly Dictionary<string, Sprite> cachedSprites
+            = new Dictionary<string, Sprite>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>Aggregate VRAM ceiling for cached custom-image textures. The per-file caps
         /// (16 MB on disk, 4096x4096) bound any ONE file but say nothing about the total: a
@@ -94,6 +100,7 @@ namespace JipperKeyViewer.KeyViewer.Util
             }
             textureCache.Clear();
             cachedOwnership.Clear();
+            cachedSprites.Clear();
             // Budget refusals were judged against the OLD live budget; after a wholesale release
             // everything fits again, so the negative cache must not outlive it.
             // 预算级拒绝是按**旧的**实时预算判的；整体释放后一切都放得下，负缓存不得比它更长寿。
@@ -162,6 +169,7 @@ namespace JipperKeyViewer.KeyViewer.Util
                 // 自己的预算。
                 liveCachedImageBytes -= (long)hit.LastWidth * hit.LastHeight * 4L;
                 if (liveCachedImageBytes < 0) liveCachedImageBytes = 0;
+                cachedSprites.Remove(path);
             }
             // Negative-cache gate: a stat is microseconds; re-reading + re-decoding a refused file
             // (and re-logging it) is the exact per-frame cost the rebuild loop cannot afford.
@@ -235,6 +243,29 @@ namespace JipperKeyViewer.KeyViewer.Util
                 // 持有，会照旧被销毁。
             }
             return loaded;
+        }
+
+        /// <summary>Get or create a full-rect sprite for a cached rain texture. Use this only on
+        /// paths whose lifetime is owned by the cross-rebuild cache. / 获取或创建缓存雨滴贴图的
+        /// 整图 Sprite。仅用于由跨重建缓存持有生命周期的路径。</summary>
+        internal static Sprite GetOrCreateRainSprite(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            Texture2D texture = LoadTextureCached(path);
+            if (texture == null) return null;
+            if (cachedSprites.TryGetValue(path, out Sprite sprite) && sprite != null) return sprite;
+            try
+            {
+                sprite = Sprite.Create(texture, new Rect(0f, 0f, texture.width, texture.height),
+                    new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, Vector4.zero);
+                cachedSprites[path] = sprite;
+                return sprite;
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: failed to create rain sprite from '{path}': {e.Message}");
+                return null;
+            }
         }
 
         /// <summary>Record a refusal for the negative cache (bounded; overflow clears wholesale).

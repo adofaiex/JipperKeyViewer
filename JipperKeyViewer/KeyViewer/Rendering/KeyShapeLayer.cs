@@ -42,6 +42,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private Color[] outlineGradientTops;
         private Color[] outlineGradientBottoms;
         private float[] scales;
+        private Vector3[] rotations;
         private bool[] visibles;
         // Per-slot corner radius (0 = square, the legacy 9-slice path) and per-slot border
         // thickness in on-screen px (0 = follow the sprite's own 9-slice border). /
@@ -49,14 +50,27 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         // 九宫格边框）。
         private float[] cornerRadii;
         private float[] borderThicknesses;
+        // Blur participation + per-slot shader params (owner side; read by the blur layer).
+        // 模糊参与标记与逐槽 shader 参数（持有层侧；由模糊层读取）。
+        private bool[] blurFlags;
+        private float[] blurRadii;
+        private float[] blurVibrancies;
         private int count;
 
         /// <summary>State owner; null on the background layer itself / 状态持有者；背景层自身为 null</summary>
         private KeyShapeLayer owner;
         /// <summary>Outline layer sharing this layer's state (owner side) / 共享本层状态的描边层（持有方）</summary>
         private KeyShapeLayer outlineLayer;
+        /// <summary>Blur layer sharing this layer's state (owner side); draws only blur-enabled
+        /// slots with the background-blur material / 共享本层状态的模糊层（持有方）；仅绘制启用模糊的
+        /// 槽位，使用背景模糊材质</summary>
+        private KeyShapeLayer blurLayer;
         /// <summary>This layer draws the outline color set / 本层是否绘制描边颜色组</summary>
         private bool isOutline;
+        /// <summary>This layer is the background-blur layer: fill-only geometry with per-vertex
+        /// blur radius (uv0.z) and vibrancy (uv0.w) / 本层为背景模糊层：仅填充几何，顶点携带模糊
+        /// 半径（uv0.z）与浓度（uv0.w）</summary>
+        private bool isBlurLayer;
 
         /// <summary>Bumped on every Init so stale press-animation coroutines can detect a rebuild / 每次 Init 递增，供按压动画协程检测重建</summary>
         public int Generation { get; private set; }
@@ -139,9 +153,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             outlineGradientTops = new Color[slotCount];
             outlineGradientBottoms = new Color[slotCount];
             scales = new float[slotCount];
+            rotations = new Vector3[slotCount];
             visibles = new bool[slotCount];
             cornerRadii = new float[slotCount];
             borderThicknesses = new float[slotCount];
+            blurFlags = new bool[slotCount];
+            blurRadii = new float[slotCount];
+            blurVibrancies = new float[slotCount];
             for (int i = 0; i < slotCount; i++)
             {
                 bgColors[i] = Color.white;
@@ -162,11 +180,56 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             MarkDirty();
         }
 
+        /// <summary>Wire the background-blur layer to this (owner) layer's state. The blur layer
+        /// keeps isOutline == false so it emits the FILL geometry (a blur window replaces the
+        /// background fill; the outline still draws over it from the outline layer). /
+        /// 将背景模糊层接到本（持有）层的状态上。模糊层保持 isOutline == false 以发出**填充**
+        /// 几何（模糊窗口取代背景填充；描边仍由描边层画在其上）。</summary>
+        public void AttachBlurLayer(KeyShapeLayer blur)
+        {
+            blurLayer = blur;
+            blur.owner = this;
+            blur.isBlurLayer = true;
+            MarkDirty();
+        }
+
+        /// <summary>Set whether a slot's background is replaced by the blur window (owner side). /
+        /// 设置槽位背景是否替换为模糊窗口（持有层侧）。</summary>
+        public void SetBlurEnabled(int slot, bool enabled)
+        {
+            if (slot < 0 || slot >= count) return;
+            if (blurFlags[slot] == enabled) return;
+            blurFlags[slot] = enabled;
+            MarkDirty();
+        }
+
+        /// <summary>Per-slot blur radius (px, interpolated across the slot's vertices) and
+        /// vibrancy (saturation boost). NaN/Inf are scrubbed to safe values — these flow into
+        /// vertex UV data and through the shader. / 逐槽模糊半径（像素，槽位顶点间插值）与浓度
+        /// （饱和度增益）。NaN/Inf 一律净化——它们会进入顶点 UV 数据并穿过 shader。</summary>
+        public void SetBlurParams(int slot, float radius, float vibrancy)
+        {
+            if (slot < 0 || slot >= count) return;
+            if (float.IsNaN(radius) || float.IsInfinity(radius) || radius < 1f) radius = 1f;
+            if (float.IsNaN(vibrancy) || float.IsInfinity(vibrancy)) vibrancy = 0f;
+            vibrancy = Mathf.Clamp(vibrancy, 0f, 2f);
+            if (blurRadii[slot] == radius && blurVibrancies[slot] == vibrancy) return;
+            blurRadii[slot] = radius;
+            blurVibrancies[slot] = vibrancy;
+            MarkDirty();
+        }
+
         /// <summary>Set both layers' sprites (call on the owner) / 设置两层的贴图（在持有层上调用）</summary>
         public void SetSprites(Sprite background, Sprite outline)
         {
             Sprite = background;
             if (outlineLayer != null) outlineLayer.Sprite = outline;
+            // The blur layer samples the SAME background sprite's ALPHA so a blurred key keeps
+            // the sprite's rounded corners instead of showing a square blur box. Its UVs come
+            // from the normal 9-slice geometry (only uv.z/w carry radius/vibrancy).
+            // 模糊层采样**同一张**背景贴图的 alpha，使模糊按键保留贴图自身的圆角，而不是露出
+            // 方形模糊块。其 UV 来自常规九宫格几何（只有 uv.z/w 承载半径/浓度）。
+            if (blurLayer != null) blurLayer.Sprite = background;
             // Texture changed — the material must rebind or the renderer keeps the white default
             // (Image.sprite's setter does SetAllDirty for this reason) / 贴图变了必须重绑材质，
             // 否则渲染器一直用白色默认贴图（Image.sprite 的 setter 调 SetAllDirty 的原因）
@@ -176,6 +239,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 outlineLayer.SetVerticesDirty();
                 outlineLayer.SetMaterialDirty();
+            }
+            if (blurLayer != null)
+            {
+                // The blur layer's texture is the SAME background sprite (alpha mask), so a
+                // sprite swap must rebind it as well or the mask keeps the old art.
+                // 模糊层的贴图就是**同一张**背景贴图（alpha 遮罩），故换贴图也必须重绑它，
+                // 否则遮罩仍是旧图。
+                blurLayer.SetVerticesDirty();
+                blurLayer.SetMaterialDirty();
             }
         }
 
@@ -244,6 +316,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             MarkDirty();
         }
 
+        /// <summary>Per-slot box rotation in degrees, XYZ; geometry rotates around the slot's
+        /// centre in the mesh-generation pass. / 每槽按键框旋转角度（XYZ，度）；几何在 mesh 生成
+        /// 阶段绕槽位中心旋转。</summary>
+        public void SetRotation(int slot, Vector3 rotation)
+        {
+            if (slot < 0 || slot >= count) return;
+            if (rotations[slot] == rotation) return;
+            rotations[slot] = rotation;
+            MarkDirty();
+        }
+
         public void SetVisible(int slot, bool visible)
         {
             if (slot < 0 || slot >= count) return;
@@ -277,6 +360,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             SetVerticesDirty();
             if (outlineLayer != null) outlineLayer.SetVerticesDirty();
+            if (blurLayer != null) blurLayer.SetVerticesDirty();
         }
 
         /// <summary>uGUI's VertexHelper entry point. Kept so the previous generation path still
@@ -363,6 +447,13 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             for (int i = 0; i < src.count; i++)
             {
                 if (!src.visibles[i]) continue;
+                // Blur windows replace the background FILL on blur-enabled slots: the plain
+                // background layer skips them (the blur layer draws them instead), the blur
+                // layer draws ONLY them, and the outline layer keeps outlining everything.
+                // 模糊窗口取代启用槽位的背景**填充**：普通背景层跳过它们（由模糊层绘制），
+                // 模糊层**只**绘制它们，描边层仍为所有槽位描边。
+                if (isBlurLayer) { if (src.blurFlags == null || !src.blurFlags[i]) continue; }
+                else if (!isOutline && src.blurFlags != null && src.blurFlags[i]) continue;
                 Rect r = src.rects[i];
                 if (r.width <= 0f || r.height <= 0f) continue;
                 float s = src.scales[i];
@@ -378,6 +469,10 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 钳制)会产生负宽高——镜像交叠的垃圾切片。同时拦截未来坏缩放数学产生的 NaN。
                     if (float.IsNaN(r.width) || float.IsNaN(r.height) || r.width <= 0f || r.height <= 0f) continue;
                 }
+                Vector3 rotation = src.rotations != null && i < src.rotations.Length ? src.rotations[i] : Vector3.zero;
+                if (float.IsNaN(rotation.x) || float.IsNaN(rotation.y) || float.IsNaN(rotation.z)
+                    || float.IsInfinity(rotation.x) || float.IsInfinity(rotation.y) || float.IsInfinity(rotation.z))
+                    rotation = Vector3.zero;
                 // Budget gate (see KeyShapeVertBudget): slots beyond it are dropped tail-first —
                 // slot order is the layout's draw order, so the surviving set is the document's
                 // front portion, which reads as "the far keys are missing" instead of "everything
@@ -399,6 +494,19 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     ? (isOutline ? src.outlineGradientTops[i] : src.bgGradientTops[i])
                     : colors[i];
                 float radius = src.cornerRadii[i];
+                // The blur layer carries its shader params in uv0.zw: radius in px (so ONE
+                // material serves every per-node radius via vertex interpolation) and vibrancy.
+                // uv0.xy keeps the sprite UV — the blur shader uses it to sample the sprite's
+                // alpha so the blur follows the sprite's rounded corners (the grab texture itself
+                // is sampled in screen space).
+                // 模糊层把 shader 参数放进 uv0.zw：半径（像素，顶点插值让一份材质服务所有
+                // 逐节点半径）与浓度。uv0.xy 保留贴图 UV——模糊 shader 用它采样贴图 alpha，使
+                // 模糊跟随贴图圆角（抓取纹理本身按屏幕空间采样）。
+                Vector4? blurUv = isBlurLayer
+                    ? new Vector4(0f, 0f,
+                        src.blurRadii != null && i < src.blurRadii.Length ? src.blurRadii[i] : 1f,
+                        src.blurVibrancies != null && i < src.blurVibrancies.Length ? src.blurVibrancies[i] : 0f)
+                    : (Vector4?)null;
                 if (radius > 0f)
                 {
                     // Outline ring drawn separately (slightly smaller quad below the filled one)
@@ -406,7 +514,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 描边环单独绘制（填充块下方略小的块），使两层与九宫格路径保持同样的双
                     // mesh 结构。
                     float border = src.borderThicknesses[i];
-                    DrawRounded(sink, r, top, bottom, gradient, radius, border);
+                    DrawRounded(sink, r, top, bottom, gradient, radius, border, rotation, blurUv);
                 }
                 else if (src.borderThicknesses[i] > 0f && isOutline)
                 {
@@ -418,11 +526,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     // 直角键的自定义边框厚度：描边层改画指定厚度的直角环，取代贴图自带的
                     // 11px 九宫格边框。没有这个分支时 BorderThickness 对直角键完全无效——
                     // 只有圆角路径读它。背景层保持整块九宫格填充；环画在其外缘之上。
-                    DrawSquareRing(sink, r, top, bottom, gradient, src.borderThicknesses[i]);
+                    DrawSquareRing(sink, r, top, bottom, gradient, src.borderThicknesses[i], rotation);
                 }
                 else
                 {
-                    DrawSliced(sink, r, top, bottom, gradient, Sprite);
+                    DrawSliced(sink, r, top, bottom, gradient, Sprite, rotation, blurUv);
                 }
             }
             if (skippedOverBudget > 0 && !shapeBudgetWarned)
@@ -501,11 +609,11 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private static readonly float[] scratchInnerX = new float[MaxRoundedPoints];
         private static readonly float[] scratchInnerY = new float[MaxRoundedPoints];
 
-        private static void DrawSliced(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, Sprite sprite)
+        private static void DrawSliced(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, Sprite sprite, Vector3 rotation, Vector4? uvOverride = null)
         {
             if (sprite == null)
             {
-                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, top, bottom, gradient, r.yMin, r.yMax);
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, 0f, 1f, 0f, 1f, top, bottom, gradient, r.yMin, r.yMax, Vector2.zero, Vector3.zero, uvOverride);
                 return;
             }
             // UV rects computed from textureRect (outer) and border (inner) — this Unity version has
@@ -530,7 +638,17 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             Vector4 spriteBorder = sprite.border * ppuScale;
             if (sprite.border == Vector4.zero)
             {
-                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax, top, bottom, gradient, r.yMin, r.yMax);
+                // MUST forward uvOverride / rotation / pivot too: the blur layer reaches this
+                // branch with a zero-border sprite, and dropping uvOverride loses the per-slot
+                // radius/vibrancy (uv0.zw) — the blur then reads (0,0), rendering the key's
+                // background as if transparent with the radius slider doing nothing. The 9-arg
+                // overload also hardcodes pivot (0,0), so a rotated key's blur window would not
+                // rotate with it. / 必须一并转发 uvOverride / rotation / pivot：模糊层会带着零
+                // 边框贴图走到这个分支，丢掉 uvOverride 就丢了逐槽半径/浓度（uv0.zw）——模糊
+                // 于是按 (0,0) 读取，把按键背景渲染得形同透明、半径滑杆也不起作用。9 参数重载
+                // 还把轴心写死成 (0,0)，旋转按键的模糊窗口会不跟着转。
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, o.xMin, o.xMax, o.yMin, o.yMax,
+                    top, bottom, gradient, r.yMin, r.yMax, r.center, rotation, uvOverride);
                 return;
             }
             // Inner UV from the RAW texel border — not the ppu-scaled one. / 内圈 UV 用原始 texel 边框计算,而非 ppu 缩放后的。
@@ -559,7 +677,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 for (int xi = 0; xi < 3; xi++)
                 {
                     if (xs[xi + 1] - xs[xi] <= 0f || ys[yi + 1] - ys[yi] <= 0f) continue;
-                    AddQuad(sink, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], top, bottom, gradient, r.yMin, r.yMax);
+                    AddQuad(sink, xs[xi], xs[xi + 1], ys[yi], ys[yi + 1], us[xi], us[xi + 1], vs[yi], vs[yi + 1], top, bottom, gradient, r.yMin, r.yMax, r.center, rotation, uvOverride);
                 }
             }
         }
@@ -652,7 +770,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// so radius &gt; 0 slots bypass DrawSliced entirely. / 圆角矩形 mesh：背景层填充形状，
         /// 描边层沿边缘内侧画 border 像素的环。九宫格贴图无法圆角，故 radius &gt; 0 的槽位完全
         /// 绕开 DrawSliced。</summary>
-        private void DrawRounded(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float radius, float border)
+        private void DrawRounded(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float radius, float border, Vector3 rotation, Vector4? uvOverride = null)
         {
             float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
             Vector2 uv = RoundedUV();
@@ -663,23 +781,30 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             {
                 // A radius that collapsed (sub-pixel box) still renders as a plain quad rather
                 // than vanishing. / 半径被压缩到 0（亚像素盒子）时仍画成普通矩形而非消失。
-                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, top, bottom, gradient, r.yMin, r.yMax);
+                AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMax, ringUv.x, ringUv.x, ringUv.y, ringUv.y, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation, uvOverride);
                 return;
             }
             int n = FillRoundedPoints(r, rad, scratchRoundX, scratchRoundY);
             if (n == 0) return;
             if (!isOutline)
             {
-                // Filled shape: triangle fan around the rect centre. / 填充形状：绕矩形中心的三角扇。
+                // Filled shape: triangle fan around the rect centre. The UV is the sprite's
+                // opaque centre texel; the blur layer only overrides z/w (radius/vibrancy) and
+                // keeps xy so its alpha mask samples that opaque texel. / 填充形状：绕矩形中心的
+                // 三角扇。UV 为贴图中心的不透明 texel；模糊层只覆盖 z/w（半径/浓度），保留 xy
+                // 以便其 alpha 遮罩采样该不透明 texel。
+                Vector4 uvv = uvOverride.HasValue
+                    ? new Vector4(uv.x, uv.y, uvOverride.Value.z, uvOverride.Value.w)
+                    : new Vector4(uv.x, uv.y, 0f, 0f);
                 int c = sink.VertexCount;
-                sink.AddVert(new Vector3(r.center.x, r.center.y, 0f),
+                sink.AddVert(RotateVertex(new Vector3(r.center.x, r.center.y, 0f), r.center, rotation),
                     VerticalGradientColor(top, bottom, gradient, r.center.y, r.yMin, r.yMax),
-                    new Vector4(uv.x, uv.y, 0f, 0f));
+                    uvv);
                 for (int i = 0; i < n; i++)
                 {
-                    sink.AddVert(new Vector3(scratchRoundX[i], scratchRoundY[i], 0f),
+                    sink.AddVert(RotateVertex(new Vector3(scratchRoundX[i], scratchRoundY[i], 0f), r.center, rotation),
                         VerticalGradientColor(top, bottom, gradient, scratchRoundY[i], r.yMin, r.yMax),
-                        new Vector4(uv.x, uv.y, 0f, 0f));
+                        uvv);
                 }
                 for (int i = 0; i < n; i++)
                     sink.AddTriangle(c, c + 1 + i, c + 1 + (i + 1) % n);
@@ -706,7 +831,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                     new Vector2(scratchRoundX[j], scratchRoundY[j]),
                     new Vector2(scratchInnerX[j], scratchInnerY[j]),
                     new Vector2(scratchInnerX[i], scratchInnerY[i]),
-                    ringUv, top, bottom, gradient, r.yMin, r.yMax);
+                    ringUv, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation);
             }
         }
 
@@ -717,28 +842,29 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// 指定厚度的直角描边环——圆角描边环在直角键上的对应物。四条轴向边（横条占满全宽、
         /// 竖条只占中段），角上不会重复绘制。厚度 0 不会走到这里——旧九宫格路径保留贴图
         /// 自带边框。</summary>
-        private void DrawSquareRing(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float border)
+        private void DrawSquareRing(IKvMeshSink sink, Rect r, Color top, Color bottom, bool gradient, float border, Vector3 rotation)
         {
             float b = Mathf.Min(border, Mathf.Min(r.width, r.height) * 0.5f);
             if (b <= 0f) return;
             Vector2 uv = RingUV();
-            AddQuad(sink, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // top
-            AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // bottom
-            AddQuad(sink, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // left
-            AddQuad(sink, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax); // right
+            AddQuad(sink, r.xMin, r.xMax, r.yMax - b, r.yMax, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation); // top
+            AddQuad(sink, r.xMin, r.xMax, r.yMin, r.yMin + b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation); // bottom
+            AddQuad(sink, r.xMin, r.xMin + b, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation); // left
+            AddQuad(sink, r.xMax - b, r.xMax, r.yMin + b, r.yMax - b, uv.x, uv.x, uv.y, uv.y, top, bottom, gradient, r.yMin, r.yMax, r.center, rotation); // right
         }
 
         /// <summary>Arbitrary quad — the ring segments are not axis-aligned. / 任意四边形——环段
         /// 不与坐标轴对齐。</summary>
         private static void AddQuadVerts(IKvMeshSink sink, Vector2 a, Vector2 b, Vector2 c, Vector2 d, Vector2 uv,
-            Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
+            Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax,
+            Vector2 pivot, Vector3 rotation)
         {
             int i = sink.VertexCount;
             var uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
-            sink.AddVert(new Vector3(a.x, a.y, 0f), VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(new Vector3(b.x, b.y, 0f), VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(new Vector3(c.x, c.y, 0f), VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(new Vector3(d.x, d.y, 0f), VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(a.x, a.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(b.x, b.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(c.x, c.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(d.x, d.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax), uv0);
             sink.AddTriangle(i, i + 1, i + 2);
             sink.AddTriangle(i, i + 2, i + 3);
         }
@@ -749,16 +875,44 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             return Color.Lerp(bottom, top, Mathf.Clamp01((y - yMin) / (yMax - yMin)));
         }
 
+        private static Vector3 RotateVertex(Vector3 position, Vector2 pivot, Vector3 rotation)
+        {
+            if (rotation == Vector3.zero) return position;
+            Vector3 local = new Vector3(position.x - pivot.x, position.y - pivot.y, position.z);
+            local = Quaternion.Euler(rotation) * local;
+            return new Vector3(pivot.x + local.x, pivot.y + local.y, local.z);
+        }
+
         private static void AddQuad(IKvMeshSink sink, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1,
             Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax)
         {
             int i = sink.VertexCount;
             Color cBottom = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
             Color cTop = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
-            sink.AddVert(new Vector3(x0, y0, 0f), cBottom, new Vector4(u0, v0, 0f, 0f));
-            sink.AddVert(new Vector3(x1, y0, 0f), cBottom, new Vector4(u1, v0, 0f, 0f));
-            sink.AddVert(new Vector3(x1, y1, 0f), cTop, new Vector4(u1, v1, 0f, 0f));
-            sink.AddVert(new Vector3(x0, y1, 0f), cTop, new Vector4(u0, v1, 0f, 0f));
+            AddQuad(sink, x0, x1, y0, y1, u0, u1, v0, v1, top, bottom, gradient, gradientYMin, gradientYMax, Vector2.zero, Vector3.zero);
+        }
+
+        private static void AddQuad(IKvMeshSink sink, float x0, float x1, float y0, float y1, float u0, float u1, float v0, float v1,
+            Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax, Vector2 pivot, Vector3 rotation, Vector4? uvOverride = null)
+        {
+            int i = sink.VertexCount;
+            Color cBottom = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
+            Color cTop = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            var quadUv0 = new Vector4(u0, v0, 0f, 0f);
+            var quadUv1 = new Vector4(u1, v1, 0f, 0f);
+            if (uvOverride.HasValue)
+            {
+                // The blur layer carries radius/vibrancy in uv0.zw; xy stays the sprite UV so the
+                // shader can sample the sprite's alpha (rounded corners).
+                // 模糊层把半径/浓度放进 uv0.zw；xy 保持贴图 UV，使 shader 能采样贴图 alpha
+                // （圆角）。
+                quadUv0 = new Vector4(u0, v0, uvOverride.Value.z, uvOverride.Value.w);
+                quadUv1 = new Vector4(u1, v1, uvOverride.Value.z, uvOverride.Value.w);
+            }
+            sink.AddVert(RotateVertex(new Vector3(x0, y0, 0f), pivot, rotation), cBottom, quadUv0);
+            sink.AddVert(RotateVertex(new Vector3(x1, y0, 0f), pivot, rotation), cBottom, quadUv1);
+            sink.AddVert(RotateVertex(new Vector3(x1, y1, 0f), pivot, rotation), cTop, quadUv1);
+            sink.AddVert(RotateVertex(new Vector3(x0, y1, 0f), pivot, rotation), cTop, quadUv0);
             sink.AddTriangle(i, i + 1, i + 2);
             sink.AddTriangle(i, i + 2, i + 3);
         }

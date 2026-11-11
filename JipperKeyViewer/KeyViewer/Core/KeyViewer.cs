@@ -283,10 +283,32 @@ namespace JipperKeyViewer.KeyViewer
         GameObject KeyViewerObject;
         /// <summary>Child GameObject that applies the Size scale transform / 应用大小缩放的子 GameObject</summary>
         GameObject KeyViewerSizeObject;
+        /// <summary>Wrapper between the canvas and SizeObject that carries the overlay-wide press
+        /// transform (rotation/scale/offset around the overlay's centre) / 画布与 SizeObject 之间的
+        /// 包装层，承载覆盖层整体按下变换（绕覆盖层中心的旋转/缩放/偏移）</summary>
+        GameObject KeyViewerPressObject;
         /// <summary>Merged background-shape layer (owns slot state) / 合并背景形状层（持有槽位状态）</summary>
         KeyShapeLayer keyShapeLayer;
         /// <summary>Merged outline-shape layer (shares state with keyShapeLayer) / 合并描边形状层（与背景层共享状态）</summary>
         KeyShapeLayer keyOutlineLayer;
+        /// <summary>Merged background-blur layer (shares state with keyShapeLayer; draws only
+        /// blur-enabled slots with the GrabPass blur material) / 合并背景模糊层（与背景层共享状态；
+        /// 仅绘制启用模糊的槽位，使用 GrabPass 模糊材质）</summary>
+        KeyShapeLayer keyBlurLayer;
+        /// <summary>True while any key is held — drives the overlay-wide press transform /
+        /// 任一按键按住时为真——驱动覆盖层整体按下变换</summary>
+        bool overlayPressAny;
+        /// <summary>UnscaledTime of the last overlay press-state edge (stateless tween anchor) /
+        /// 覆盖层按压状态最近一次边沿的 UnscaledTime（无状态补间锚点）</summary>
+        float overlayPressEdgeTime;
+        /// <summary>Local-space centre of the overlay's key content (bounding box of all key rects,
+        /// in PressObject space). The press transform rotates/scales around THIS point, not the
+        /// screen centre — a left-aligned KeyViewer must pivot on its own body. (0,0) = the legacy
+        /// screen-centre behaviour, used as a safe fallback when no keys exist. /
+        /// 覆盖层按键内容的**本地空间**中心（所有按键矩形的包围盒，PressObject 空间内）。按下变换
+        /// 绕**这个点**旋转/缩放，而非屏幕中心——左对齐的 KeyViewer 必须绕自己的本体转。(0,0) =
+        /// 旧的屏幕中心行为，作为没有任何按键时的安全回退。</summary>
+        Vector2 overlayContentCenter;
         /// <summary>Quartz-style cached soft-glow layer for FreeMake nodes / FreeMake 节点缓存柔光层</summary>
         Transform keyGlowLayer;
         /// <summary>Cached glow Images for fixed-layout keys / 固定布局按键的缓存光效 Image</summary>
@@ -591,6 +613,10 @@ namespace JipperKeyViewer.KeyViewer
             // 字典），故同一帧的替代者此刻已经把它填满了。在此释放会销毁存活组件正在绘制的贴图，
             // 而它的下一次重建会把死的那批交出去。只在无人替代我们时释放——即真正的关停场景。
             if (stillOurs) Util.KvImageLoader.ReleaseCachedTextures();
+            // The blur bundle is the same kind of single-shared resource; free it only on the true
+            // shutdown path, never when a same-frame replacement is already drawing. / 模糊 bundle
+            // 同属单一共享资源；只在真正关停路径释放，同帧已有替代者绘制时绝不能放。
+            if (stillOurs) UnloadBlurBundle();
             ReleaseTextStyleMaterials();
             // Unhook the static bridge KvTextStyle.Apply routes through. It is an ASSIGNMENT, so it
             // never double-registered — but it left a static field holding this (now destroyed)
@@ -695,6 +721,7 @@ namespace JipperKeyViewer.KeyViewer
                 RunStage("per-key kps", FrameStage.PerKeyKps, now);       // Update per-key KPS / 更新每键 KPS
                 if (IsCustomLayout) RunStage("counter bounce", FrameStage.CounterBounce, 0L); // counter bounce animations / 计数器弹跳动画
                 RunStage("text gradients", FrameStage.TextGradients, 0L); // static glyph gradients / 静态字形渐变
+                RunStage("overlay transform", FrameStage.OverlayTransform, 0L); // profile-level press transform / Profile 级按压变换
             }
         }
 
@@ -724,6 +751,7 @@ namespace JipperKeyViewer.KeyViewer
             PerKeyKps,
             CounterBounce,
             TextGradients,
+            OverlayTransform,
         }
 
         /// <summary>Dispatch a hot-path stage without allocating a closure or delegate. The old
@@ -756,6 +784,7 @@ namespace JipperKeyViewer.KeyViewer
                     case FrameStage.PerKeyKps: ProcessPerKeyKpsInUpdate(now); break;
                     case FrameStage.CounterBounce: TickCounterBounces(); break;
                     case FrameStage.TextGradients: TickTextGradients(); break;
+                    case FrameStage.OverlayTransform: TickOverlayPressTransform(); break;
                 }
                 if (timed) RecordStageTime(frameStage, sw.Elapsed.TotalMilliseconds);
                 if (stageFailures.Remove(stage))

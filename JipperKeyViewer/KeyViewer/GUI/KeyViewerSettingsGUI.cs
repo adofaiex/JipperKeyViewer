@@ -1360,6 +1360,38 @@ namespace JipperKeyViewer.KeyViewer
                 }
 
                 GUILayout.Space(5f);
+                // ===== Background blur / 背景模糊 =====
+                // GrabPass-based key-box blur. The material comes from the embedded AssetBundle;
+                // when it failed to load (older Unity, load error) the controls stay usable but the
+                // toggle silently does nothing — no solid duplicate is drawn.
+                // / 基于 GrabPass 的按键框背景模糊。材质来自内嵌 AssetBundle；加载失败（旧
+                // Unity / 加载错误）时控件仍可用但开关静默无效——不会画出实心副本。
+                GUILayout.Label("<b>" + I18n.Tr("background_blur") + "</b>");
+                if (BlurMaterial == null)
+                    GUILayout.Label(I18n.Tr("background_blur_unavailable"));
+                bool newBlur = GUILayout.Toggle(Settings.Data.EnableBackgroundBlur, I18n.Tr("background_blur_enable"));
+                if (newBlur != Settings.Data.EnableBackgroundBlur)
+                {
+                    Settings.Data.EnableBackgroundBlur = newBlur;
+                    ApplyBackgroundBlurSettings();
+                    SaveSettingsFromGui();
+                }
+                float newBlurRadius = FloatSliderField(I18n.Tr("background_blur_radius"), Settings.Data.BackgroundBlurRadius, 1f, 40f, "F0");
+                if (newBlurRadius != Settings.Data.BackgroundBlurRadius)
+                {
+                    Settings.Data.BackgroundBlurRadius = Mathf.Clamp(newBlurRadius, 1f, 40f);
+                    ApplyBackgroundBlurSettings();
+                    SaveSettingsFromGui();
+                }
+                float newBlurVibrancy = FloatSliderField(I18n.Tr("background_blur_vibrancy"), Settings.Data.BackgroundBlurVibrancy * 100f, 0f, 200f, "F0");
+                if (newBlurVibrancy != Settings.Data.BackgroundBlurVibrancy * 100f)
+                {
+                    Settings.Data.BackgroundBlurVibrancy = Mathf.Clamp(newBlurVibrancy / 100f, 0f, 2f);
+                    ApplyBackgroundBlurSettings();
+                    SaveSettingsFromGui();
+                }
+
+                GUILayout.Space(5f);
                 GUILayout.Label("<b>" + I18n.Tr("fixed_background_gradient") + "</b>");
                 bool newFixedGradient = GUILayout.Toggle(Settings.Data.EnableFixedBackgroundGradient, I18n.Tr("fixed_background_gradient_enable"));
                 if (newFixedGradient != Settings.Data.EnableFixedBackgroundGradient)
@@ -1634,6 +1666,94 @@ namespace JipperKeyViewer.KeyViewer
                     SaveSettingsFromGui();
                 }
             }
+
+            // ===== Overlay-wide press transform / 覆盖层整体按下变换 =====
+            // While ANY key is held the whole overlay container eases from its resting pose to
+            // this transform (and back on release) — the reference mod's Profile VectorConfig.
+            // Independent of EnablePressAnimation (which animates each key individually): this one
+            // moves the entire overlay, so it stays configurable with per-key animation off.
+            // / 任一按键按住期间，整个覆盖层容器从常态位姿缓动到该变换（松开时缓回）——
+            // 对齐参考模组的 Profile 级 VectorConfig。与逐键按压动画（EnablePressAnimation）
+            // 相互独立：它移动的是整个覆盖层，故逐键动画关闭时也应可配置。
+            GUILayout.Space(5f);
+            GUILayout.Label("<b>" + I18n.Tr("overlay_press_transform") + "</b>");
+            bool newOverlayTransform = GUILayout.Toggle(Settings.Data.UseOverlayPressTransform, I18n.Tr("overlay_press_transform_enable"));
+            if (newOverlayTransform != Settings.Data.UseOverlayPressTransform)
+            {
+                Settings.Data.UseOverlayPressTransform = newOverlayTransform;
+                SaveSettingsFromGui();
+            }
+            if (Settings.Data.UseOverlayPressTransform)
+            {
+                float newOx = FloatSliderField(I18n.Tr("overlay_press_offset_x"), Settings.Data.OverlayPressOffsetX, -300f, 300f, "F0");
+                if (newOx != Settings.Data.OverlayPressOffsetX)
+                {
+                    Settings.Data.OverlayPressOffsetX = Mathf.Clamp(newOx, -300f, 300f);
+                    SaveSettingsFromGui();
+                }
+                float newOy = FloatSliderField(I18n.Tr("overlay_press_offset_y"), Settings.Data.OverlayPressOffsetY, -300f, 300f, "F0");
+                if (newOy != Settings.Data.OverlayPressOffsetY)
+                {
+                    Settings.Data.OverlayPressOffsetY = Mathf.Clamp(newOy, -300f, 300f);
+                    SaveSettingsFromGui();
+                }
+                float newRx = FloatSliderField(I18n.Tr("overlay_press_rotation_x"), Settings.Data.OverlayPressRotationX, -180f, 180f, "F0");
+                if (newRx != Settings.Data.OverlayPressRotationX)
+                {
+                    Settings.Data.OverlayPressRotationX = Mathf.Clamp(newRx, -180f, 180f);
+                    SaveSettingsFromGui();
+                }
+                float newRy = FloatSliderField(I18n.Tr("overlay_press_rotation_y"), Settings.Data.OverlayPressRotationY, -180f, 180f, "F0");
+                if (newRy != Settings.Data.OverlayPressRotationY)
+                {
+                    Settings.Data.OverlayPressRotationY = Mathf.Clamp(newRy, -180f, 180f);
+                    SaveSettingsFromGui();
+                }
+                float newRz = FloatSliderField(I18n.Tr("overlay_press_rotation_z"), Settings.Data.OverlayPressRotationZ, -180f, 180f, "F0");
+                if (newRz != Settings.Data.OverlayPressRotationZ)
+                {
+                    Settings.Data.OverlayPressRotationZ = Mathf.Clamp(newRz, -180f, 180f);
+                    SaveSettingsFromGui();
+                }
+                float newOsx = FloatSliderField(I18n.Tr("overlay_press_scale_x"), Settings.Data.OverlayPressScaleX * 100f, 10f, 500f, "F0");
+                if (newOsx != Settings.Data.OverlayPressScaleX * 100f)
+                {
+                    Settings.Data.OverlayPressScaleX = Mathf.Clamp(newOsx / 100f, 0.1f, 5f);
+                    SaveSettingsFromGui();
+                }
+                float newOsy = FloatSliderField(I18n.Tr("overlay_press_scale_y"), Settings.Data.OverlayPressScaleY * 100f, 10f, 500f, "F0");
+                if (newOsy != Settings.Data.OverlayPressScaleY * 100f)
+                {
+                    Settings.Data.OverlayPressScaleY = Mathf.Clamp(newOsy / 100f, 0.1f, 5f);
+                    SaveSettingsFromGui();
+                }
+                // Press and release each get their own curve + duration: a fast bounce in with a
+                // slow settle out is the common pattern (mirrors the per-node rain pickers).
+                // / 按下与松开各自拥有独立曲线 + 时长：快速弹入、缓慢松开是最常见用法
+                // （与节点级雨滴选择器一致）。
+                DrawEasingSelector("overlay_press_easing", Settings.Data.OverlayPressEasing, v =>
+                {
+                    Settings.Data.OverlayPressEasing = v;
+                    SaveSettingsFromGui();
+                }, "overlay_press_easing_label");
+                float newOverlayPressDur = FloatSliderField(I18n.Tr("overlay_press_duration"), Settings.Data.OverlayPressDurationMs, 10f, 2000f, "F0");
+                if (newOverlayPressDur != Settings.Data.OverlayPressDurationMs)
+                {
+                    Settings.Data.OverlayPressDurationMs = Mathf.Clamp(newOverlayPressDur, 10f, 2000f);
+                    SaveSettingsFromGui();
+                }
+                DrawEasingSelector("overlay_release_easing", Settings.Data.OverlayReleaseEasing, v =>
+                {
+                    Settings.Data.OverlayReleaseEasing = v;
+                    SaveSettingsFromGui();
+                }, "overlay_release_easing_label");
+                float newOverlayReleaseDur = FloatSliderField(I18n.Tr("overlay_release_duration"), Settings.Data.OverlayReleaseDurationMs, 10f, 2000f, "F0");
+                if (newOverlayReleaseDur != Settings.Data.OverlayReleaseDurationMs)
+                {
+                    Settings.Data.OverlayReleaseDurationMs = Mathf.Clamp(newOverlayReleaseDur, 10f, 2000f);
+                    SaveSettingsFromGui();
+                }
+            }
         }
 
         // ===== text outline / shadow (Display tab) / 文字描边/阴影（显示页） =====
@@ -1644,10 +1764,10 @@ namespace JipperKeyViewer.KeyViewer
         /// cubic-bezier-free curves indistinguishable by name alone — the preview is what makes the
         /// choice possible. / 带曲线预览的命名缓动选择器。纯下拉框会让 27 条与三次贝塞尔无关的曲线
         /// 仅凭名字无法区分——预览才让选择成为可能。</summary>
-        private void DrawEasingSelector(string id, string current, Action<string> apply)
+        private void DrawEasingSelector(string id, string current, Action<string> apply, string labelKey = "press_anim_easing")
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(I18n.Tr("press_anim_easing"), GUILayout.Width(100f));
+            GUILayout.Label(I18n.Tr(labelKey), GUILayout.Width(100f));
             // Normalize, NOT KvEasing.Default. The press animation passes the *stored* name to
             // KvEasing.Ease, where an empty string has IndexOf("") == 0 → "linear" → the default
             // branch returns t unchanged. Labelling the button "ease-out-cubic" and drawing that

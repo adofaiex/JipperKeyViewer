@@ -46,6 +46,15 @@ namespace JipperKeyViewer.KeyViewer
         public List<RawRain> rainList = new List<RawRain>();
         /// <summary>Whether this key is currently pressed / 当前是否被按下</summary>
         public bool isPressed;
+        /// <summary>UnscaledTime of this key's last rain press/release edge (-1 = none yet).
+        /// Stateless tween anchors for the eased pressed-rain params: the current interpolated
+        /// value is recomputed from (now - anchor) / duration at every drop creation, so a
+        /// rebuild or layout switch can never desync an in-flight tween. /
+        /// 该键最近一次雨滴按下/松开边沿的 UnscaledTime（-1 = 尚无）。供按下雨滴参数的无状态
+        /// 缓动锚点：当前插值在每次雨滴创建时由 (now - anchor) / duration 重算，重建或切换布局
+        /// 不可能让进行中的补间失步。</summary>
+        public float rainPressEdgeTime = -1f;
+        public float rainReleaseEdgeTime = -1f;
         /// <summary>False on a freshly created Key until the input poll has seeded isPressed from
         /// the PHYSICAL reading. Every overlay rebuild recreates all Keys with isPressed=false;
         /// without the seed, the first poll after a rebuild treated a key the user was holding as
