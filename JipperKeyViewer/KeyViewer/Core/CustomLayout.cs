@@ -609,7 +609,41 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainColorBottomPressed = SanitizeNodeColor(node.RainColorBottomPressed);
                 node.BackgroundBlurRadius = float.IsNaN(node.BackgroundBlurRadius) || float.IsInfinity(node.BackgroundBlurRadius) ? 8f : Mathf.Clamp(node.BackgroundBlurRadius, 0f, 64f);
                 node.BackgroundBlurVibrancy = float.IsNaN(node.BackgroundBlurVibrancy) || float.IsInfinity(node.BackgroundBlurVibrancy) ? 1f : Mathf.Clamp(node.BackgroundBlurVibrancy, 0f, 2f);
-                node.RainSprites?.RemoveAll(r => r == null || string.IsNullOrWhiteSpace(r.Path) || r.Count <= 0);
+                // A radius of exactly 0 is NOT a UI-reachable choice: both the settings page and the
+                // editor clamp the slider/field to 1..40, and the renderer already treats <1 as 1.
+                // The only way it exists is Newtonsoft's field-mode deserialize (fields absent from
+                // the JSON read 0), which zeroes radius AND vibrancy together on every profile
+                // stamped before these fields existed — the one-shot NodeDefaultsVersion gate can
+                // never reach those (bumping it would re-run the legacy repair on every stamped
+                // profile). Repairing the PAIR here is therefore evidence, not a guess, and it is
+                // idempotent: once saved back the file carries 8/1 and stops matching. A radius>0
+                // node with vibrancy 0 is left alone — vibrancy 0 IS a legal UI choice ("blur
+                // without saturation"); a hand-edited radius=0 falls in with the poison and reads
+                // 8, which only overwrites a value the renderer was already clamping to 1px.
+                // 半径恰为 0 **不是** UI 可达的选择：设置页与编辑器都把滑杆/输入框钳在 1..40，
+                // 渲染端本就把 <1 当作 1。它唯一的来源是 Newtonsoft 字段模式反序列化（JSON 里缺席
+                // 的字段读 0），会在这些字段出现**之前**盖章的每一份配置上把半径与浓度**同时**清零
+                // ——而一次性的 NodeDefaultsVersion 闸门永远够不着那些配置（递增常量会对所有已盖章
+                // 配置重跑旧修复）。成对修复因此是证据而非猜测，且幂等：落盘后文件带着 8/1，条件
+                // 不再命中。半径>0 而浓度为 0 的节点不受影响——浓度 0 是合法的 UI 选择（「只要模糊
+                // 不要饱和」）；手编 radius=0 会并入毒值被读成 8，但那本来就是渲染端被钳成 1px 的值。
+                if (node.BackgroundBlurRadius <= 0f)
+                {
+                    node.BackgroundBlurRadius = 8f;
+                    node.BackgroundBlurVibrancy = 1f;
+                }
+                // Absent from legacy JSON, this List deserializes as null and stayed null — the
+                // editor then read first.RainSprites.Count on the very next GUI event after the
+                // user ticked "rain sprite list" (the "0" count parsed and clamped up to 1) and
+                // took the whole OnGUI pass down, every frame, with the toggle already saved.
+                // Initialize here instead of in the editor: one choke point covers the toggle, a
+                // hand-edited UseRainSpriteList=true, and the multi-select batch path alike.
+                // 旧 JSON 缺席时该 List 反序列化为 null 且一直保持 null——用户勾选「雨滴贴图列表」
+                // 后的下一个 GUI 事件编辑器就会读 first.RainSprites.Count（"0" 的计数被解析并钳到
+                // 1），整个 OnGUI 中断、每帧复发，而开关早已落盘。在这里而不是编辑器里初始化：一个
+                // 咽喉点同时覆盖开关回调、手编 UseRainSpriteList=true 与多选批量路径。
+                if (node.RainSprites == null) node.RainSprites = new List<RainSpriteConfig>();
+                node.RainSprites.RemoveAll(r => r == null || string.IsNullOrWhiteSpace(r.Path) || r.Count <= 0);
                 node.RainShadowColor = SanitizeNodeColor(node.RainShadowColor);
                 node.RainOutlineColor = SanitizeNodeColor(node.RainOutlineColor);
                 node.RainGlowColor = SanitizeNodeColor(node.RainGlowColor);

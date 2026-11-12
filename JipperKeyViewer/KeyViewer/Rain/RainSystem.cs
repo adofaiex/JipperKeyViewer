@@ -1116,6 +1116,21 @@ namespace JipperKeyViewer.KeyViewer.Rain
         private static float SanitizeRowFloat(float value, float fallback)
             => float.IsNaN(value) || float.IsInfinity(value) ? fallback : value;
 
+        /// <summary>Component-wise NaN/Inf rejection for a ROOT-level settings colour that is
+        /// written straight into mesh vertex colours. Any non-finite component falls back to the
+        /// field's own default (white) rather than inventing a different stop. / 根级设置颜色的
+        /// 分量级 NaN/Inf 拒绝——这些颜色会被直接写进 mesh 顶点色。任一分量非有限即回退到该字段
+        /// 自身的默认值（白），而不是凭空造出另一个色标。</summary>
+        private static Color SanitizeRootColor(Color color)
+        {
+            if (float.IsNaN(color.r) || float.IsInfinity(color.r)
+                || float.IsNaN(color.g) || float.IsInfinity(color.g)
+                || float.IsNaN(color.b) || float.IsInfinity(color.b)
+                || float.IsNaN(color.a) || float.IsInfinity(color.a))
+                return Color.white;
+            return color;
+        }
+
         /// <summary>SanitizeRowFloat plus a clamp, for the GLOBAL rain geometry that is written
         /// straight onto a RawRain and then into the SHARED merged rain mesh.
         ///
@@ -1401,9 +1416,17 @@ namespace JipperKeyViewer.KeyViewer.Rain
             rawRain.glowEnabled = settings.Data.EnableRainGlow;
             rawRain.glowRange = SanitizeRainGeometry(settings.Data.RainGlowRange, 20f, 0f, 50f);
             rawRain.glowOpacity = Mathf.Clamp01(SanitizeRowFloat(settings.Data.RainGlowOpacity, 0.7f));
+            // The range/opacity right above are scrubbed, but the colour went in raw. A bare NaN
+            // token in a hand-edited profile or a shared .jkv flows into the glow layer's vertex
+            // colours — the same shared-mesh corruption class as the per-row geometry fixes. The
+            // root-level colour family (RainColor etc.) shares this exposure and predates this
+            // feature; only the NEW field is closed here, the family is a separate pass.
+            // 上方的范围/浓度都过了净化，唯独颜色是原样进来的。手改配置或他人分享的 .jkv 里的裸
+            // NaN token 会流入光晕层的顶点色——与按排几何那批修复是同一类共享 mesh 损坏。根级颜色
+            // 族（RainColor 等）暴露面相同且早于本特性存在；此处只封**新增**字段，颜色族另行统一。
             rawRain.glowColor = settings.Data.RainGlowFollowBody
                 ? rawRain.mainColor
-                : settings.Data.RainGlowColor;
+                : SanitizeRootColor(settings.Data.RainGlowColor);
             rawRain.dotted = settings.Data.EnableRainDotted;
             rawRain.dotLength = settings.Data.EnableRainDotted
                 ? SanitizeRainGeometry(settings.Data.RainDotLength, 12f, 1f, 100f) : 0f;

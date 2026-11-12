@@ -234,6 +234,13 @@ namespace JipperKeyViewer.KeyViewer
             DestroyReloadedSprite(ref keyBackgroundSprite);
             DestroyReloadedSprite(ref keyOutlineSprite);
             DestroyReloadedSprite(ref ghostRainSprite);
+            // The custom outline sprite is the same kind of non-cached, self-owned asset (loaded
+            // by KvImageLoader.LoadSprite, no GameObject parent) — it just postdates this cleanup
+            // list and leaked on every loader-level toggle that ran after a profile had set
+            // OutlineImagePath. / 自定义描边精灵同样是那类非缓存、自持有的资产（KvImageLoader.LoadSprite
+            // 加载、不挂任何 GameObject）——只是它晚于这份清理清单出现，配置里设过 OutlineImagePath
+            // 后的每次加载器级开关都会泄漏。
+            DestroyReloadedSprite(ref customOutlineSprite);
             // The style materials are copies of the just-destroyed font materials — drop them
             // before the next font load builds new ones. / 样式材质是刚被销毁的字体材质的副本——
             // 在下次字体加载构建新材质前先丢弃。
@@ -293,19 +300,26 @@ namespace JipperKeyViewer.KeyViewer
             string configured = Settings.Data?.OutlineImagePath;
             if (string.IsNullOrWhiteSpace(configured))
             {
-                customOutlineSprite = null;
+                // Clearing the path must also free the previously loaded sprite+texture — a plain
+                // null-assign orphaned both until process end. / 清空路径必须一并释放此前加载的
+                // 精灵与贴图——单纯置 null 会让两者成为孤儿直到进程结束。
+                DestroyReloadedSprite(ref customOutlineSprite);
                 customOutlineSpritePath = null;
                 return;
             }
             string resolved = ResolveCustomImagePath(configured);
             if (string.IsNullOrEmpty(resolved))
             {
-                customOutlineSprite = null;
+                DestroyReloadedSprite(ref customOutlineSprite);
                 customOutlineSpritePath = null;
                 Loader.Warning($"KeyViewer: custom outline image '{configured}' not found; using built-in outline");
                 return;
             }
             if (customOutlineSprite != null && customOutlineSpritePath == resolved) return;
+            // Path changed: free the old asset before the reassignment below silently orphans it.
+            // 路径变了：先释放旧资产，否则下方重新赋值会把它静默孤立。
+            DestroyReloadedSprite(ref customOutlineSprite);
+            customOutlineSpritePath = null;
             customOutlineSprite = KvImageLoader.LoadSprite(resolved, Vector4.zero);
             customOutlineSpritePath = resolved;
             if (customOutlineSprite == null)

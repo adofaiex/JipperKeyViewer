@@ -1525,25 +1525,71 @@ namespace JipperKeyViewer.KeyViewer
             // Pivot the rotation+scale on the overlay's content centre, not the RectTransform pivot
             // (which is the screen centre for this full-stretch wrapper). Transforming around a pivot
             // P shifts the object by P − M·P; add the configured offset on top. With no keys the
-            // centre falls back to (0,0) = the legacy behaviour. /
+            // centre falls back to (0,0) = the legacy behaviour. NOTE the coordinate spaces: c is
+            // canvas-bottom-left, P is PressObject-local (screen centre) — see the block below
+            // and ComputePressPivotCompensation. /
             // 让旋转+缩放绕覆盖层**内容中心**转，而非 RectTransform 轴心（这个全幅拉伸包装层的轴心
             // 是屏幕中心）。绕轴心 P 变换会产生位移 P − M·P；再叠加配置的偏移。无按键时中心回退
-            // 为 (0,0) = 旧行为。
+            // 为 (0,0) = 旧行为。注意坐标系：c 是画布左下原点、P 是 PressObject 本地（屏幕中心）
+            // 原点——见下方注释块与 ComputePressPivotCompensation。
             Vector2 c = overlayContentCenter;
             if (c != Vector2.zero)
             {
-                float rad = rotZ * Mathf.Deg2Rad;
-                float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
-                // M·c with per-axis scale then Z rotation / M·c：先逐轴缩放再做 Z 旋转
-                float mx = c.x * scaleX, my = c.y * scaleY;
-                float px = mx * cos - my * sin;
-                float py = mx * sin + my * cos;
-                pressRect.anchoredPosition = new Vector2(c.x - px + ox * e, c.y - py + oy * e);
+                // COORDINATE SPACES — the crux of this computation: overlayContentCenter is measured
+                // from the CANVAS BOTTOM-LEFT (SizeObject spans its full parent with pivot (0,0) and
+                // the keys anchor at its (0,0) corner), while the compensation must be expressed in
+                // PressObject-local space, whose origin is its pivot — the SCREEN CENTRE. They differ
+                // by half the canvas, and the content centre additionally carries the Size scale
+                // applied around SizeObject's bottom-left pivot. So the pivot point in PressObject
+                // space is P = sizeScale·c − canvasHalf, and the old `c − M·c` plugged the wrong
+                // vector in: its composite transform was fixed at "screen centre + c", so a centred
+                // layout drifted ~(I−M)·canvasHalf on every press (≈144px at scale 1.15) and a 90°
+                // rotation flung the overlay ~1500px off-screen.
+                // 坐标系——本计算的**要害**：overlayContentCenter 以**画布左下角**为原点（SizeObject
+                // 全幅填满父级、轴心 (0,0)，按键锚在它的 (0,0) 角），而补偿必须以 **PressObject 本地**
+                // 坐标表达，其原点是自己的轴心——**屏幕中心**。两者相差半个画布，且内容中心还带着
+                // SizeObject 绕其左下轴心施加的 Size 缩放。故 PressObject 空间里的轴心点是
+                // P = sizeScale·c − canvasHalf，旧式 `c − M·c` 代错了向量：复合变换的不动点落在
+                // 「屏幕中心 + c」，居中布局每次按下漂移 ≈(I−M)·canvasHalf（缩放 1.15 时约 144px），
+                // 旋转 90° 时整个覆盖层飞出屏幕约 1500px。
+                float sizeScale = KeyViewerSizeObject != null ? KeyViewerSizeObject.transform.localScale.x : 1f;
+                Vector2 compensation = ComputePressPivotCompensation(c, pressRect.rect.size * 0.5f, sizeScale, scaleX, scaleY, rotZ);
+                pressRect.anchoredPosition = new Vector2(compensation.x + ox * e, compensation.y + oy * e);
             }
             else
             {
                 pressRect.anchoredPosition = new Vector2(ox * e, oy * e);
             }
+        }
+
+        /// <summary>Pure helper behind TickOverlayPressTransform so the pivot math is harness-testable:
+        /// given the content centre c in canvas-bottom-left coordinates, half the canvas size, the
+        /// Size scale applied by SizeObject around ITS bottom-left pivot, and the press transform
+        /// M (per-axis scale, then Z rotation — the same order Unity applies localScale before
+        /// localEulerAngles), return the anchoredPosition that keeps the content centre fixed
+        /// while M is applied around PressObject's screen-centre pivot. The caller adds
+        /// (ox·e, oy·e) on top. Deliberately does NOT consider X/Y tilt: those read as an
+        /// aesthetic lean and are compensated on the Z plane only, same as before. /
+        /// TickOverlayPressTransform 背后的纯函数，使轴心数学可被 Harness 测试：给定画布左下
+        /// 坐标系的内容中心 c、半个画布尺寸、SizeObject 绕**其**左下轴心施加的 Size 缩放，以及
+        /// 按压变换 M（先逐轴缩放再 Z 旋转——与 Unity 先 localScale 后 localEulerAngles 的次序
+        /// 一致），返回在 PressObject 屏幕中心轴心上施加 M 时保持内容中心不动的 anchoredPosition。
+        /// 调用方再叠加 (ox·e, oy·e)。刻意**不考虑** X/Y 倾斜：那只是观感倾斜，仍只在 Z 平面
+        /// 补偿，与此前一致。</summary>
+        internal static Vector2 ComputePressPivotCompensation(
+            Vector2 contentCenter, Vector2 canvasHalf, float sizeScale,
+            float scaleX, float scaleY, float rotZDeg)
+        {
+            // The pivot point in PressObject-local (screen-centre) space. / PressObject 本地
+            // （屏幕中心原点）空间里的轴心点。
+            Vector2 p = contentCenter * sizeScale - canvasHalf;
+            float rad = rotZDeg * Mathf.Deg2Rad;
+            float cos = Mathf.Cos(rad), sin = Mathf.Sin(rad);
+            // M·P: per-axis scale, then Z rotation. / M·P：先逐轴缩放再做 Z 旋转。
+            float mx = p.x * scaleX, my = p.y * scaleY;
+            float px = mx * cos - my * sin;
+            float py = mx * sin + my * cos;
+            return new Vector2(p.x - px, p.y - py);
         }
 
         /// <summary>Bounding-box centre of all key rects in PressObject (SizeObject) local space.
