@@ -24,7 +24,7 @@ namespace JipperKeyViewer.KeyViewer
             if (KeyViewerObject != null || !Settings.Data.Enabled) return;
             if (!TryLoadResources())
             {
-                Loader.Error("KeyViewer: Cannot load AssetBundle, please check assets/ directory");
+                Loader.Error("KeyViewer: Cannot load bundled default assets, please check assets/ directory");
                 return;
             }
             // Exception barrier. KeyViewerObject is assigned at :31 and ~75 lines of construction run
@@ -116,20 +116,6 @@ namespace JipperKeyViewer.KeyViewer
             // （位置锚点 + 雨滴状态），在所有图层之后创建。
             keyGlowLayer = CreateFullStretchRect("KeyGlow");
             keyShapeLayer = CreateFullStretchRect("KeyShapes").gameObject.AddComponent<KeyShapeLayer>();
-            // The blur layer shares the shape layer's slot state and draws ONLY blur-enabled
-            // slots, replacing their background fill with the GrabPass blur window. Sibling order
-            // = draw order: behind the outlines, above the plain backgrounds' slot (which skips
-            // blur slots anyway). Material may be null (bundle missing) — the layer then simply
-            // never receives blur flags, so nothing solid is double-drawn.
-            // 模糊层共享形状层的槽位状态，**只**绘制启用模糊的槽位，以 GrabPass 模糊窗口取代其
-            // 背景填充。兄弟序 = 绘制序：在描边之下、普通背景槽位之上（后者本就跳过模糊槽位）。
-            // 材质可能为 null（bundle 缺失）——此时该层收不到模糊标记，绝不会画出实心重复背景。
-            keyBlurLayer = CreateFullStretchRect("KeyBlurs").gameObject.AddComponent<KeyShapeLayer>();
-            if (BlurMaterial != null)
-            {
-                keyBlurLayer.material = BlurMaterial;
-                keyShapeLayer.AttachBlurLayer(keyBlurLayer);
-            }
             keyOutlineLayer = CreateFullStretchRect("KeyOutlines").gameObject.AddComponent<KeyShapeLayer>();
             keyShapeLayer.AttachOutlineLayer(keyOutlineLayer);
             keyShapeLayer.SetSprites(keyBackgroundSprite, OutlineSprite);
@@ -240,10 +226,6 @@ namespace JipperKeyViewer.KeyViewer
             // 在此。ReleaseCustomTextures 刻意没动那些贴图（缓存会把同一个实例交给下一次构建）；
             // 若不在此释放，它们会比覆盖层活得更久。
             Util.KvImageLoader.ReleaseCachedTextures();
-            // Same single-shared-resource lifecycle as the image cache: the blur material+bundle
-            // survive rebuilds and are freed only on full teardown. / 与图片缓存相同的单一共享
-            // 资源生命周期：模糊材质与 bundle 跨重建存活，只在完全拆解时释放。
-            UnloadBlurBundle();
             ReleaseCustomGlowSprite();
             Object.Destroy(KeyViewerObject);
             KeyViewerObject = null;
@@ -260,7 +242,6 @@ namespace JipperKeyViewer.KeyViewer
             Canvas = null;
             keyShapeLayer = null;
             keyOutlineLayer = null;
-            keyBlurLayer = null;
             keyGlowLayer = null;
             textLayer = null;
             rainLayer = null;
@@ -975,16 +956,6 @@ namespace JipperKeyViewer.KeyViewer
             {
                 keyShapeLayer.SetRect(key.shapeSlot, x, y - h * 0.5f, sizeX, h);
                 keyShapeLayer.SetVisible(key.shapeSlot, true);
-                // Background blur (fixed layouts): one profile-level toggle, one global radius +
-                // vibrancy — keys AND the KPS/Total panels (they are background boxes too).
-                // Custom nodes set their own per-node flags in ApplyCustomShapeStyle instead;
-                // a material-less install never blurs. / 背景模糊（固定布局）：单一 Profile 级开关、
-                // 全局唯一的半径与浓度——按键与 KPS/Total 面板（同为背景框）皆可。自定义节点改为
-                // 在 ApplyCustomShapeStyle 里设置自己的逐节点标记；无材质的安装永不模糊。
-                bool blur = !IsCustomLayout && BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
-                keyShapeLayer.SetBlurEnabled(key.shapeSlot, blur);
-                if (blur)
-                    keyShapeLayer.SetBlurParams(key.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
             }
             // Text wrapper in the text canvas: same rect the old per-key Visuals had (center pivot
             // over the box), so press scaling stays centered and the text layout math is unchanged.

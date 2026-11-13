@@ -631,31 +631,6 @@ namespace JipperKeyViewer.KeyViewer
                 node.RainColorBottom = SanitizeNodeColor(node.RainColorBottom);
                 node.RainColorTopPressed = SanitizeNodeColor(node.RainColorTopPressed);
                 node.RainColorBottomPressed = SanitizeNodeColor(node.RainColorBottomPressed);
-                node.BackgroundBlurRadius = float.IsNaN(node.BackgroundBlurRadius) || float.IsInfinity(node.BackgroundBlurRadius) ? 8f : Mathf.Clamp(node.BackgroundBlurRadius, 0f, 64f);
-                node.BackgroundBlurVibrancy = float.IsNaN(node.BackgroundBlurVibrancy) || float.IsInfinity(node.BackgroundBlurVibrancy) ? 1f : Mathf.Clamp(node.BackgroundBlurVibrancy, 0f, 2f);
-                // A radius of exactly 0 is NOT a UI-reachable choice: both the settings page and the
-                // editor clamp the slider/field to 1..40, and the renderer already treats <1 as 1.
-                // The only way it exists is Newtonsoft's field-mode deserialize (fields absent from
-                // the JSON read 0), which zeroes radius AND vibrancy together on every profile
-                // stamped before these fields existed — the one-shot NodeDefaultsVersion gate can
-                // never reach those (bumping it would re-run the legacy repair on every stamped
-                // profile). Repairing the PAIR here is therefore evidence, not a guess, and it is
-                // idempotent: once saved back the file carries 8/1 and stops matching. A radius>0
-                // node with vibrancy 0 is left alone — vibrancy 0 IS a legal UI choice ("blur
-                // without saturation"); a hand-edited radius=0 falls in with the poison and reads
-                // 8, which only overwrites a value the renderer was already clamping to 1px.
-                // 半径恰为 0 **不是** UI 可达的选择：设置页与编辑器都把滑杆/输入框钳在 1..40，
-                // 渲染端本就把 <1 当作 1。它唯一的来源是 Newtonsoft 字段模式反序列化（JSON 里缺席
-                // 的字段读 0），会在这些字段出现**之前**盖章的每一份配置上把半径与浓度**同时**清零
-                // ——而一次性的 NodeDefaultsVersion 闸门永远够不着那些配置（递增常量会对所有已盖章
-                // 配置重跑旧修复）。成对修复因此是证据而非猜测，且幂等：落盘后文件带着 8/1，条件
-                // 不再命中。半径>0 而浓度为 0 的节点不受影响——浓度 0 是合法的 UI 选择（「只要模糊
-                // 不要饱和」）；手编 radius=0 会并入毒值被读成 8，但那本来就是渲染端被钳成 1px 的值。
-                if (node.BackgroundBlurRadius <= 0f)
-                {
-                    node.BackgroundBlurRadius = 8f;
-                    node.BackgroundBlurVibrancy = 1f;
-                }
                 // Absent from legacy JSON, this List deserializes as null and stayed null — the
                 // editor then read first.RainSprites.Count on the very next GUI event after the
                 // user ticked "rain sprite list" (the "0" count parsed and clamped up to 1) and
@@ -1147,56 +1122,6 @@ namespace JipperKeyViewer.KeyViewer
             keyShapeLayer.SetBackgroundGradient(key.shapeSlot, d.EnableFixedBackgroundGradient,
                 usePressed ? d.FixedBackgroundGradientTopPressed : d.FixedBackgroundGradientTop,
                 usePressed ? d.FixedBackgroundGradientBottomPressed : d.FixedBackgroundGradientBottom);
-        }
-
-        /// <summary>Re-apply the fixed-layout background-blur flags after a toggle/radius change.
-        /// In-place (no overlay rebuild) — the same convention as the gradient and glow
-        /// refreshers above. Custom layouts re-derive per-node flags in ApplyCustomShapeStyle
-        /// instead. / 全局开关或半径变化后就地重涂固定布局的背景模糊标记。就地刷新（不重建
-        /// 覆盖层）——与上方渐变/光效刷新器同一约定。自定义布局改为在 ApplyCustomShapeStyle
-        /// 中逐节点重推导。</summary>
-        internal void ApplyBackgroundBlurSettings()
-        {
-            if (IsCustomLayout || keyShapeLayer == null || Keys == null) return;
-            bool on = BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
-            for (int i = 0; i < Keys.Length; i++)
-            {
-                Key k = Keys[i];
-                if (k == null || k.shapeSlot < 0) continue;
-                keyShapeLayer.SetBlurEnabled(k.shapeSlot, on);
-                if (on)
-                    keyShapeLayer.SetBlurParams(k.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
-            }
-            // KPS/Total panels use explicit slots in the merged layer; they follow the same
-            // profile-level toggle. / KPS/Total 面板在合并层里用显式槽位；跟随同一 Profile 级开关。
-            ApplyFixedKeyBlurSlot(Kps);
-            ApplyFixedKeyBlurSlot(Total);
-        }
-
-        private void ApplyFixedKeyBlurSlot(Key key)
-        {
-            if (key == null || keyShapeLayer == null || key.shapeSlot < 0) return;
-            bool on = BlurMaterial != null && Settings.Data.EnableBackgroundBlur;
-            keyShapeLayer.SetBlurEnabled(key.shapeSlot, on);
-            if (on)
-                keyShapeLayer.SetBlurParams(key.shapeSlot, Settings.Data.BackgroundBlurRadius, Settings.Data.BackgroundBlurVibrancy);
-        }
-
-        /// <summary>In-place re-apply of ONE custom node's background-blur flag/params — the
-        /// FreeMake editor's blur sliders use this so dragging radius never rebuilds the overlay.
-        /// A node whose runtime key is not built yet is a silent no-op (the build path derives
-        /// the same state in ApplyCustomShapeStyle). / 就地重涂**单个**自定义节点的背景模糊
-        /// 标记与参数——FreeMake 编辑器的模糊滑杆走这条路，拖动半径绝不重建覆盖层。运行时
-        /// 按键尚未构建时静默无操作（构建路径在 ApplyCustomShapeStyle 里推导同一状态）。</summary>
-        internal void ApplyCustomNodeBlur(FmNode node)
-        {
-            if (node == null || keyShapeLayer == null) return;
-            Key key = node.RuntimeKey;
-            if (key == null || key.shapeSlot < 0) return;
-            bool on = BlurMaterial != null && node.EnableBackgroundBlur;
-            keyShapeLayer.SetBlurEnabled(key.shapeSlot, on);
-            if (on)
-                keyShapeLayer.SetBlurParams(key.shapeSlot, node.BackgroundBlurRadius, node.BackgroundBlurVibrancy);
         }
 
         private void ApplyFixedOutlineGradients()
@@ -1900,14 +1825,6 @@ namespace JipperKeyViewer.KeyViewer
                 ? new Vector3(node.RotationXPressed, node.RotationYPressed, node.RotationZPressed)
                 : new Vector3(node.RotationX, node.RotationY, node.RotationZ);
             keyShapeLayer.SetRotation(key.shapeSlot, rotation);
-            // Per-node background blur: replaces this slot's background fill with the GrabPass
-            // blur window. Without a blur material (bundle missing) the flag stays off so no
-            // solid duplicate background is drawn. / 逐节点背景模糊：用 GrabPass 模糊窗口取代
-            // 该槽位的背景填充。无模糊材质（bundle 缺失）时标记保持关闭，绝不画出实心重复背景。
-            bool blur = BlurMaterial != null && node.EnableBackgroundBlur;
-            keyShapeLayer.SetBlurEnabled(key.shapeSlot, blur);
-            if (blur)
-                keyShapeLayer.SetBlurParams(key.shapeSlot, node.BackgroundBlurRadius, node.BackgroundBlurVibrancy);
         }
 
         /// <summary>A label/count opacity of 0 does not mean "make it invisible" — it means the

@@ -555,13 +555,6 @@ namespace JipperKeyViewer.KeyViewer.Util
             ["fm_group_add"] = "New Group",
             ["fm_group_ungroup"] = "Remove From Group",
 
-            // ===== Background blur / 背景模糊 =====
-            ["background_blur"] = "Background Blur",
-            ["background_blur_unavailable"] = "Blur shader unavailable — the feature stays off.",
-            ["background_blur_enable"] = "Enable Background Blur",
-            ["background_blur_radius"] = "Blur Radius",
-            ["background_blur_vibrancy"] = "Blur Vibrancy",
-            ["fm_help_node_blur"] = "Blur the game behind this node's box (GrabPass). Radius 1-40 px; vibrancy boosts colour. Requires the blur shader bundle; if it is unavailable this toggle does nothing.",
 
             // ===== Overlay-wide press transform / 覆盖层整体按下变换 =====
             ["overlay_press_transform"] = "Overlay Press Transform",
@@ -1142,13 +1135,6 @@ namespace JipperKeyViewer.KeyViewer.Util
             ["fm_group_add"] = "新建组",
             ["fm_group_ungroup"] = "移出分组",
 
-            // ===== 背景模糊 =====
-            ["background_blur"] = "背景模糊",
-            ["background_blur_unavailable"] = "模糊着色器不可用——该功能保持关闭。",
-            ["background_blur_enable"] = "启用背景模糊",
-            ["background_blur_radius"] = "模糊半径",
-            ["background_blur_vibrancy"] = "模糊鲜艳度",
-            ["fm_help_node_blur"] = "模糊该节点框背后的游戏画面（GrabPass）。半径 1-40 像素；鲜艳度增强色彩。需要模糊着色器 bundle；不可用时此开关无效。",
 
             // ===== 覆盖层整体按下变换 =====
             ["overlay_press_transform"] = "覆盖层整体按下变换",
@@ -1730,12 +1716,6 @@ namespace JipperKeyViewer.KeyViewer.Util
             ["fm_group_ungroup"] = "그룹에서 해제",
 
             // ===== 배경 흐림 =====
-            ["background_blur"] = "배경 흐림",
-            ["background_blur_unavailable"] = "흐림 셰이더를 사용할 수 없습니다 — 기능이 꺼진 채로 유지됩니다.",
-            ["background_blur_enable"] = "배경 흐림 사용",
-            ["background_blur_radius"] = "흐림 반경",
-            ["background_blur_vibrancy"] = "흐림 선명도",
-            ["fm_help_node_blur"] = "이 노드 상자 뒤의 게임 화면을 흐립니다(GrabPass). 반경 1-40px, 선명도는 색을 강조합니다. 흐림 셰이더 번들이 필요하며, 없으면 토글이 동작하지 않습니다.",
 
             // ===== 오버레이 전체 눌림 변형 =====
             ["overlay_press_transform"] = "오버레이 전체 눌림 변형",

@@ -291,10 +291,6 @@ namespace JipperKeyViewer.KeyViewer
         KeyShapeLayer keyShapeLayer;
         /// <summary>Merged outline-shape layer (shares state with keyShapeLayer) / 合并描边形状层（与背景层共享状态）</summary>
         KeyShapeLayer keyOutlineLayer;
-        /// <summary>Merged background-blur layer (shares state with keyShapeLayer; draws only
-        /// blur-enabled slots with the GrabPass blur material) / 合并背景模糊层（与背景层共享状态；
-        /// 仅绘制启用模糊的槽位，使用 GrabPass 模糊材质）</summary>
-        KeyShapeLayer keyBlurLayer;
         /// <summary>True while any key is held — drives the overlay-wide press transform /
         /// 任一按键按住时为真——驱动覆盖层整体按下变换</summary>
         bool overlayPressAny;
@@ -613,10 +609,6 @@ namespace JipperKeyViewer.KeyViewer
             // 字典），故同一帧的替代者此刻已经把它填满了。在此释放会销毁存活组件正在绘制的贴图，
             // 而它的下一次重建会把死的那批交出去。只在无人替代我们时释放——即真正的关停场景。
             if (stillOurs) Util.KvImageLoader.ReleaseCachedTextures();
-            // The blur bundle is the same kind of single-shared resource; free it only on the true
-            // shutdown path, never when a same-frame replacement is already drawing. / 模糊 bundle
-            // 同属单一共享资源；只在真正关停路径释放，同帧已有替代者绘制时绝不能放。
-            if (stillOurs) UnloadBlurBundle();
             ReleaseTextStyleMaterials();
             // Unhook the static bridge KvTextStyle.Apply routes through. It is an ASSIGNMENT, so it
             // never double-registered — but it left a static field holding this (now destroyed)

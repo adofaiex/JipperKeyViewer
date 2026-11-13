@@ -3422,3 +3422,14 @@ UMM `810DA824…`、Info.json 不变。版本线未动，未打 tag。
 - **实机未决两项（下轮优先）**：①雨滴模糊看不出效果——未排查（候选：节点未开贴图列表/档位
   过低/源图 >256px 被静默退回原图）；②背景模糊开启后背景「肢解成透明」——URP 检查后台任务
   零输出（无结论），bug 未修。这两项不阻塞本次提交。
+### 第 134 轮：背景模糊 + AssetBundle 管线整体移除（2026-11-13）
+
+- **用户裁决**："把着色器给我删了！bundle你为什么要用！"——背景模糊功能与为它搭的整套 AssetBundle 资源管线**全部删除**；前景模糊（TMP `_GradientScale` 参数法）、雨滴预模糊（CPU 烘焙）、DmNote box-shadow→GlowSize 映射**保留**。第 133 轮实机未决项②（背景模糊「肢解成透明」）随功能删除而消解；项①（雨滴模糊观感）仍开放。
+- **12 文件剪除**（全部经锚行断言 + 残差断言后回写）：`KeyShapeLayer`（blurFlags/blurRadii/blurVibrancies/blurLayer/isBlurLayer、AttachBlurLayer/SetBlurEnabled/SetBlurParams、blurUv 生产、AddQuad uvOverride 分支、filled 分支简化为 `Vector4 uvv = new Vector4(uv.x, uv.y, 0f, 0f)`、三处签名收尾去 `uvOverride` 参数）；`CustomLayout`（净化块、ApplyBackgroundBlurSettings/ApplyFixedKeyBlurSlot/ApplyCustomNodeBlur、ApplyCustomShapeStyle blur 段）；`KeyViewerLayout`（KeyBlurs 层创建/拆解/置空、定布局 blur 段、L27 文案改 "Cannot load bundled default assets"）；`KeyViewer`（keyBlurLayer 字段 + UnloadBlurBundle 关停）；`KeyViewerResources`（BundledAssets 条目、BlurMaterial、EnsureBlurMaterial/UnloadBlurBundle）；编辑器（节点模糊节 + EditorBlurPropertyChanged）；设置 GUI（背景模糊节 + 重复 Space(5f)）；I18n 三语三块（background_blur→fm_help_node_blur 连注释整删）；`KeyViewerSettings`（全局 3 字段 + FmNode 3 字段 + 节点默认 2 行）；Harness 毒值测试块（4417-4453）；csproj（EmbeddedResource .dfl + AssetBundleModule Reference）；Pack-EmbeddedAssets.ps1（bundle 条目 + 尾逗号）。
+- **资源删除（mavis-trash）**：`tools/blur-shader/KeyViewerBlur.shader`、`JkvBundleBuilder.cs`、`tools/Build-BlurBundle.ps1`、`embedded/KeyViewerBlur.bundle.dfl`、git 跟踪的 `assets/KeyViewerBlur.bundle`、`tools/blur-shader` 空目录。**坑：mavis-trash 的顶层 rm 每条只接受一个路径**——逗号分隔列表会被当成单个路径而失败；`Remove-Item` 会被硬拦（CLI 永久删除禁令，删目录也走 rm）。
+- **【坑】repl 行号在 cut 之后会漂移**：KSL 首轮把 repl（925/775 原行号）在全 cut 之后执行，实际替换了移位后的错误区域——被残差断言拦下、未写盘。修正：cut/repl 按 start **降序交错**执行；每个 cut 起点加锚行断言。
+- **【坑】区间边界 ≠ 块边界**：KVL 定布局 blur 段 978-988 的 988 行 `}` 实为外层 `if (keyShapeLayer != null && key.shapeSlot >= 0) {` 的闭括号（`if (blur)` 是无括号单语句），整段误删 → CS1513 (1002,10)；git diff 定位后在 SetVisible 行后补回 `}`。教训：剪除边界行含孤立 `}` 时先确认其归属（`if (cond)` 单语句 + 外层闭括号是典型形态）。
+- Harness token 断言另踩大小写（块注释是 `Blur poison pair`，非小写）。
+- **全库残差 grep 零命中**（19 标识符：EnsureBlurMaterial…blurFlags）；`.verify-tmp` 运行时配置与 AGENTS.md 历史记录按计划不动；游戏 `assets/` 遗留的 `KeyViewerBlur.bundle` 新 DLL 不再加载、无害。
+- 构建/回归：四工程 **0 错误**（警告仅既有 CS0169 stageProfileSince + Harness SYSLIB0050）；Harness **367 passed / 0 failed**（371 − 4 条毒值配对测试，新基线）。未提交、未 push、未打 tag；版本线不动（`Repository.json` 仍 1.7.2）。游戏目录部署被硬拦（`D:\Program Files (x86)\` 保护路径），改交用户手动拷贝（3 DLL：主 + UMM/Melon loader，.bak-时间戳惯例）。
+

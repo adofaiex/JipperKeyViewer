@@ -376,11 +376,6 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// <summary>Optional custom outline sprite path ("" = built-in outline). /
         /// 可选自定义描边贴图路径（"" = 内置描边）。</summary>
         public string OutlineImagePath = "";
-        /// <summary>Key shape blur settings; disabled by default so existing profiles keep their
-        /// crisp sprite. / 按键形状模糊设置；默认关闭，现有配置保持清晰贴图。</summary>
-        public bool EnableBackgroundBlur;
-        public float BackgroundBlurRadius = 8f;
-        public float BackgroundBlurVibrancy = 1f;
 
         /// <summary>Global rain pre-blur level: 0 = off (legacy hard rectangles), 1/2/3 ≈ a blur radius
         /// of 2/4/8 px baked on the CPU. A new field, so 0 keeps every existing profile unchanged.
@@ -892,8 +887,6 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.RainGlowFollowBody = true;
             node.RainGlowRange = 20f;
             node.RainGlowOpacity = 0.7f;
-            node.BackgroundBlurRadius = 8f;
-            node.BackgroundBlurVibrancy = 1f;
             // 1.7.3: blur defaults stay OFF / at the global value. RainBlurLevel 0 means "follow the
             // global setting" — NOT "no blur" — so an old profile keeps exactly the global behaviour
             // it already had, and a 1.7.3 node created by hand inherits the global rain blur.
@@ -1767,11 +1760,6 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// <summary>Optional custom outline sprite path ("" = built-in outline). /
         /// 可选自定义描边贴图路径（"" = 内置描边）。</summary>
         public string OutlineImagePath = "";
-        /// <summary>Key shape blur settings; disabled by default so every existing profile
-        /// keeps its crisp sprite. / 按键形状模糊设置；默认关闭，所有现有配置保持清晰贴图。</summary>
-        public bool EnableBackgroundBlur;
-        public float BackgroundBlurRadius = 8f;
-        public float BackgroundBlurVibrancy = 1f;
         /// <summary>Optional per-node rain sprite list: local images with count and corner radius. /
         /// 节点级雨滴贴图列表：本地图片，带出现次数与圆角。</summary>
         public bool UseRainSpriteList;

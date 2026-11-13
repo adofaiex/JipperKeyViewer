@@ -20,6 +20,11 @@
 
 - **58 new data-layer regressions**: the pre-blur kernel's normalisation (an opaque uniform field round-trips **byte-identical**; a half-transparent `a=128` field round-trips byte-identical at two radii; a hard alpha edge keeps the block's own hue at exactly the analytically derived coverage), the per-level cache layout (one dictionary per level, never a composite key, case-insensitive paths), the node and global clamps (including that a **legal** `0` is never rewritten), and both directions of version compatibility — a legacy node without the keys reads blur-off, a current profile carrying them keeps every value exactly as written.
 
+### ❌ Removed
+
+- **Background blur is gone — shader, bundle and all**: the optional GrabPass blur behind the key boxes (global and per-FreeMake-node toggle/radius/vibrancy) was removed outright together with everything that existed only for it — the third "KeyBlurs" merged shape layer, the per-vertex `uvOverride` shader-parameter pipeline (this feature was its only consumer), the settings-window section, the three-language strings, the field sanitization and the four Harness poison-pair tests. Foreground blur (TMP's own `_GradientScale` widening), rain pre-blur and the DmNote box-shadow→glow mapping are untouched.
+- **The AssetBundle pipeline built to ship it is gone too**: `KeyViewerBlur.shader`, `JkvBundleBuilder.cs`, `Build-BlurBundle.ps1`, the packed `KeyViewerBlur.bundle` and its embedded `.dfl`, the csproj `<EmbeddedResource>` and `UnityEngine.AssetBundleModule` reference, and the runtime `EnsureBlurMaterial`/`UnloadBlurBundle` loader. Nothing loads a bundle any more; first-run resource loading only warns when the bundled default assets folder is missing, and a stale `KeyViewerBlur.bundle` left in an old install's `assets/` folder is simply ignored.
+
 ## 1.7.3-alpha.1
 
 > **Preview release.** Everything below landed after 1.7.2 was tagged. Your profiles, images and fonts

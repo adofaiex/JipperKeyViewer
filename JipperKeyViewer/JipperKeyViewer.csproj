@@ -46,14 +46,6 @@
       <HintPath>..\libs\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <!-- 背景模糊 shader 的 AssetBundle 运行时加载（AssetBundle.LoadFromFile）。该模块由游戏
-         Managed 目录自带。 /
-         Runtime loading of the background-blur shader AssetBundle (AssetBundle.LoadFromFile);
-         the game's Managed directory ships this module. -->
-    <Reference Include="UnityEngine.AssetBundleModule">
-      <HintPath>..\libs\UnityEngine.AssetBundleModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
       <HintPath>..\libs\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
@@ -138,12 +130,6 @@
     <EmbeddedResource Include="embedded\GhostRain.png.dfl" LogicalName="JipperKeyViewer.Assets.GhostRain.png" />
     <EmbeddedResource Include="embedded\MAPLESTORY_OTF_BOLD.OTF.dfl" LogicalName="JipperKeyViewer.Assets.MAPLESTORY_OTF_BOLD.OTF" />
     <EmbeddedResource Include="embedded\cjkFonts-regular-normalized.otf.dfl" LogicalName="JipperKeyViewer.Assets.cjkFonts-regular-normalized.otf" />
-    <!-- 背景模糊 shader 的 AssetBundle（Unity 6000.3 批处理构建，LZ4）。Unity 的
-         AssetBundle.LoadFromFile 需要真实文件，故首次运行时解压到 assets\。 /
-         The background-blur shader AssetBundle (built by Unity 6000.3 batchmode, LZ4).
-         AssetBundle.LoadFromFile needs a real file, so it is extracted to assets\ on
-         first run. -->
-    <EmbeddedResource Include="embedded\KeyViewerBlur.bundle.dfl" LogicalName="JipperKeyViewer.Assets.KeyViewerBlur.bundle" />
   </ItemGroup>
 
 </Project>

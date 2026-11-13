@@ -4746,29 +4746,6 @@ namespace JipperKeyViewer.KeyViewer
             if (first.NodeType != 3)
             {
                 GUILayout.Space(4f);
-                // Per-node background blur: the node's box blurs whatever is behind the overlay
-                // (GrabPass), independent of the fixed layout's profile-level setting. Silently
-                // inert when the shader bundle failed to load. / 节点级背景模糊：节点框模糊覆盖层
-                // 背后的画面（GrabPass），与固定布局的 Profile 级设置互不相干。shader bundle
-                // 加载失败时静默无效。
-                DrawEditorToggle(I18n.Tr("background_blur_enable"), first.EnableBackgroundBlur, v =>
-                {
-                    foreach (FmNode n in editorSelection) n.EnableBackgroundBlur = v;
-                    EditorBlurPropertyChanged();
-                }, "fm_help_node_blur");
-                if (first.EnableBackgroundBlur)
-                {
-                    DrawEditorFloatField(I18n.Tr("background_blur_radius"), "fme_blr_" + first.Id, n => n.BackgroundBlurRadius, v =>
-                    {
-                        foreach (FmNode n in editorSelection) n.BackgroundBlurRadius = Mathf.Clamp(v, 1f, 40f);
-                        EditorBlurPropertyChanged();
-                    }, "fm_help_node_blur");
-                    DrawEditorFloatField(I18n.Tr("background_blur_vibrancy"), "fme_blv_" + first.Id, n => n.BackgroundBlurVibrancy * 100f, v =>
-                    {
-                        foreach (FmNode n in editorSelection) n.BackgroundBlurVibrancy = Mathf.Clamp(v / 100f, 0f, 2f);
-                        EditorBlurPropertyChanged();
-                    }, "fm_help_node_blur");
-                }
 
                 GUILayout.Space(4f);
                 DrawEditorToggle(I18n.Tr("fm_background_gradient"), first.UseBackgroundGradient, v =>
@@ -5909,20 +5886,6 @@ namespace JipperKeyViewer.KeyViewer
             }
         }
 
-        /// <summary>Per-node blur slider commit: only flags/params of the merged blur layer
-        /// change, so the overlay is refreshed in place (see EditorGlowPropertyChanged). /
-        /// 节点级模糊滑杆提交：只改合并模糊层的标记与参数，故就地刷新覆盖层。</summary>
-        private void EditorBlurPropertyChanged()
-        {
-            editorInPlaceRefresh = true;
-            PushEditorHistoryNudge();
-            SaveSettingsFromGui();
-            foreach (FmNode node in editorSelection)
-            {
-                if (node == null) continue;
-                ApplyCustomNodeBlur(node);
-            }
-        }
 
         private void EditorTextGradientPropertyChanged()
         {

@@ -1360,38 +1360,6 @@ namespace JipperKeyViewer.KeyViewer
                 }
 
                 GUILayout.Space(5f);
-                // ===== Background blur / 背景模糊 =====
-                // GrabPass-based key-box blur. The material comes from the embedded AssetBundle;
-                // when it failed to load (older Unity, load error) the controls stay usable but the
-                // toggle silently does nothing — no solid duplicate is drawn.
-                // / 基于 GrabPass 的按键框背景模糊。材质来自内嵌 AssetBundle；加载失败（旧
-                // Unity / 加载错误）时控件仍可用但开关静默无效——不会画出实心副本。
-                GUILayout.Label("<b>" + I18n.Tr("background_blur") + "</b>");
-                if (BlurMaterial == null)
-                    GUILayout.Label(I18n.Tr("background_blur_unavailable"));
-                bool newBlur = GUILayout.Toggle(Settings.Data.EnableBackgroundBlur, I18n.Tr("background_blur_enable"));
-                if (newBlur != Settings.Data.EnableBackgroundBlur)
-                {
-                    Settings.Data.EnableBackgroundBlur = newBlur;
-                    ApplyBackgroundBlurSettings();
-                    SaveSettingsFromGui();
-                }
-                float newBlurRadius = FloatSliderField(I18n.Tr("background_blur_radius"), Settings.Data.BackgroundBlurRadius, 1f, 40f, "F0");
-                if (newBlurRadius != Settings.Data.BackgroundBlurRadius)
-                {
-                    Settings.Data.BackgroundBlurRadius = Mathf.Clamp(newBlurRadius, 1f, 40f);
-                    ApplyBackgroundBlurSettings();
-                    SaveSettingsFromGui();
-                }
-                float newBlurVibrancy = FloatSliderField(I18n.Tr("background_blur_vibrancy"), Settings.Data.BackgroundBlurVibrancy * 100f, 0f, 200f, "F0");
-                if (newBlurVibrancy != Settings.Data.BackgroundBlurVibrancy * 100f)
-                {
-                    Settings.Data.BackgroundBlurVibrancy = Mathf.Clamp(newBlurVibrancy / 100f, 0f, 2f);
-                    ApplyBackgroundBlurSettings();
-                    SaveSettingsFromGui();
-                }
-
-                GUILayout.Space(5f);
                 GUILayout.Label("<b>" + I18n.Tr("fixed_background_gradient") + "</b>");
                 bool newFixedGradient = GUILayout.Toggle(Settings.Data.EnableFixedBackgroundGradient, I18n.Tr("fixed_background_gradient_enable"));
                 if (newFixedGradient != Settings.Data.EnableFixedBackgroundGradient)
