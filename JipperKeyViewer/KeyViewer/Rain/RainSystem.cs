@@ -1622,6 +1622,11 @@ namespace JipperKeyViewer.KeyViewer.Rain
         private void ApplyRainSpriteList(RawRain rawRain, Key key)
         {
             FmNode node = key?.CustomNode;
+            // Reset first: the pool hands back drops that still carry the previous owner's snapshot
+            // fields, and a stale level would claim a blur this drop's texture does not have.
+            // 先清零：池子交回的雨滴仍带着上一个使用者的快照字段，陈旧的档位会声称这张贴图带着
+            // 本滴并不存在的模糊。
+            rawRain.blurLevel = 0;
             List<RainSpriteConfig> list = node != null && node.UseRainSpriteList
                 ? node.RainSprites
                 : settings.Data.UseRainSpriteList ? settings.Data.RainSprites : null;
@@ -1654,13 +1659,38 @@ namespace JipperKeyViewer.KeyViewer.Rain
                     continue;
                 }
                 string resolved = KeyViewer.ResolveCustomImagePath(entry.Path);
-                Sprite sprite = string.IsNullOrEmpty(resolved)
-                    ? null
-                    : Util.KvImageLoader.GetOrCreateRainSprite(resolved);
-                rawRain.sprite = sprite;
+                if (string.IsNullOrEmpty(resolved))
+                {
+                    rawRain.sprite = null;
+                    return;
+                }
+                // Bake the level at birth: a drop keeps the texture it was born with, exactly like
+                // every other per-drop snapshot (colour, speed, corner radius). Level 0 asks for the
+                // original sprite, so a profile that never enables blur takes the untouched path and
+                // pays nothing.
+                // 在出生时就把档位烘进贴图：雨滴沿用出生时的那张纹理，与其它逐滴快照（颜色、速度、
+                // 圆角）一致。档位 0 直接取原图，故从未开启模糊的配置走原路径、零额外开销。
+                byte blurLevel = ResolveRainBlurLevel(node);
+                rawRain.blurLevel = blurLevel;
+                rawRain.sprite = Util.KvImageLoader.GetOrCreateRainSprite(resolved, blurLevel);
                 return;
             }
             rawRain.sprite = null;
+        }
+
+        /// <summary>Effective rain pre-blur level for a drop on this key: the node's own level wins
+        /// while it is non-zero, otherwise the global profile value. Clamped to [0,
+        /// MaxRainBlurLevel] here AND in the loader — a hand-edited profile must not be able to index
+        /// the per-level cache out of range, and the loader is the last line for every other caller.
+        /// / 该键雨滴的有效预模糊档位：节点自身档位非零时优先，否则用全局档案值。此处**与**加载器
+        /// 各钳一次 [0, MaxRainBlurLevel]——手改的配置不得把逐档缓存索引到界外，而加载器是其它所有
+        /// 调用方的最后一道防线。</summary>
+        private byte ResolveRainBlurLevel(FmNode node)
+        {
+            byte level = node != null && node.RainBlurLevel > 0
+                ? node.RainBlurLevel
+                : settings.Data.RainBlurLevel;
+            return level > ProfileData.MaxRainBlurLevel ? ProfileData.MaxRainBlurLevel : level;
         }
 
         /// <summary>Resolve the per-node sprite transform for a new drop: scale / offset /

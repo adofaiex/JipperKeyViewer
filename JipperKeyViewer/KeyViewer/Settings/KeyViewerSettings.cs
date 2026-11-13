@@ -381,6 +381,32 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool EnableBackgroundBlur;
         public float BackgroundBlurRadius = 8f;
         public float BackgroundBlurVibrancy = 1f;
+
+        /// <summary>Global rain pre-blur level: 0 = off (legacy hard rectangles), 1/2/3 ≈ a blur radius
+        /// of 2/4/8 px baked on the CPU. A new field, so 0 keeps every existing profile unchanged.
+        /// / 全局雨滴预模糊档位：0 = 关（旧矩形轨迹），1/2/3 约对应 2/4/8 像素半径，模糊在 CPU 侧烘进贴图。
+        /// 新字段缺省为 0，旧配置行为不变。</summary>
+        public byte RainBlurLevel;
+        /// <summary>Global foreground blur (self-convolution on the glyph quads). Off by default:
+        /// each distinct radius owns one material instance, i.e. one extra draw call per bucket.
+        /// / 全局前景模糊（字形自身卷积）。默认关闭：每个不同半径对应一个材质实例，即每档一次额外 draw call。</summary>
+        public bool EnableForegroundBlur;
+        // The 2f initializer serves brand-new configs and the PopulateObject-onto-a-fresh-instance
+        // load path (KeyViewer.cs), where the constructor runs and a missing key keeps 2f. The
+        // DeserializeObject import paths (Packages / Editor / DmNote) build the object UNINITIALIZED
+        // under Fields-mode serialization, so a missing key reads 0 — harmless while blur is off;
+        // P2's GUI backfills 2f the first time the user enables blur (slider floor 0.25). NO
+        // load-time heuristic backfill: it would rewrite legal values and violate the
+        // version-stamp-first / no-silent-rewrite principle.
+        // 2f 初始化器服务全新配置与「PopulateObject 到全新实例」的加载路径（KeyViewer.cs）：构造器
+        // 已运行，缺失键保持 2f。DeserializeObject 导入路径（Packages / Editor / DmNote）在 Fields
+        // 模式序列化下构造**未初始化**对象，缺失键读 0——模糊关闭时无害；P2 的 GUI 在用户首次开启
+        // 模糊时补 2f（滑条下限 0.25）。**不做**加载期启发式回填：那会改写合法值，违反「版本戳优先 /
+        // 禁止静默改写」原则。
+        public float ForegroundBlurRadius = 2f;
+        /// <summary>Foreground blur vibrancy: 0 = pure blur, 1 = saturation boost (Quartz-like).
+        /// / 前景模糊鲜艳度：0 = 纯模糊，1 = 饱和度增强。</summary>
+        public float ForegroundBlurVibrancy;
         /// <summary>Optional global rain sprite list: local images with count and corner radius. /
         /// 全局雨滴贴图列表：本地图片，带出现次数与圆角。</summary>
         public bool UseRainSpriteList;
@@ -551,6 +577,31 @@ namespace JipperKeyViewer.KeyViewer.Settings
             // 去掉了猜测：它说明磁盘上的文件是否写于该字段存在之前，而 SaveCurrentProfile 会把它
             // 向前盖章，故该修复每个 Profile 最多跑一次，且绝不在当前版本的 Profile 上跑。
             if (NodeDefaultsVersion < NodeTextDefaultsVersion) ApplyLegacyFmNodeDefaults(_customNodes);
+            // Blur fields are new in 1.7.3 and are clamped for every node on every load, exactly like
+            // the glow / gradient arrays: a config authored by 1.7.3-alpha.2's own editor cannot
+            // contain NaN (the GUI parses "NaN" as 0), but a hand-edited or shared .jkv file can, and
+            // a NaN radius would reach the shader as a NaN uniform and blank the label.
+            // Missing keys need NO backfill: the four blur fields on FmNode deliberately have no
+            // initializers, so field-mode deserialization reads them as 0/false — which is exactly
+            // the "follow global / blur off" semantics. Every construction path (initialized ctor,
+            // uninitialized Fields-mode object, PopulateObject onto either) therefore already yields
+            // the correct default, and any backfill here would be a value heuristic that risks
+            // rewriting legal user values (the SyncArraysFromLists principle above).
+            // 缺失键**无需**回填：FmNode 的四个模糊字段刻意不带初始化器，字段模式反序列化读到的
+            // 0/false 本身就是「跟随全局 / 模糊关闭」的正确语义。任何构造路径（已初始化构造器、
+            // 未初始化的 Fields 模式对象、以及作用其上的 PopulateObject）都天然得到正确默认，此处
+            // 再做回填就成了可能改写合法用户值的值启发式——违反上方 SyncArraysFromLists 的原则。
+            for (int i = 0; i < _customNodes.Count; i++)
+                SanitizeBlurFields(_customNodes[i]);
+            // The global blur fields get the same defense: they can carry NaN from the same
+            // hand-edited files, and each reaches a shader uniform (or the pre-blur cache lookup for
+            // RainBlurLevel) on every rebuild. Clamp only the extremes — never rewrite a legal value,
+            // including the legal 0 radius a freshly imported profile can read under Fields-mode
+            // deserialization while blur is still off.
+            // 全局模糊字段获得同等防御：同样可能被手工编辑的文件写入 NaN，且每个字段都会在重建时
+            // 成为 shader uniform（RainBlurLevel 则进入预模糊缓存查表）。只钳极端值——绝不改写合法值，
+            // 包括全新导入的配置在 Fields 模式反序列化下、模糊尚关闭时读到的合法 0 半径。
+            SanitizeGlobalBlurFields();
         }
 
         /// <summary>Stamp for the FmNode legacy-defaults repair, on its own axis. 0 in every
@@ -723,6 +774,85 @@ namespace JipperKeyViewer.KeyViewer.Settings
                 ApplyLegacyFmNodeDefaults(nodes[i]);
         }
 
+        /// <summary>Clamp the 1.7.3 blur fields on a node that already opted in. Called for every node
+        /// at load / rebuild time; the repair above only fixes the missing-key case.
+        /// / 对已显式开启模糊的节点，钳制 1.7.3 的模糊字段。加载 / 重建时对每个节点调用；上面的修复只处理
+        /// 键缺失的情况。</summary>
+        internal static void SanitizeBlurFields(FmNode node)
+        {
+            if (node == null) return;
+            // NaN passes every comparison, so it would reach the shader as a NaN uniform and make the
+            // whole label vanish rather than blur; +Inf would be clamped to the cap anyway.
+            // NaN 能通过一切比较，作为 NaN uniform 送进 shader 会让整段文字消失而不是变模糊；+Inf 反正会被
+            // 钳到上限。
+            if (!float.IsNaN(node.ForegroundBlurRadius) && !float.IsInfinity(node.ForegroundBlurRadius))
+            {
+                if (node.ForegroundBlurRadius < 0f) node.ForegroundBlurRadius = 0f;
+                if (node.ForegroundBlurRadius > MaxForegroundBlurRadius)
+                    node.ForegroundBlurRadius = MaxForegroundBlurRadius;
+            }
+            else
+            {
+                node.ForegroundBlurRadius = 0f;
+            }
+            if (!float.IsNaN(node.ForegroundBlurVibrancy) && !float.IsInfinity(node.ForegroundBlurVibrancy))
+            {
+                if (node.ForegroundBlurVibrancy < 0f) node.ForegroundBlurVibrancy = 0f;
+                if (node.ForegroundBlurVibrancy > 1f) node.ForegroundBlurVibrancy = 1f;
+            }
+            else
+            {
+                node.ForegroundBlurVibrancy = 0f;
+            }
+            if (node.RainBlurLevel > MaxRainBlurLevel) node.RainBlurLevel = MaxRainBlurLevel;
+        }
+
+        /// <summary>Clamp the global blur fields on the ProfileData itself — the same defense
+        /// <see cref="SanitizeBlurFields"/> gives the per-node fields, applied to the profile-level
+        /// settings that drive the shader uniforms (and the rain pre-blur cache lookup for
+        /// <see cref="RainBlurLevel"/>) on every rebuild. Hand-edited or shared configs can carry
+        /// NaN/Inf in any of these. Only extremes are clamped; every legal value passes through
+        /// untouched, including the legal 0 radius a freshly imported profile can read under
+        /// Fields-mode deserialization while blur is still off (the GUI backfills 2f when the user
+        /// first enables blur — no load-time value heuristics).
+        /// / 对 ProfileData 自身的全局模糊字段做钳制——与 <see cref="SanitizeBlurFields"/> 给节点
+        /// 字段的防御同款，作用于每次重建时驱动 shader uniform（RainBlurLevel 则驱动雨滴预模糊缓存
+        /// 查表）的配置级字段。手工编辑或分享的配置可能在其中携带 NaN/Inf。只钳极端值；一切合法值
+        /// 原样通过，包括全新导入的配置在 Fields 模式反序列化下、模糊尚关闭时读到的合法 0 半径
+        /// （GUI 在用户首次开启模糊时补 2f——不做加载期值启发式）。</summary>
+        internal void SanitizeGlobalBlurFields()
+        {
+            if (!float.IsNaN(ForegroundBlurRadius) && !float.IsInfinity(ForegroundBlurRadius))
+            {
+                if (ForegroundBlurRadius < 0f) ForegroundBlurRadius = 0f;
+                if (ForegroundBlurRadius > MaxForegroundBlurRadius)
+                    ForegroundBlurRadius = MaxForegroundBlurRadius;
+            }
+            else
+            {
+                ForegroundBlurRadius = 0f;
+            }
+            if (!float.IsNaN(ForegroundBlurVibrancy) && !float.IsInfinity(ForegroundBlurVibrancy))
+            {
+                if (ForegroundBlurVibrancy < 0f) ForegroundBlurVibrancy = 0f;
+                if (ForegroundBlurVibrancy > 1f) ForegroundBlurVibrancy = 1f;
+            }
+            else
+            {
+                ForegroundBlurVibrancy = 0f;
+            }
+            if (RainBlurLevel > MaxRainBlurLevel) RainBlurLevel = MaxRainBlurLevel;
+        }
+
+        /// <summary>Upper bound for a node's foreground blur radius (px). 8 already reads as heavy
+        /// defocus at UI scale; beyond it every radius would mint its own material instance for no
+        /// visible difference. / 节点前景模糊半径上限（像素）。8 在 UI 尺度下已是重度虚化；再大只会
+        /// 为看不出差别的档位多铸材质实例。</summary>
+        internal const float MaxForegroundBlurRadius = 8f;
+        /// <summary>Upper bound for the rain pre-blur level (1/2/3 ≈ 2/4/8 px). / 雨滴预模糊档位上限
+        /// （1/2/3 约对应 2/4/8 像素）。</summary>
+        internal const byte MaxRainBlurLevel = 3;
+
         internal static void ApplyLegacyFmNodeDefaults(FmNode node)
         {
             if (node == null) return;
@@ -764,6 +894,13 @@ namespace JipperKeyViewer.KeyViewer.Settings
             node.RainGlowOpacity = 0.7f;
             node.BackgroundBlurRadius = 8f;
             node.BackgroundBlurVibrancy = 1f;
+            // 1.7.3: blur defaults stay OFF / at the global value. RainBlurLevel 0 means "follow the
+            // global setting" — NOT "no blur" — so an old profile keeps exactly the global behaviour
+            // it already had, and a 1.7.3 node created by hand inherits the global rain blur.
+            node.RainBlurLevel = 0;
+            node.UseForegroundBlur = false;
+            node.ForegroundBlurRadius = 0f;
+            node.ForegroundBlurVibrancy = 0f;
             // ---- 1.7.2-era sentinel (compat audit C2, FIXED). The 22 fields below verifiably
             // existed at 1.7.2 and 1.7.2's field-mode writer serialized EVERY one of them on every
             // node — so their presence with any value is proof the node was written by 1.7.2 or
@@ -1325,6 +1462,25 @@ namespace JipperKeyViewer.KeyViewer.Settings
         public bool UsePressedOutlineGradient;
         public float[] OutlineGradientTopPressed;
         public float[] OutlineGradientBottomPressed;
+        // Per-side and per-corner border colours (FreeMake only). OFF by default, and while off this
+        // block is never read — the outline colour and the vertical outline gradient above paint the
+        // border exactly as before, so turning the switch back off RESTORES the original look rather
+        // than leaving a stale override behind. Each side is one straight run of the border ring and
+        // each corner is one arc; the four corners deliberately have their OWN colours instead of
+        // inheriting from the nearest side, which is what makes a two-tone rounded frame possible.
+        // 逐边与逐角的描边色（仅 FreeMake）。默认关闭，关闭期间本块**完全不被读取**——描边主色与
+        // 上方的垂直描边渐变照原样绘制，故把开关关回去是**恢复原状**而不是留下残留覆盖。每条边是
+        // 描边环的一段直线，每个角是一段弧；四个角刻意拥有**自己**的颜色而不继承最近的边，这才是
+        // 双色圆角边框能做出来的原因。
+        public bool UseBorderSideColors;
+        public float[] BorderSideTop;
+        public float[] BorderSideRight;
+        public float[] BorderSideBottom;
+        public float[] BorderSideLeft;
+        public float[] BorderCornerTopLeft;
+        public float[] BorderCornerTopRight;
+        public float[] BorderCornerBottomRight;
+        public float[] BorderCornerBottomLeft;
         // Static left-to-right glyph gradients. Unlike Quartz's animated path this is applied only
         // when the text/colors change, so counts do not trigger per-frame character scans.
         // 静态左右文字渐变；只在文字或颜色变化时重算，不按帧扫描字符。
@@ -1620,6 +1776,27 @@ namespace JipperKeyViewer.KeyViewer.Settings
         /// 节点级雨滴贴图列表：本地图片，带出现次数与圆角。</summary>
         public bool UseRainSpriteList;
         public List<RainSpriteConfig> RainSprites = new List<RainSpriteConfig>();
+
+        /// <summary>Per-node rain blur level (0 = follow the global setting, 1/2/3 ≈ 2/4/8 px).
+        /// A new field: 0 keeps every node on the global value, so existing profiles are unchanged.
+        /// / 节点级雨滴模糊档位（0 = 跟随全局，1/2/3 约对应 2/4/8 像素）。新字段缺省 0，旧配置沿用全局。</summary>
+        public byte RainBlurLevel;
+        /// <summary>Per-node foreground blur (self-convolution on this node's label / counter).
+        /// Off by default; when off the node simply uses the global setting.
+        /// / 节点级前景模糊（作用于该节点标签 / 计数）。默认关闭；关闭时沿用全局设置。</summary>
+        public bool UseForegroundBlur;
+        // No initializers on purpose: under Fields-mode deserialization an absent key reads
+        // 0/false, which is exactly the "follow global / blur off" default for that node — so the
+        // missing-key case needs no backfill on ANY construction path (initialized ctor,
+        // uninitialized object, PopulateObject). 0 is a LEGAL value here, unlike the round-34
+        // LabelScale trap where a bypassed initializer turned a non-zero default into an illegal 0;
+        // a load-time backfill would be a value heuristic that risks rewriting real user settings.
+        // 刻意不带初始化器：Fields 模式反序列化下缺失键读 0/false，正是该节点「跟随全局 / 模糊
+        // 关闭」的默认语义——缺失键在任何构造路径（已初始化构造器、未初始化对象、PopulateObject）
+        // 下都无需回填。0 在这里是**合法**值，不同于第 34 轮 LabelScale 的陷阱（初始化器被绕过使
+        // 非零默认变成非法 0）；加载期回填属于可能改写真实用户设置的值启发式。
+        public float ForegroundBlurRadius;
+        public float ForegroundBlurVibrancy;
 
         /// <summary>Runtime-only back-reference to the built Key (never serialized — JsonUtility
         /// would write UnityEngine.Object references as instance IDs). / 仅运行时的 Key 反向引用

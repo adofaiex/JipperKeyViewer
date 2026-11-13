@@ -41,6 +41,20 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         private bool[] outlineGradientEnabled;
         private Color[] outlineGradientTops;
         private Color[] outlineGradientBottoms;
+        // Per-side / per-corner border colours (FreeMake only). While borderSideEnabled is false the
+        // mesh writer keeps using outlineColors and the vertical outline gradient above, so flipping
+        // the switch back off RESTORES the previous border exactly instead of leaving a stale tint.
+        // / 逐边/逐角描边色（仅 FreeMake）。borderSideEnabled 为 false 时写入端仍用描边主色与上方
+        // 垂直渐变，故把开关关回去是**恢复原样**，不会留下残留染色。
+        private bool[] borderSideEnabled;
+        private Color[] borderSideTops;
+        private Color[] borderSideRights;
+        private Color[] borderSideBottoms;
+        private Color[] borderSideLefts;
+        private Color[] borderCornerTopLefts;
+        private Color[] borderCornerTopRights;
+        private Color[] borderCornerBottomRights;
+        private Color[] borderCornerBottomLefts;
         private float[] scales;
         private Vector3[] rotations;
         private bool[] visibles;
@@ -152,6 +166,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             outlineGradientEnabled = new bool[slotCount];
             outlineGradientTops = new Color[slotCount];
             outlineGradientBottoms = new Color[slotCount];
+            borderSideEnabled = new bool[slotCount];
+            borderSideTops = new Color[slotCount];
+            borderSideRights = new Color[slotCount];
+            borderSideBottoms = new Color[slotCount];
+            borderSideLefts = new Color[slotCount];
+            borderCornerTopLefts = new Color[slotCount];
+            borderCornerTopRights = new Color[slotCount];
+            borderCornerBottomRights = new Color[slotCount];
+            borderCornerBottomLefts = new Color[slotCount];
             scales = new float[slotCount];
             rotations = new Vector3[slotCount];
             visibles = new bool[slotCount];
@@ -293,6 +316,61 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             outlineGradientEnabled[slot] = enabled;
             outlineGradientTops[slot] = enabled ? top : Color.white;
             outlineGradientBottoms[slot] = enabled ? bottom : Color.white;
+            MarkDirty();
+        }
+
+        /// <summary>Per-side and per-corner border colours for one slot. A per-side ALPHA is the
+        /// whole point of the feature, so a transparent side is a legal value and is NOT rejected the
+        /// way the gradient setters reject an alpha-0 stop (there a transparent end means a corrupted
+        /// file silently eats half a border). Only NaN/Inf are unusable, and those fall back to this
+        /// slot's solid outline colour so a bad value can never punch a hole in the ring. / 每槽的逐
+        /// 边/逐角描边色。**逐边透明度正是本功能的目的**，故全透明是一条合法取值，不像渐变 setter
+        /// 那样把 alpha-0 端点当坏文件拒绝（那里透明端点意味着半个描边被静默吃掉）。只有 NaN/Inf
+        /// 不可用，它们回退到本槽的描边实色，坏值绝不可能在描边环上打出缺口。</summary>
+        public void SetBorderSideColors(int slot, bool enabled,
+            Color top, Color right, Color bottom, Color left,
+            Color cornerTopLeft, Color cornerTopRight,
+            Color cornerBottomRight, Color cornerBottomLeft)
+        {
+            if (slot < 0 || slot >= count) return;
+            if (!enabled)
+            {
+                // Nothing to do when it is already off — the writer is already on the legacy path. /
+                // 本来就是关闭状态时无事可做：写入端已在旧路径上。
+                if (!borderSideEnabled[slot]) return;
+                borderSideEnabled[slot] = false;
+                MarkDirty();
+                return;
+            }
+
+            Color solid = outlineColors[slot];
+            top = IsInvalidColor(top) ? solid : top;
+            right = IsInvalidColor(right) ? solid : right;
+            bottom = IsInvalidColor(bottom) ? solid : bottom;
+            left = IsInvalidColor(left) ? solid : left;
+            cornerTopLeft = IsInvalidColor(cornerTopLeft) ? solid : cornerTopLeft;
+            cornerTopRight = IsInvalidColor(cornerTopRight) ? solid : cornerTopRight;
+            cornerBottomRight = IsInvalidColor(cornerBottomRight) ? solid : cornerBottomRight;
+            cornerBottomLeft = IsInvalidColor(cornerBottomLeft) ? solid : cornerBottomLeft;
+
+            if (borderSideEnabled[slot]
+                && borderSideTops[slot] == top && borderSideRights[slot] == right
+                && borderSideBottoms[slot] == bottom && borderSideLefts[slot] == left
+                && borderCornerTopLefts[slot] == cornerTopLeft
+                && borderCornerTopRights[slot] == cornerTopRight
+                && borderCornerBottomRights[slot] == cornerBottomRight
+                && borderCornerBottomLefts[slot] == cornerBottomLeft)
+                return;
+
+            borderSideEnabled[slot] = true;
+            borderSideTops[slot] = top;
+            borderSideRights[slot] = right;
+            borderSideBottoms[slot] = bottom;
+            borderSideLefts[slot] = left;
+            borderCornerTopLefts[slot] = cornerTopLeft;
+            borderCornerTopRights[slot] = cornerTopRight;
+            borderCornerBottomRights[slot] = cornerBottomRight;
+            borderCornerBottomLefts[slot] = cornerBottomLeft;
             MarkDirty();
         }
 
@@ -507,6 +585,59 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                         src.blurRadii != null && i < src.blurRadii.Length ? src.blurRadii[i] : 1f,
                         src.blurVibrancies != null && i < src.blurVibrancies.Length ? src.blurVibrancies[i] : 0f)
                     : (Vector4?)null;
+                // Per-side border colours: resolve this slot's palette ONCE, publish it for the
+                // vertex helpers, and clear it right after the slot is drawn. It is published for
+                // the OUTLINE layer only — the background fill never uses it.
+                // 逐边描边色：一次性解析该槽位的调色板，发布给顶点辅助函数，并在该槽位画完后立即
+                // 清除。只为**描边层**发布——背景填充不会用到它。
+                bool sideColors = isOutline && src.borderSideEnabled != null && src.borderSideEnabled[i];
+                if (sideColors)
+                {
+                    // The band width must match what the emitter actually paints, otherwise the
+                    // classification puts the wrong colour on the wrong strip. Three cases:
+                    // rounded ring (its own default thickness), the explicit square ring, and the
+                    // 9-slice path (the sprite's baked border).
+                    // 带宽必须与发射器真正画出的宽度一致，否则分类会把颜色放错条带。三种情形：
+                    // 圆角环（自带默认厚度）、显式直角环、九宫格路径（贴图自带边框）。
+                    float rad = Mathf.Max(0f, Mathf.Min(radius, Mathf.Min(r.width, r.height) * 0.5f));
+                    float band;
+                    if (rad > 0f)
+                    {
+                        float bb = src.borderThicknesses[i] > 0f ? src.borderThicknesses[i] : DefaultRoundedBorder;
+                        band = Mathf.Min(bb, Mathf.Min(r.width, r.height) * 0.5f);
+                    }
+                    else if (src.borderThicknesses[i] > 0f)
+                    {
+                        band = Mathf.Min(src.borderThicknesses[i], Mathf.Min(r.width, r.height) * 0.5f);
+                    }
+                    else
+                    {
+                        band = Sprite != null ? Sprite.border.x : 0f;
+                    }
+                    sBorderSideContext = new BorderSideContext
+                    {
+                        Active = true,
+                        Rect = r,
+                        Radius = rad,
+                        Border = band,
+                        Solid = colors[i],
+                        Colors = new BorderSideColors
+                        {
+                            Top = src.borderSideTops[i],
+                            Right = src.borderSideRights[i],
+                            Bottom = src.borderSideBottoms[i],
+                            Left = src.borderSideLefts[i],
+                            TopLeft = src.borderCornerTopLefts[i],
+                            TopRight = src.borderCornerTopRights[i],
+                            BottomRight = src.borderCornerBottomRights[i],
+                            BottomLeft = src.borderCornerBottomLefts[i],
+                        }
+                    };
+                }
+                else
+                {
+                    sBorderSideContext.Active = false;
+                }
                 if (radius > 0f)
                 {
                     // Outline ring drawn separately (slightly smaller quad below the filled one)
@@ -532,6 +663,9 @@ namespace JipperKeyViewer.KeyViewer.Rendering
                 {
                     DrawSliced(sink, r, top, bottom, gradient, Sprite, rotation, blurUv);
                 }
+                // The palette is published for exactly one slot — clear it before the next one.
+                // 调色板只为一个槽位发布——在下一个槽位前清除。
+                sBorderSideContext.Active = false;
             }
             if (skippedOverBudget > 0 && !shapeBudgetWarned)
             {
@@ -861,10 +995,21 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             int i = sink.VertexCount;
             var uv0 = new Vector4(uv.x, uv.y, 0f, 0f);
-            sink.AddVert(RotateVertex(new Vector3(a.x, a.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(RotateVertex(new Vector3(b.x, b.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(RotateVertex(new Vector3(c.x, c.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax), uv0);
-            sink.AddVert(RotateVertex(new Vector3(d.x, d.y, 0f), pivot, rotation), VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax), uv0);
+            // Per-side colours are resolved PER SEGMENT (the quad's centre), not per vertex: a
+            // segment then keeps one flat colour instead of blending towards the neighbouring
+            // side at its shared vertices. The legacy vertical gradient stays per-vertex.
+            // 逐边颜色按**段**（四边形中心）解析，而非逐顶点：这样每段保持一个平色，不会在共用顶点
+            // 处向相邻边渐变渗色。旧的垂直渐变仍是逐顶点。
+            bool sideActive = sBorderSideContext.Active;
+            Color seg = sideActive
+                ? VertexColor(top, bottom, gradient,
+                    (a.x + b.x + c.x + d.x) * 0.25f, (a.y + b.y + c.y + d.y) * 0.25f,
+                    gradientYMin, gradientYMax)
+                : Color.clear;
+            sink.AddVert(RotateVertex(new Vector3(a.x, a.y, 0f), pivot, rotation), sideActive ? seg : VerticalGradientColor(top, bottom, gradient, a.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(b.x, b.y, 0f), pivot, rotation), sideActive ? seg : VerticalGradientColor(top, bottom, gradient, b.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(c.x, c.y, 0f), pivot, rotation), sideActive ? seg : VerticalGradientColor(top, bottom, gradient, c.y, gradientYMin, gradientYMax), uv0);
+            sink.AddVert(RotateVertex(new Vector3(d.x, d.y, 0f), pivot, rotation), sideActive ? seg : VerticalGradientColor(top, bottom, gradient, d.y, gradientYMin, gradientYMax), uv0);
             sink.AddTriangle(i, i + 1, i + 2);
             sink.AddTriangle(i, i + 2, i + 3);
         }
@@ -873,6 +1018,113 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         {
             if (!gradient || yMax <= yMin) return top;
             return Color.Lerp(bottom, top, Mathf.Clamp01((y - yMin) / (yMax - yMin)));
+        }
+
+        /// <summary>Per-side / per-corner border colours of one slot. The four sides and the four
+        /// corners are independent, so a two-tone rounded frame is expressible. / 单槽的逐边/逐角
+        /// 描边色。四条边与四个角彼此独立，故双色圆角边框可被表达。</summary>
+        private struct BorderSideColors
+        {
+            public Color Top, Right, Bottom, Left;
+            public Color TopLeft, TopRight, BottomRight, BottomLeft;
+        }
+
+        /// <summary>Context of the slot currently being drawn. Set right before a slot's emission and
+        /// cleared right after, so the static vertex helpers can resolve a per-side colour without
+        /// changing the signature of every emitter. Single-threaded (Unity main thread) by
+        /// construction. / 当前正在绘制的槽位上下文。在某槽位发射前设置、发射后立即清除，故静态
+        /// 顶点辅助函数能解析逐边颜色，而不必改动每个发射器的签名。按构造即是单线程（Unity 主线程）。
+        /// </summary>
+        private struct BorderSideContext
+        {
+            public bool Active;
+            public Rect Rect;
+            public float Radius;
+            public float Border;
+            public Color Solid;
+            public BorderSideColors Colors;
+        }
+
+        private static BorderSideContext sBorderSideContext;
+
+        /// <summary>Classify one vertex into a side / corner colour. A vertex further than the border
+        /// thickness from every edge is INTERIOR and keeps the solid outline colour; a vertex inside
+        /// the border band picks the nearest edge, and a vertex on a rounded corner's arc (strictly
+        /// inside that corner's circle) picks the corner's own colour. The square paths (9-slice and
+        /// the explicit ring) have no arcs, so a vertex inside two edge bands is a corner.
+        /// 把一个顶点归类到边/角色。距所有边都超过边框厚度的顶点是**内部**，保留描边实色；落在边框
+        /// 带内的顶点取最近的边；落在圆角弧上（严格位于该角圆内）的顶点取该角自己的色。直角路径
+        /// （九宫格与显式环）没有弧，故同时落在两条边带内的顶点即为角。</summary>
+        private static Color BorderSideColorAt(float x, float y, in BorderSideContext ctx)
+        {
+            float dTop = ctx.Rect.yMax - y;
+            float dBottom = y - ctx.Rect.yMin;
+            float dLeft = x - ctx.Rect.xMin;
+            float dRight = ctx.Rect.xMax - x;
+            float band = ctx.Border;
+            if (dTop > band && dBottom > band && dLeft > band && dRight > band) return ctx.Solid;
+
+            float radius = ctx.Radius;
+            if (radius > 0f)
+            {
+                // Arc test: a point on the arc is strictly INSIDE its corner circle (a chord's
+                // midpoint is), while the straight sides are outside or exactly on it (the tangent
+                // point sits at exactly radius). Strict comparisons keep the tangent points on the
+                // side they belong to.
+                // 弧判定：弧上的点严格位于其角圆**内**（弦中点在圆内），而直边在圆外或恰在圆上
+                // （切点距恰好等于 radius）。严格比较保证切点归到它真正所属的那条边。
+                float r2 = radius * radius;
+                if (dTop <= radius && dLeft <= radius)
+                {
+                    float dx = x - (ctx.Rect.xMin + radius), dy = y - (ctx.Rect.yMax - radius);
+                    if (dx * dx + dy * dy < r2) return ctx.Colors.TopLeft;
+                }
+                if (dTop <= radius && dRight <= radius)
+                {
+                    float dx = x - (ctx.Rect.xMax - radius), dy = y - (ctx.Rect.yMax - radius);
+                    if (dx * dx + dy * dy < r2) return ctx.Colors.TopRight;
+                }
+                if (dBottom <= radius && dRight <= radius)
+                {
+                    float dx = x - (ctx.Rect.xMax - radius), dy = y - (ctx.Rect.yMin + radius);
+                    if (dx * dx + dy * dy < r2) return ctx.Colors.BottomRight;
+                }
+                if (dBottom <= radius && dLeft <= radius)
+                {
+                    float dx = x - (ctx.Rect.xMin + radius), dy = y - (ctx.Rect.yMin + radius);
+                    if (dx * dx + dy * dy < r2) return ctx.Colors.BottomLeft;
+                }
+                if (dTop <= dBottom && dTop <= dLeft && dTop <= dRight) return ctx.Colors.Top;
+                if (dBottom <= dLeft && dBottom <= dRight) return ctx.Colors.Bottom;
+                if (dLeft <= dRight) return ctx.Colors.Left;
+                return ctx.Colors.Right;
+            }
+
+            // Square paths: no arcs, so "inside two edge bands" IS a corner. The band test is
+            // strict so the END vertices of an edge slice (which sit exactly one band away from
+            // the second edge) stay on that edge instead of bleeding into the corner colour.
+            // 直角路径：没有弧，故「同时落在两条边带内」即为角。判据用严格小于，故边切片的端点
+            // （到第二条边恰好一个带宽）仍留在该边，不会渗进角色。
+            bool topBand = dTop < band, bottomBand = dBottom < band;
+            bool leftBand = dLeft < band, rightBand = dRight < band;
+            if (topBand && leftBand) return ctx.Colors.TopLeft;
+            if (topBand && rightBand) return ctx.Colors.TopRight;
+            if (bottomBand && rightBand) return ctx.Colors.BottomRight;
+            if (bottomBand && leftBand) return ctx.Colors.BottomLeft;
+            if (topBand) return ctx.Colors.Top;
+            if (bottomBand) return ctx.Colors.Bottom;
+            if (leftBand) return ctx.Colors.Left;
+            return ctx.Colors.Right;
+        }
+
+        /// <summary>Vertex colour for the current slot. When the per-side border is active it wins
+        /// over the vertical gradient (that is the point of the override); otherwise the legacy
+        /// gradient maths runs untouched. / 当前槽位的顶点色。逐边描边激活时它**压过**垂直渐变
+        /// （这正是覆盖的意义）；否则旧的渐变数学原样运行。</summary>
+        private static Color VertexColor(Color top, Color bottom, bool gradient, float x, float y, float yMin, float yMax)
+        {
+            if (sBorderSideContext.Active) return BorderSideColorAt(x, y, sBorderSideContext);
+            return VerticalGradientColor(top, bottom, gradient, y, yMin, yMax);
         }
 
         private static Vector3 RotateVertex(Vector3 position, Vector2 pivot, Vector3 rotation)
@@ -896,8 +1148,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             Color top, Color bottom, bool gradient, float gradientYMin, float gradientYMax, Vector2 pivot, Vector3 rotation, Vector4? uvOverride = null)
         {
             int i = sink.VertexCount;
-            Color cBottom = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
-            Color cTop = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            // Per-side colours resolve PER SEGMENT (the quad's centre) so a slice keeps one flat
+            // colour; the legacy vertical gradient stays per-vertex (bottom edge vs top edge).
+            // 逐边颜色按**段**（四边形中心）解析，故切片保持平色；旧的垂直渐变仍是逐顶点
+            // （下边缘 vs 上边缘）。
+            bool sideActive = sBorderSideContext.Active;
+            Color cBottom, cTop;
+            if (sideActive)
+            {
+                cBottom = VertexColor(top, bottom, gradient,
+                    (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, gradientYMin, gradientYMax);
+                cTop = cBottom;
+            }
+            else
+            {
+                cBottom = VerticalGradientColor(top, bottom, gradient, y0, gradientYMin, gradientYMax);
+                cTop = VerticalGradientColor(top, bottom, gradient, y1, gradientYMin, gradientYMax);
+            }
             var quadUv0 = new Vector4(u0, v0, 0f, 0f);
             var quadUv1 = new Vector4(u1, v1, 0f, 0f);
             if (uvOverride.HasValue)

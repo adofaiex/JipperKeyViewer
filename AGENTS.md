@@ -3332,3 +3332,93 @@ UMM `810DA824…`、Info.json 不变。版本线未动，未打 tag。
   部署：core `47D4FACA…`（11-12 11:02 构建，旧 DLL 备份为 `*.bak-20261112-133218`）；Melon/UMM 未改
   （哈希与上次相同）、`Info.json` 哈希相同。CHANGELOG.md 与 更新日志.md 已同步。
   实机待确认：按压变换 + 非零旋转的观感（见上「待实机回归」）。
+
+### 第 132 轮：雨滴预模糊落地 + 前景模糊 shader 入包（2026-11-12）
+
+- **P0-d：b1–b6 共 58 项回归全部落盘并通过**（`Harness/Program.cs`，局部变量一律 `pb` 前缀避开
+  CS0136）。要点：b1 钉住预模糊核的归一化——不透明均匀场与 `a=128` 半透明均匀场（r=4 与 r=8）
+  均**逐字节**往返，硬 alpha 边缘在块内 13px 逐位不变、块外 13px 完全未受影响、贴边像素逆预乘回
+  块自身色相且 alpha 等于解析解 `255×334/729 → 117`；b2 钉死 `MaxRainBlurLevel=3`、
+  `MaxForegroundBlurRadius=8`、`MaxPreblurDimension=256`、半径表 `{0,2,4,8}`；b3 钉住「每档一个
+  字典」而非复合键（`[0]` 为 null、`[1..3]` 互异、比较器均 `OrdinalIgnoreCase`）；b4/b5 覆盖节点与
+  全局钳制且**合法的 0 不被改写**；b6 双向兼容（缺键读 0/false、已盖章配置 `1 < 1` 闸门不触发、
+  alpha.2 自写值原样存活）。
+- **写测试时记下的两个自身失误**（勿重犯）：「块色 vs 期望色」曾错配——b1-iv 草稿里的
+  180/60/30 来自另一份用 (180,60,30) 做块的方案，而实现复用了 b1-i 的 (200,100,50)，故断言必须
+  与 `pbOpaque` 分量比较、不写死字面量；另 `JsonConvert.PopulateObject` 到**全新实例**会保留
+  `ProfileData` 的字段初始化器（`ForegroundBlurRadius=2f`），而 `DeserializeObject` 走未初始化
+  对象会读 0——b6-ii/b6-iii 因此只能用 `PopulateObject`，且节点 JSON 必须显式带
+  `LabelScale`/`CountScale`（缺键在 Fields 模式下读 0，见 KeyViewerSettings.cs 的字段注释）。
+- **【真 bug】覆盖层重建路径未净化两个新增模糊字段**：`EnsureCustomNodes` 会逐字段洗 NaN，但
+  `ForegroundBlurRadius`/`ForegroundBlurVibrancy` 不在其中，而该路径**不**经
+  `SyncArraysFromLists`。手改配置或他人 `.jkv` 带来的 `NaN` 会作为 uniform 直达 GPU（GPU 不钳
+  NaN），整段标签**消失**而非变模糊。现复用 `ProfileData.SanitizeBlurFields(node)`，与加载期共用
+  同一份范围权威（不在此另抄边界——那正是「净化静默收窄合法值」的老坑）。
+- **P1：雨滴预模糊接线完成**。`RainSystem.ApplyRainSpriteList` 进函数先 `rawRain.blurLevel = 0`
+  （池子交回的对象带着上一任快照），取图改为 `GetOrCreateRainSprite(resolved, blurLevel)`，档位在
+  出生时烘进贴图；档位 0 走原重载，未开启模糊的配置**零额外开销**。新增
+  `ResolveRainBlurLevel(node)`：节点档位非零优先、否则全局，并在**此处与加载器**双重钳制到
+  `[0, MaxRainBlurLevel]`。编辑器雨滴段新增「雨滴模糊」滑条（0–3，多选混合显示 `—`、可键入、
+  改动即 `ClearActiveDrops`），三语键 `fm_rain_blur_level` / `fm_help_rain_blur_level` 齐备。
+  **已确认的事实**：全局 `Data.RainSprites` 在仓库内只有 `RainSystem` 读取——全局雨滴贴图列表
+  本身没有 GUI，故全局 `RainBlurLevel` 同样只能走配置 JSON / 预设，不是遗漏。
+  语义决定（用户可否决）：节点档位在其非零时**永远**优先，包括该节点的贴图取自全局列表的情况。
+- **P2 部分完成——仅 shader 入包，C# 材质应用未接线**：新增
+  `tools/blur-shader/JkvSelfBlur.shader`（`JipperKeyViewer/TextSelfBlur`），对 TMP **SDF 距离场**
+  做 3×3 九点平均后再以加宽过渡带阈值化，单 pass 内按 阴影→描边→字面 合成；采样步长在 shader
+  内钳到 2.5 图集像素（`CreateFontAsset` 的 padding 为 9，超出会采到**相邻字形**），柔化由
+  `_JKVSoft` 承担。`JkvBundleBuilder.cs` 的 `assetNames` 与 `Build-BlurBundle.ps1` 的两处拷贝均已
+  加第二个 shader；Unity 6000.3 批处理构建通过（bundle 19,733 字节，`.dfl` 12,284 字节），即
+  **shader 已编译验证**，但**未经视觉验证**。尚未做：材质缓存（按 字体×档位 引用计数）、
+  全局/节点接线、前景模糊 GUI。相关字段默认关闭，故当前 DLL 行为与 alpha.1 一致。
+- **P3 完成**：版本推进 `1.7.3-alpha.2`（`SetVersion.ps1`：`AssemblyInfo` 因数字主干同为 1.7.3
+  故无变化，`MelonEntry` 的 `[MelonInfo]` 与 `Info.json` 已更新；`Repository.json` 按预览版规则
+  **刻意未动**）。`CHANGELOG.md` 与 `更新日志.md` 已同步本条（只描述实际落地的雨滴模糊、
+  `EnsureCustomNodes` 修复与 58 项回归；前景模糊与边框四色**未写入**，避免预告未交付内容）。
+- **P4 未开工，语义仍待用户细化**（此前已提出、尚未答复）：①四面色是**覆盖**既有描边色/渐变，
+  还是**替换**它们；②圆角四段的颜色归属（按就近的边，还是单独一套）；③是否同步到固定布局与
+  按下态覆盖，还是只做 FreeMake 常态。在拿到答复前按任一种实现都可能返工，故本轮不动。
+- 构建/回归：四工程 **0 错误**（唯一警告是已登记的 `CS0169 stageProfileSince`）；Harness
+  **365 passed / 0 failed**（第 131 轮记录为 304，本轮 b1–b6 新增 58 项）。未提交、未 push、
+  未打 tag。实机待确认：雨滴模糊的观感（需节点开启贴图列表并设档位 2/3；源图 >256px 会被拒
+  模糊并静默保留原图）。
+
+### 第 133 轮：前景模糊定稿（TMP 自家 shader）+ P4 边框分面落地（2026-11-13）
+
+- **P2 前景模糊——两次实机证伪后定稿为「TMP 自家 shader」方案**。自定义
+  `JkvSelfBlur.shader` 路线两次部署实测**文字消失**，根因是移植的 SDF 代码来自 IMGUI 专用变体
+  （`TMP_SDF_SSD.cginc` 带 `_GUIClipTexture` 裁剪），运行时 UI 不可移植（第二次实锤，此结论
+  升级为禁令）。终案：`new Material(fontMat)` 克隆 + `_GradientScale/(k)` 加宽 TMP 边缘过渡带，
+  文字必现（消失 bug 确认修复）。三轮实机标定：线性 `1+半径`（9px 带把小字糊成灰斑）→
+  `×0.25`（仍糊）→ **`k = 1 + min(半径×0.01, 0.05) × 字号`（带宽 = 字号 5% 硬上限）**。
+  材质缓存键加字号桶（`RoundToInt(fontSize/4)`，非模糊样式桶 0 保持跨字号共享）；
+  `CompensateBlurFloat` 级联补偿（描边宽度/膨胀 ÷k，阴影偏移/膨胀/柔度 ×k，缺失属性/NaN 一律
+  不动）；`UpdateText` 改为逐文本连同样式解析（6 处调用点 + `ConfigureText` + CustomLayout 两处）。
+  用户「糊和发黄」反馈的结论：小字（~8px）散焦必然微发暖——边缘像素与键底混色的物理本质；
+  5% 上限已把带宽压到不宽过自身笔画，展示场景（32px+ 字号）观感正常。浓度（vibrancy）滑条整体
+  **删除**（白/灰字饱和度为 0 的死控件）+ 三语孤儿键 `fm_foreground_blur_vibrancy` 删除（被
+  i18n 测试拦截后补删）；`ProfileData`/`KvTextStyle` 数据字段保留但无 UI。死 shader 路径
+  （`selfBlurShader`/`CopyMaterialFloat`/`CopyMaterialColor`）已删。
+- **【清理】JkvSelfBlur 全部移除**：`JkvBundleBuilder.assetNames` 收缩回单 shader，
+  `Build-BlurBundle.ps1` 删第二份拷贝，`tools/blur-shader/JkvSelfBlur.shader` 删除（回收站）；
+  bundle 重建 **18,175 字节**（回到 alpha.1 单 shader 体积），`Pack-EmbeddedAssets` 重跑
+  （.dfl 10,889 字节）。运行时无任何 JkvSelfBlur 引用（grep 核实）。**背景模糊仍用该 bundle 的
+  KeyViewerBlur.shader，bundle 本体保留**。
+- **P4 边框四面/四角调色落地（语义按用户三点指示：覆盖式可恢复 / 单独颜色 / 仅 FreeMake）**：
+  `FmNode` 新增 `UseBorderSideColors` + 8 个 `float[4]` 颜色字段（四边+四角，角刻意不继承邻边，
+  这是双色圆角边框的前提）；`EnsureCustomNodes` 对 8 字段统一 `SanitizeNodeColor`（长度≠4 或含
+  NaN/Inf → null → 回退描边实色）；`KeyShapeLayer.SetBorderSideColors(slot, …)` 按 slot 缓存
+  `BorderSideColors` 并经 `BorderSideColorAt` 按边/弧段写顶点色（直边/圆角环/九宫格三路径全覆盖），
+  与描边渐变互相独立且开启时覆盖渐变；**按压态回退经典描边色**（`sidesActive = on && !pressed`，
+  按压反馈不被调色板冻住）；编辑器 8 个颜色输入（`DrawEditorColorField`，基准回退色取
+  KPS/Total/普通 对应全局描边色）+ 总开关，三语 10 键齐备
+  （`fm_border_sides`/`fm_border_side_*`×4/`fm_border_corner_*`×4/`fm_help_border_sides`）。
+  默认全关，旧配置行为不变。
+- **【真 bug】编辑器多选崩溃**：多选曾直接按下标访问 `RainSprites`，贴图数少于活动节点的被选
+  节点抛 `ArgumentOutOfRangeException`——异常中断整个 OnGUI，其后的描边/边框区控件**从此消失**。
+  现 `EnsureRainSpriteSlots` 先补齐列表长度。CHANGELOG/更新日志已同步（含前景模糊与 P4 条目）。
+- **未提交遗留（第 132 轮起）一并纳入本次提交**：共 20 文件改动（含
+  `assets/KeyViewerBlur.bundle` 重建与 `.csproj` 无变化确认）。Harness 待本轮回归后记数。
+- **实机未决两项（下轮优先）**：①雨滴模糊看不出效果——未排查（候选：节点未开贴图列表/档位
+  过低/源图 >256px 被静默退回原图）；②背景模糊开启后背景「肢解成透明」——URP 检查后台任务
+  零输出（无结论），bug 未修。这两项不阻塞本次提交。

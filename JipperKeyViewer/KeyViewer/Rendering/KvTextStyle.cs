@@ -29,6 +29,15 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         public float ShadowOffsetX;
         public float ShadowOffsetY;
         public float ShadowSoftness;
+        /// <summary>Foreground blur: the glyphs are softened by a self-convolution on the font's own
+        /// distance field (no grab, no layer reorder). / 前景模糊：字形通过字体自身距离场的卷积被柔化
+        /// （不抓屏、不重排层级）。</summary>
+        public bool Blur;
+        /// <summary>Blur radius in screen pixels. / 模糊半径（屏幕像素）。</summary>
+        public float BlurRadius;
+        /// <summary>Saturation boost: 0 = pure blur, 1 = saturation push (Quartz-like).
+        /// / 饱和度增益：0 = 纯模糊，1 = 饱和度增强（Quartz 风格）。</summary>
+        public float BlurVibrancy;
 
         /// <summary>Upper bound of the shadow-softness value, shared by the resolver below and by
         /// CustomLayout's load-time sanitizer (SanitizeTextStyle(..., 0f, 64f)) and the editor's
@@ -57,7 +66,7 @@ namespace JipperKeyViewer.KeyViewer.Rendering
         /// resolves to the font's own material, which is what every TMP text used before this
         /// feature existed. / 该样式是否需要专属材质。全关的样式回落到字体自带材质，即本功能
         /// 出现前所有 TMP 文本使用的那个。</summary>
-        public bool NeedsMaterial => Outline || Shadow;
+        public bool NeedsMaterial => Outline || Shadow || Blur;
 
         /// <summary>Stable cache key: identical styles share one material, and the key includes
         /// the font so a font switch never reuses another font's material. Colors are quantized
@@ -82,6 +91,16 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             Mix(Bits(ShadowOffsetX));
             Mix(Bits(ShadowOffsetY));
             Mix(Bits(ShadowSoftness));
+            // Blur: the flag, the radius (quantized to 1/4 px so a slider drag cannot mint a
+            // material per frame — the radius only needs 0.25 px granularity at UI scale) and the
+            // vibrancy (1/100). Without these in the key, two different blur settings would share
+            // ONE material and the second text would render with the first one's blur.
+            // 模糊：开关、半径（量化到 1/4 像素，故拖滑杆不会每帧铸一个材质——UI 尺度下 0.25 像素
+            // 粒度足够）与浓度（1/100）。没有这三项进键，两个不同模糊设置会**共用**一份材质，第二段
+            // 文字就会带上第一段的模糊渲染。
+            Mix(Blur ? 1 : 0);
+            Mix((long)Mathf.RoundToInt(Mathf.Clamp(BlurRadius, 0f, 100f) * 4f));
+            Mix((long)Mathf.RoundToInt(Mathf.Clamp(BlurVibrancy, 0f, 2f) * 100f));
             return h;
         }
 
@@ -234,6 +253,23 @@ namespace JipperKeyViewer.KeyViewer.Rendering
             // 零/负描边宽度什么也不画却仍占一个材质，故这么小的宽度直接关掉该功能，而非画一层
             // 看不见的东西。
             if (s.OutlineWidth <= 0f) s.Outline = false;
+            // Foreground blur (self-convolution on the glyphs). The node's own switch wins while it
+            // is on; otherwise the global setting applies. Outline and shadow SURVIVE the blur:
+            // the self-blur shader is a port of TMP's own distance-field maths (face + outline +
+            // underlay), so a blurred label keeps the decoration it had — the default profile has a
+            // drop shadow ON, and dropping it would change what the user configured.
+            // 前景模糊（字形自身卷积）。节点自身开关开启时优先，否则用全局设置。描边与阴影**保留**：
+            // 自身模糊 shader 是 TMP 自带距离场数学的移植（字面 + 描边 + 底衬），故模糊标签保留
+            // 它原有的装饰——默认配置**开着**投影阴影，丢掉它就改变了用户配置的东西。
+            if (d != null)
+            {
+                bool nodeOwn = node != null && node.UseForegroundBlur;
+                s.Blur = nodeOwn || d.EnableForegroundBlur;
+                float radius = nodeOwn ? node.ForegroundBlurRadius : d.ForegroundBlurRadius;
+                float vibrancy = nodeOwn ? node.ForegroundBlurVibrancy : d.ForegroundBlurVibrancy;
+                s.BlurRadius = SafeFloat(radius, 0f, Settings.ProfileData.MaxForegroundBlurRadius, 2f);
+                s.BlurVibrancy = SafeFloat(vibrancy, 0f, 1f, 0f);
+            }
             return s;
         }
 

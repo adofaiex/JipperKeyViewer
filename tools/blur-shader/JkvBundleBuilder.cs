@@ -15,6 +15,10 @@ public static class JkvBundleBuilder
     private const string OutputDir = "jkv-bundle-out";
     private const string BundleName = "keyviewerblur.bundle";
     private const string ShaderAsset = "Assets/Shaders/KeyViewerBlur.shader";
+    // Foreground text blur deliberately does NOT ship a shader: it widens the edge band of
+    // TMP's own SDF shader via a cloned material (_GradientScale), so nothing extra to embed.
+    // / 前景文字模糊刻意**不带** shader：它通过克隆材质缩窄 TMP 自家 SDF shader 的边缘过渡带
+    // （_GradientScale），因此没有需要内嵌的额外资源。
 
     public static void Build()
     {

@@ -565,24 +565,32 @@ namespace JipperKeyViewer.KeyViewer
             // ApplyCustomTextStyles when the overlay rebuilds. / 按文本类别（标签/计数）分别解析，
             // 使显示页的两套描边/阴影真正生效；节点自身的覆盖在覆盖层重建时由
             // ApplyCustomTextStyles 追加应用。
-            Material keyMat = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, null, Rendering.KvTextKind.KeyLabel));
-            Material countMat = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, null, Rendering.KvTextKind.Count));
+            // No pre-resolved global materials here any more: every text resolves its own style WITH
+            // its own font size inside UpdateText, because the blur band must scale per text — a
+            // single shared material would smear one fixed band over every label height.
+            // 这里不再预解析全局材质：每个文本在 UpdateText 内部连同**自己的字号**解析样式，因为
+            // 模糊带必须逐文本缩放——单一共享材质会把一个固定带宽套到所有高度的标签上。
             FontStyles style = (FontStyles)Settings.Data.FontStyleFlags;
             // node is non-null only for custom-layout keys: their own text style then wins over
             // the global one, which is the ONLY way a font switch can preserve a per-node override
             // (this method rewrites fontMaterial on every text). / node 仅对自定义布局按键非空：
             // 此时节点自身的文字样式优先于全局——这是字体切换能保住节点级覆盖的唯一办法（本方
             // 法会重写每个文本的 fontMaterial）。
-            void UpdateText(TMP_Text t, Material mat, Settings.FmNode node = null, bool isCount = false)
+            void UpdateText(TMP_Text t, Settings.FmNode node = null, bool isCount = false)
             {
                 if (t == null) return;
                 t.font = currentFont;
-                Material use = mat;
-                if (node != null && node.UseCustomTextStyle)
-                {
-                    use = GetTextStyleMaterial(currentFont, Rendering.KvTextStyle.Resolve(Settings.Data, node,
-                        isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel));
-                }
+                // Re-resolve WITH the text: the blur band scales with this text's own font size, and
+                // the pre-resolved global material was built without one — passing it here would
+                // smear one fixed band over every label height.
+                // 连同文本一起重新解析：模糊带随该文本自己的字号缩放，而预解析的全局材质不含字号
+                // 信息——直接用会把一个固定带宽套到所有高度的标签上。
+                var kind = isCount ? Rendering.KvTextKind.Count : Rendering.KvTextKind.KeyLabel;
+                Material use = GetTextStyleMaterial(currentFont,
+                    node != null && node.UseCustomTextStyle
+                        ? Rendering.KvTextStyle.Resolve(Settings.Data, node, kind)
+                        : Rendering.KvTextStyle.Resolve(Settings.Data, null, kind),
+                    t);
                 if (use != null) ApplyFontMaterial(t, use);
                 // The material above is gated on UseCustomTextStyle; the font style has to be gated
                 // the SAME way, or a node that never opted into a per-node style silently cancels
@@ -653,7 +661,7 @@ namespace JipperKeyViewer.KeyViewer
                     if (Keys[i] == null) continue;
                     int pi = i;
                     Settings.FmNode node = Keys[i].CustomNode;
-                    UpdateText(Keys[i].text, keyMat, node, false);
+                    UpdateText(Keys[i].text, node, false);
                     ApplyPerKeyOverride(Keys[i].text, pi);
                     ApplyNodeFontSize(Keys[i].text, node, false);
                     // value: reset FIRST, then override — the old order let UpdateText's
@@ -661,7 +669,7 @@ namespace JipperKeyViewer.KeyViewer
                     // blocks below already had the correct order).
                     // value:先重置后覆盖——旧顺序会让 UpdateText 的无条件 fontSizeMax 写入
                     // 抹掉每键字号(下方 Kps/Total 段原本顺序就正确)。
-                    UpdateText(Keys[i].value, countMat, node, true);
+                    UpdateText(Keys[i].value, node, true);
                     ApplyPerKeyOverride(Keys[i].value, pi);
                     ApplyNodeFontSize(Keys[i].value, node, true);
                 }
@@ -676,20 +684,20 @@ namespace JipperKeyViewer.KeyViewer
             if (Kps != null)
             {
                 Settings.FmNode kpsNode = Kps.CustomNode;
-                UpdateText(Kps.text, keyMat, kpsNode, false);
+                UpdateText(Kps.text, kpsNode, false);
                 ApplyPerKeyOverride(Kps.text, kpsPi);
                 ApplyNodeFontSize(Kps.text, kpsNode, false);
-                UpdateText(Kps.value, countMat, kpsNode, true);
+                UpdateText(Kps.value, kpsNode, true);
                 ApplyPerKeyOverride(Kps.value, kpsPi);
                 ApplyNodeFontSize(Kps.value, kpsNode, true);
             }
             if (Total != null)
             {
                 Settings.FmNode totalNode = Total.CustomNode;
-                UpdateText(Total.text, keyMat, totalNode, false);
+                UpdateText(Total.text, totalNode, false);
                 ApplyPerKeyOverride(Total.text, totalPi);
                 ApplyNodeFontSize(Total.text, totalNode, false);
-                UpdateText(Total.value, countMat, totalNode, true);
+                UpdateText(Total.value, totalNode, true);
                 ApplyPerKeyOverride(Total.value, totalPi);
                 ApplyNodeFontSize(Total.value, totalNode, true);
             }
@@ -702,7 +710,7 @@ namespace JipperKeyViewer.KeyViewer
         /// Uses the "UNDERLAY_ON" shader keyword for TMP drop shadow / 使用 TMP 的 "UNDERLAY_ON" 着色器关键字实现投影
         /// Materials are cached and reused / 材质会被缓存和复用
         /// </summary>
-        Material GetTextStyleMaterial(TMP_FontAsset font, in Rendering.KvTextStyle style)
+        Material GetTextStyleMaterial(TMP_FontAsset font, in Rendering.KvTextStyle style, TMP_Text text = null)
         {
             if (font == null) return null;
             if (!style.NeedsMaterial)
@@ -718,6 +726,21 @@ namespace JipperKeyViewer.KeyViewer
                 return neutral;
             }
             long key = style.CacheKey(font.GetInstanceID());
+            // The blur band scales with the text's own font size (a real defocus is proportional to
+            // the glyph height), so texts of different sizes must not share one blurred material.
+            // Bucket the size at 4 px; a non-blur style keeps bucket 0 so ordinary styles stay
+            // shared across sizes exactly as before.
+            // 模糊带随文本自身字号缩放（真正的散焦与字形高度成正比），故不同字号的文本不得共用
+            // 一份模糊材质。字号按 4 像素分桶；非模糊样式保持桶 0，普通样式的跨字号共享与从前
+            // 完全一致。
+            int sizeBucket = 0;
+            if (style.Blur && text != null)
+            {
+                float fs = text.fontSize;
+                if (!float.IsNaN(fs) && !float.IsInfinity(fs) && fs > 0f)
+                    sizeBucket = Mathf.RoundToInt(fs / 4f);
+            }
+            if (sizeBucket != 0) key ^= (long)sizeBucket * 1099511628211L;
             if (textStyleMaterials.TryGetValue(key, out Material cached) && cached != null) return cached;
             Material fontMat = GetFontMaterial(font);
             if (fontMat == null)
@@ -743,6 +766,53 @@ namespace JipperKeyViewer.KeyViewer
                 mat.SetFloat("_UnderlayOffsetX", style.ShadowOffsetX);
                 mat.SetFloat("_UnderlayOffsetY", style.ShadowOffsetY);
                 mat.SetFloat("_UnderlaySoftness", style.ShadowSoftness);
+            }
+            // Foreground blur, WITHOUT a custom shader. In TMP's SDF maths the face alpha is
+            // saturate((d - threshold) * scale + 0.5) and the edge softness is carried entirely by
+            // `scale`, which is proportional to the material's _GradientScale. Dividing that value
+            // by (1 + radius) widens the ~1 px antialiased edge into a ~radius px gradient — a
+            // defocus rendered by TMP's OWN shader, so every vertex-format / keyword / dynamic-atlas
+            // behaviour stays correct by construction. (A hand-ported SDF shader was tried first and
+            // rendered BLANK: the shipped SSD variant is the IMGUI shader, and the runtime UI
+            // variant's vertex contract could not be verified without its source.)
+            // An SDF-space quantity is expressed in the same d units as the edge, so on screen it
+            // scales up by (1 + radius) together with the band; each one is compensated so ONLY the
+            // edge softness changes.
+            // 前景模糊，**不用**自定义 shader。TMP 的 SDF 数学里字面 alpha 是
+            // saturate((d - threshold) * scale + 0.5)，边缘软硬完全由 `scale` 承载，而它与材质的
+            // _GradientScale 成正比。把该值除以 (1 + 半径)，就把约 1 像素的抗锯齿边缘加宽成约
+            // 半径像素的渐变——由 TMP **自己的** shader 渲染的散焦，顶点格式/关键字/动态图集的
+            // 行为全部按构造保持正确。（先试过手移 SDF shader，结果渲染成**空白**：随包的 SSD 版是
+            // IMGUI 用的，运行时 UI 版的顶点约定拿不到源码无法核实。）
+            // SDF 空间里的其它量与边缘共用同一套 d 单位，故在屏幕上会随过渡带一起放大 (1+半径)；
+            // 逐一补偿，使**只有**边缘软硬变化。
+            if (style.Blur)
+            {
+                // CALIBRATED IN-GAME (2026-11-13): the band is proportional to THIS text's font
+                // size, and CAPPED at 5% of the glyph height. Two measured facts drove both terms:
+                // an absolute pixel band cannot fit an ~8 px label and a 40 px one (a linear
+                // "1 + radius" turned the small labels into grey mush), and even a size-proportional
+                // band tints small text — every edge pixel blends with the key's background colour
+                // (white glyphs over the dark-red box read as yellowish), so tiny text only ever
+                // gets a subtle soften instead of a band wider than its own strokes.
+                // 实机标定（2026-11-13）：过渡带与**该文本**的字号成正比，且**硬上限为字高的 5%**。
+                // 两个实测事实分别决定了这两项：固定像素带不可能同时适配约 8 像素的标签与 40 像素的
+                // 大字（线性「1 + 半径」在半径 8 时把小标签糊成灰斑）；而即便按字号等比，小字的可见
+                // 散焦也必然染色——每个边缘像素都在与键底颜色混色（白字压在暗红底上读作发黄），故
+                // 小字只给轻微柔化，带宽绝不宽过它自己的笔画。
+                float fontSizePx = text != null ? text.fontSize : 24f;
+                if (float.IsNaN(fontSizePx) || float.IsInfinity(fontSizePx) || fontSizePx <= 0f) fontSizePx = 24f;
+                float extraBand = Mathf.Min(Mathf.Max(style.BlurRadius, 0f) * 0.01f, 0.05f) * fontSizePx;
+                float k = 1f + extraBand;
+                float gs = fontMat.HasProperty("_GradientScale") ? fontMat.GetFloat("_GradientScale") : 1f;
+                if (float.IsNaN(gs) || float.IsInfinity(gs) || gs <= 0f) gs = 1f;
+                mat.SetFloat("_GradientScale", gs / k);
+                CompensateBlurFloat(mat, "_OutlineWidth", 1f / k);
+                CompensateBlurFloat(mat, "_FaceDilate", 1f / k);
+                CompensateBlurFloat(mat, "_UnderlayOffsetX", k);
+                CompensateBlurFloat(mat, "_UnderlayOffsetY", k);
+                CompensateBlurFloat(mat, "_UnderlayDilate", k);
+                CompensateBlurFloat(mat, "_UnderlaySoftness", k);
             }
             // The cache key includes colour/offset floats, so every distinct style mints a new
             // material. The cache key quantizes to 1/1000 while the GUI sliders are continuous and
@@ -771,6 +841,21 @@ namespace JipperKeyViewer.KeyViewer
             // 计数要防止的那种故障。
             EvictUnusedTextStyleMaterials(key);
             return mat;
+        }
+
+        /// <summary>Scale one SDF-space material float by a factor so its on-screen size stays
+        /// constant while the edge band widens. Missing properties and non-finite values are left
+        /// untouched — NaN in a shader uniform is not clamped by the GPU, it propagates through the
+        /// vertex/fragment maths and the text collapses.
+        /// 按系数缩放某个 SDF 空间的材质浮点，使过渡带加宽时它的屏幕尺寸保持不变。缺失属性与
+        /// 非有限值一律不动——着色器 uniform 里的 NaN 不会被 GPU 钳制，它会传播进顶点／片元运算，
+        /// 文字直接塌掉。</summary>
+        private static void CompensateBlurFloat(Material mat, string prop, float factor)
+        {
+            if (mat == null || !mat.HasProperty(prop)) return;
+            float v = mat.GetFloat(prop);
+            if (float.IsNaN(v) || float.IsInfinity(v)) return;
+            mat.SetFloat(prop, v * factor);
         }
 
         /// <summary>How many distinct text-style materials may be cached. Far above what any real

@@ -99,6 +99,14 @@ namespace JipperKeyViewer.KeyViewer.Rain
         public bool dotted;
         public float dotLength;
         public float gapLength;
+        /// <summary>Resolved pre-blur level for sprite drops (0 = none, 1/2/3 ≈ radius 2/4/8 px).
+        /// Snapshot at creation like the other per-drop params: RainLayer samples the SOURCE
+        /// texture by this level, so drops created before the setting changed keep the texture
+        /// they were emitted with until they are recycled. / 贴图雨滴解析后的预模糊档位
+        /// （0 = 无，1/2/3 约对应半径 2/4/8 像素）。与其它逐滴参数一致，创建时快照：
+        /// RainLayer 按此档位采样源贴图，设置变更前创建的雨滴在其生命周期内保留创建时的贴图，
+        /// 回收后重新解析。</summary>
+        public byte blurLevel;
 
         public RawRain(byte color)
         {

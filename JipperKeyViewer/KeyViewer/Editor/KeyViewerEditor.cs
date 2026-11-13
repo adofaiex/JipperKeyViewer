@@ -3114,6 +3114,21 @@ namespace JipperKeyViewer.KeyViewer
 
         // ---- property panel / 属性面板 ----
 
+        /// <summary>Grow a selected node's rain-sprite list to the active node's length, and never
+        /// leave it null. Multi-select edits indexed that list DIRECTLY, so a selected node with
+        /// FEWER sprites than the active one threw ArgumentOutOfRangeException — and because the
+        /// exception aborts the whole OnGUI pass, every control drawn after it (including the
+        /// outline/border section further down) simply never appeared.
+        /// 把被选中节点的雨滴贴图列表补齐到活动节点的长度，并保证非 null。多选编辑曾**直接**按下标
+        /// 访问该列表，故贴图数少于活动节点的被选节点会抛 ArgumentOutOfRangeException——而异常会中断
+        /// 整个 OnGUI 过程，于是它之后绘制的一切控件（更下面的描边/边框区）干脆从不出现。</summary>
+        private static void EnsureRainSpriteSlots(FmNode n, int count)
+        {
+            if (n == null) return;
+            if (n.RainSprites == null) n.RainSprites = new List<RainSpriteConfig>();
+            while (n.RainSprites.Count < count) n.RainSprites.Add(new RainSpriteConfig());
+        }
+
         private void DrawEditorProperties()
         {
             if (editorSelection.Count == 0)
@@ -3544,6 +3559,35 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.UseRainSpriteList = v;
                     if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
                 }, "fm_help_rain_sprite_list", EditorNothing);
+                // Rain pre-blur (0 = follow the global level). Only IMAGE drops are affected: the
+                // blurred sprite is baked once per (path, level) and cached across rebuilds, so
+                // dragging this slider never re-decodes a texture. ClearActiveDrops makes the change
+                // visible immediately instead of waiting for the current drops to expire.
+                // 雨滴预模糊（0 = 跟随全局档位）。仅影响**贴图**雨滴：模糊结果按 (路径, 档位) 烘焙一次
+                // 并跨重建缓存，故拖动本滑条不会重新解码贴图。清空在场雨滴让改动立刻可见，而不是等
+                // 当前这批自然结束。
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(I18n.Tr("fm_rain_blur_level"), EditorFieldLabelWidth);
+                DrawEditorHelpMarker("fm_help_rain_blur_level");
+                int blurLevel = first.RainBlurLevel;
+                int newBlur = Mathf.RoundToInt(
+                    GUILayout.HorizontalSlider(blurLevel, 0f, ProfileData.MaxRainBlurLevel));
+                bool blurMixed = false;
+                for (int i = 1; i < editorSelection.Count; i++)
+                    if (editorSelection[i].RainBlurLevel != first.RainBlurLevel)
+                    { blurMixed = true; break; }
+                string blurText = TextInputField("fme_rbl_" + first.Id,
+                    blurMixed ? "—" : newBlur.ToString(), GUILayout.Width(56f));
+                if (int.TryParse(blurText.Replace("—", "").Trim(), out int parsedBlur))
+                    newBlur = Mathf.Clamp(parsedBlur, 0, ProfileData.MaxRainBlurLevel);
+                GUILayout.EndHorizontal();
+                DrawEditorHelpBox("fm_help_rain_blur_level");
+                if (newBlur != first.RainBlurLevel)
+                {
+                    foreach (FmNode n in editorSelection) n.RainBlurLevel = (byte)newBlur;
+                    if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
+                    EditorPropertyChanged();
+                }
                 if (first.UseRainSpriteList)
                 {
                     GUILayout.BeginHorizontal();
@@ -3595,7 +3639,10 @@ namespace JipperKeyViewer.KeyViewer
                             if (newRepeat != sprite.Count)
                             {
                                 foreach (FmNode n in editorSelection)
+                                {
+                                    EnsureRainSpriteSlots(n, first.RainSprites.Count);
                                     n.RainSprites[spriteIndex].Count = newRepeat;
+                                }
                                 if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
                                 EditorPropertyChanged();
                             }
@@ -3609,7 +3656,10 @@ namespace JipperKeyViewer.KeyViewer
                             if (Math.Abs(newCorner - sprite.CornerRadius) > 0.001f)
                             {
                                 foreach (FmNode n in editorSelection)
+                                {
+                                    EnsureRainSpriteSlots(n, first.RainSprites.Count);
                                     n.RainSprites[spriteIndex].CornerRadius = newCorner;
+                                }
                                 if (rainSystem != null && Keys != null) rainSystem.ClearActiveDrops(Keys);
                                 EditorPropertyChanged();
                             }
@@ -4768,6 +4818,38 @@ namespace JipperKeyViewer.KeyViewer
                     foreach (FmNode n in editorSelection) n.UseOutlineGradient = v;
                     EditorGradientPropertyChanged();
                 }, "fm_help_outline_gradient");
+                // Per-side / per-corner border colours (FreeMake only). This switch is INDEPENDENT
+                // of the vertical outline gradient above, and while it is on it covers the whole
+                // border (the gradient included) — that is what an override means. Turning it back
+                // off restores the previous border exactly. / 逐边/逐角描边色（仅 FreeMake）。该
+                // 开关与上方的垂直描边渐变**互相独立**，启用时覆盖整圈描边（含渐变）——这正是
+                // 「覆盖」的含义。关掉即恢复原样。
+                DrawEditorToggle(I18n.Tr("fm_border_sides"), first.UseBorderSideColors, v =>
+                {
+                    foreach (FmNode n in editorSelection) n.UseBorderSideColors = v;
+                    EditorGradientPropertyChanged();
+                }, "fm_help_border_sides", EditorNothing);
+                if (first.UseBorderSideColors)
+                {
+                    Color ol = first.NodeType == 1 ? Settings.Data.KpsOutline
+                        : first.NodeType == 2 ? Settings.Data.TotalOutline : Settings.Data.Outline;
+                    void SideColor(string labelKey, float[] current, Action<FmNode, float[]> assign)
+                    {
+                        DrawEditorColorField(I18n.Tr(labelKey), current, ol, arr =>
+                        {
+                            foreach (FmNode n in editorSelection) assign(n, arr);
+                            EditorGradientPropertyChanged();
+                        });
+                    }
+                    SideColor("fm_border_side_top", first.BorderSideTop, (n, v) => n.BorderSideTop = v);
+                    SideColor("fm_border_side_right", first.BorderSideRight, (n, v) => n.BorderSideRight = v);
+                    SideColor("fm_border_side_bottom", first.BorderSideBottom, (n, v) => n.BorderSideBottom = v);
+                    SideColor("fm_border_side_left", first.BorderSideLeft, (n, v) => n.BorderSideLeft = v);
+                    SideColor("fm_border_corner_tl", first.BorderCornerTopLeft, (n, v) => n.BorderCornerTopLeft = v);
+                    SideColor("fm_border_corner_tr", first.BorderCornerTopRight, (n, v) => n.BorderCornerTopRight = v);
+                    SideColor("fm_border_corner_br", first.BorderCornerBottomRight, (n, v) => n.BorderCornerBottomRight = v);
+                    SideColor("fm_border_corner_bl", first.BorderCornerBottomLeft, (n, v) => n.BorderCornerBottomLeft = v);
+                }
                 if (first.UseOutlineGradient)
                 {
                     Color normalOutline = first.NodeType == 1 ? Settings.Data.KpsOutline
@@ -5597,6 +5679,26 @@ namespace JipperKeyViewer.KeyViewer
                     if (v) SeedTextStyleFromGlobals(n);
                 }
             }, "fm_help_text_style_custom");
+            // Foreground blur override. INDEPENDENT of the text-style block below: a node may blur
+            // its own text without taking over the outline/shadow. While off, the node follows the
+            // global setting.
+            // 前景模糊覆盖。与下面的文字样式块**互相独立**：节点可以只模糊自己的文字而不接管描边/
+            // 阴影。关闭时跟随全局设置。
+            DrawEditorToggle(I18n.Tr("fm_foreground_blur_node"), first.UseForegroundBlur, v =>
+            {
+                foreach (FmNode n in editorSelection) n.UseForegroundBlur = v;
+                EditorColorPropertyChanged();
+            }, "fm_help_foreground_blur_node", EditorNothing);
+            if (first.UseForegroundBlur)
+            {
+                DrawEditorFloatField(I18n.Tr("fm_foreground_blur_radius"), "fme_fbr_" + first.Id,
+                    n => n.ForegroundBlurRadius,
+                    v =>
+                    {
+                        foreach (FmNode n in editorSelection) n.ForegroundBlurRadius = v;
+                        EditorColorPropertyChanged();
+                    }, "fm_help_foreground_blur_node");
+            }
             if (!first.UseCustomTextStyle)
             {
                 GUILayout.Label("<i>" + I18n.Tr("fm_text_style_following_global") + "</i>");

@@ -509,6 +509,14 @@ namespace JipperKeyViewer.KeyViewer
                 node.GlowOpacity = float.IsNaN(node.GlowOpacity) || float.IsInfinity(node.GlowOpacity) ? 0.7f : Mathf.Clamp01(node.GlowOpacity);
                 node.GlowSizePressed = float.IsNaN(node.GlowSizePressed) || float.IsInfinity(node.GlowSizePressed) ? 20f : Mathf.Clamp(node.GlowSizePressed, 0f, 50f);
                 node.GlowOpacityPressed = float.IsNaN(node.GlowOpacityPressed) || float.IsInfinity(node.GlowOpacityPressed) ? 0.7f : Mathf.Clamp01(node.GlowOpacityPressed);
+                // The 1.7.3-alpha.2 blur fields become shader uniforms (foreground) or a pre-blur cache
+                // key (rain) on every rebuild, and a NaN radius blanks the whole label instead of
+                // blurring it. Reuse the load-time clamp so both paths share ONE range authority —
+                // duplicating the bounds here is how sanitization silently narrows a legal value.
+                // 1.7.3-alpha.2 的模糊字段在每次重建时都会成为 shader uniform（前景）或预模糊缓存
+                // 键（雨滴），NaN 半径会让整段标签消失而不是变模糊。复用加载期钳制，让两条路径共用
+                // **同一份**范围权威——在此另写一遍边界正是净化静默收窄合法值的由来。
+                ProfileData.SanitizeBlurFields(node);
                 node.RainRow = Mathf.Clamp(node.RainRow, 0, 2);
                 node.FontSize = float.IsNaN(node.FontSize) || node.FontSize < 0f ? 0f : Mathf.Min(node.FontSize, 72f);
                 node.CountFontSize = float.IsNaN(node.CountFontSize) || node.CountFontSize < 0f ? 0f : Mathf.Min(node.CountFontSize, 72f);
@@ -587,6 +595,22 @@ namespace JipperKeyViewer.KeyViewer
                 node.OutlineGradientBottom = SanitizeNodeColor(node.OutlineGradientBottom);
                 node.OutlineGradientTopPressed = SanitizeNodeColor(node.OutlineGradientTopPressed);
                 node.OutlineGradientBottomPressed = SanitizeNodeColor(node.OutlineGradientBottomPressed);
+                // Per-side / per-corner border colours (FreeMake only). Same authority as every other
+                // colour array above: a length other than 4 or any NaN/Inf component becomes null,
+                // which the apply path reads as "fall back to the solid outline colour". A bad colour
+                // must degrade to the previous behaviour, never paint a black or garbage border —
+                // these eight values go straight into mesh vertex colours.
+                // 逐边/逐角描边色（仅 FreeMake）。与上方所有颜色数组共用同一份权威：长度不是 4 或含
+                // 任何 NaN/Inf 分量即为 null，应用路径把 null 读作「回退到描边实色」。坏颜色必须退化
+                // 成原有行为，绝不能画出黑色或乱色描边——这八个值会直接写进 mesh 顶点色。
+                node.BorderSideTop = SanitizeNodeColor(node.BorderSideTop);
+                node.BorderSideRight = SanitizeNodeColor(node.BorderSideRight);
+                node.BorderSideBottom = SanitizeNodeColor(node.BorderSideBottom);
+                node.BorderSideLeft = SanitizeNodeColor(node.BorderSideLeft);
+                node.BorderCornerTopLeft = SanitizeNodeColor(node.BorderCornerTopLeft);
+                node.BorderCornerTopRight = SanitizeNodeColor(node.BorderCornerTopRight);
+                node.BorderCornerBottomRight = SanitizeNodeColor(node.BorderCornerBottomRight);
+                node.BorderCornerBottomLeft = SanitizeNodeColor(node.BorderCornerBottomLeft);
                 node.TextGradientLeft = SanitizeNodeColor(node.TextGradientLeft);
                 node.TextGradientRight = SanitizeNodeColor(node.TextGradientRight);
                 node.TextGradientLeftPressed = SanitizeNodeColor(node.TextGradientLeftPressed);
@@ -1057,11 +1081,7 @@ namespace JipperKeyViewer.KeyViewer
         {
             if (node == null || keyShapeLayer == null || node.RuntimeKey == null) return;
             int slot = node.RuntimeKey.shapeSlot;
-            if (slot < 0 || !node.UseOutlineGradient)
-            {
-                if (slot >= 0) keyShapeLayer.SetOutlineGradient(slot, false, Color.white, Color.white);
-                return;
-            }
+            if (slot < 0) return;
 
             Color normal = node.NodeType == 1
                 ? node.UseCustomColor ? NodeColor(node.Outline, Settings.Data.KpsOutline) : Settings.Data.KpsOutline
@@ -1075,10 +1095,39 @@ namespace JipperKeyViewer.KeyViewer
                     : node.UseCustomColor
                         ? NodeColor(node.OutlinePressed, Settings.Data.OutlineClicked)
                         : Settings.Data.OutlineClicked;
+
+            // The vertical outline gradient and the per-side palette are INDEPENDENT switches —
+            // either can be on alone. The gradient branch therefore must NOT return early: the
+            // old early return swallowed everything below it, which would have made the per-side
+            // colours unreachable whenever the gradient was off (the common case).
+            // 垂直描边渐变与逐边调色板是**互相独立**的开关——任一可单独开启。故渐变分支**不得**
+            // 提前返回：旧的提前返回会把下面的一切吞掉，那会让逐边颜色在渐变关闭时（常见情形）
+            // 永远无法生效。
             bool usePressed = pressed && node.UsePressedOutlineGradient;
-            keyShapeLayer.SetOutlineGradient(slot, true,
-                NodeColor(usePressed ? node.OutlineGradientTopPressed : node.OutlineGradientTop, usePressed ? active : normal),
-                NodeColor(usePressed ? node.OutlineGradientBottomPressed : node.OutlineGradientBottom, usePressed ? active : normal));
+            if (!node.UseOutlineGradient)
+                keyShapeLayer.SetOutlineGradient(slot, false, Color.white, Color.white);
+            else
+                keyShapeLayer.SetOutlineGradient(slot, true,
+                    NodeColor(usePressed ? node.OutlineGradientTopPressed : node.OutlineGradientTop, usePressed ? active : normal),
+                    NodeColor(usePressed ? node.OutlineGradientBottomPressed : node.OutlineGradientBottom, usePressed ? active : normal));
+
+            // Per-side / per-corner border colours (FreeMake only). While they are on they cover
+            // the whole border, including the outline gradient — that is the point of an
+            // override. While the key is HELD the classic pressed outline colour takes over, so
+            // the press feedback survives instead of being frozen out by the palette.
+            // 逐边/逐角描边色（仅 FreeMake）。启用时它们覆盖整圈描边（含描边渐变）——这正是
+            // 「覆盖」的含义。按住期间回到经典的按压描边色，故按压反馈得以保留，不会被调色板
+            // 冻住。
+            bool sidesActive = node.UseBorderSideColors && !pressed;
+            keyShapeLayer.SetBorderSideColors(slot, sidesActive,
+                NodeColor(node.BorderSideTop, normal),
+                NodeColor(node.BorderSideRight, normal),
+                NodeColor(node.BorderSideBottom, normal),
+                NodeColor(node.BorderSideLeft, normal),
+                NodeColor(node.BorderCornerTopLeft, normal),
+                NodeColor(node.BorderCornerTopRight, normal),
+                NodeColor(node.BorderCornerBottomRight, normal),
+                NodeColor(node.BorderCornerBottomLeft, normal));
         }
 
         private void ApplyFixedBackgroundGradients()
@@ -1822,7 +1871,7 @@ namespace JipperKeyViewer.KeyViewer
             if (font == null) return;
             if (key.text != null)
             {
-                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.KeyLabel));
+                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.KeyLabel), key.text);
                 // Through the reference-counted setter: a direct assignment would leave the cached
                 // material's use count stale, so it could either never be evicted or be evicted
                 // while this text still renders with it (blank text). / 走引用计数 setter：直接赋值
@@ -1832,7 +1881,7 @@ namespace JipperKeyViewer.KeyViewer
             }
             if (key.value != null)
             {
-                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.Count));
+                Material m = GetTextStyleMaterial(font, KvTextStyle.Resolve(Settings.Data, node, KvTextKind.Count), key.value);
                 if (m != null) ApplyFontMaterial(key.value, m);
             }
         }

@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using JipperKeyViewer.KeyViewer.Settings;
 using UnityEngine;
 
 namespace JipperKeyViewer.KeyViewer.Util
@@ -101,6 +102,23 @@ namespace JipperKeyViewer.KeyViewer.Util
             textureCache.Clear();
             cachedOwnership.Clear();
             cachedSprites.Clear();
+            // Pre-blurred variants are cache-owned textures in their own right; leaving the
+            // dictionaries alive would pin destroyed Texture2D references and re-hand out broken
+            // sprites on the next enable. / 预模糊变体本身就是缓存持有的贴图；字典若不清空，
+            // 会钉住已销毁的 Texture2D 引用，并在下次启用时交出坏精灵。
+            for (int level = 1; level < preblurCache.Length; level++)
+            {
+                Dictionary<string, CachedPreblur> cache = preblurCache[level];
+                if (cache == null) continue;
+                foreach (KeyValuePair<string, CachedPreblur> pair in cache)
+                {
+                    Texture2D tex = pair.Value?.Texture;
+                    if (tex == null) continue;
+                    try { UnityEngine.Object.Destroy(tex); }
+                    catch (Exception) { /* already destroyed by a domain reload */ }
+                }
+                cache.Clear();
+            }
             // Budget refusals were judged against the OLD live budget; after a wholesale release
             // everything fits again, so the negative cache must not outlive it.
             // 预算级拒绝是按**旧的**实时预算判的；整体释放后一切都放得下，负缓存不得比它更长寿。
@@ -266,6 +284,374 @@ namespace JipperKeyViewer.KeyViewer.Util
                 Loader.Error($"KeyViewer: failed to create rain sprite from '{path}': {e.Message}");
                 return null;
             }
+        }
+
+        // ---- Rain pre-blur (level 1/2/3 ≈ radius 2/4/8 px, baked on the CPU) ----
+        // ---- 雨滴预模糊（档位 1/2/3 约对应半径 2/4/8 像素，CPU 侧烘焙）----
+
+        /// <summary>WORKING resolution of the pre-blur, not a refusal threshold. A source larger than
+        /// this is DOWNSCALED to it (area average) and then blurred, because real rain art is often a
+        /// photo (1280x1871) and refusing it meant the blur slider silently did nothing at all. The
+        /// drop is drawn scaled anyway, and a blurred variant is soft by definition. 1024 keeps the
+        /// bake cheap (~1 M pixels, one cached texture per image and level).
+        /// / 预模糊的**工作分辨率**，不是拒绝阈值。比它大的源图会被**降采样**（面积平均）后再模糊——
+        /// 真实雨滴素材常常是一张照片（1280x1871），而拒绝它意味着模糊滑条静默地什么也没做。雨滴
+        /// 本就是缩放绘制，且模糊变体按定义就是柔和的。1024 让烘焙保持廉价（~100 万像素，每图每档
+        /// 一份缓存纹理）。</summary>
+        internal const int MaxPreblurDimension = 1024;
+        /// <summary>Box radius baked per level, index = level. 3 box passes approximate a gaussian;
+        /// the level semantics are "visibly softer", not an exact pixel radius.
+        /// / 每档位烘焙的盒式半径，下标即档位。3 次盒式模糊近似高斯；档位语义是「明显更柔和」，
+        /// 不承诺精确像素半径。</summary>
+        internal static readonly int[] PreblurRadiusByLevel = { 0, 2, 4, 8 };
+
+        /// <summary>One cached pre-blurred rain sprite plus the source texture instance it was
+        /// derived from. The Source reference is the staleness test: when the underlying file is
+        /// edited, LoadTextureCached re-decodes into a NEW texture instance and this entry no
+        /// longer matches — the next request rebuilds from the fresh decode.
+        /// / 一条缓存的预模糊雨滴精灵，及其来源贴图实例。Source 引用即陈旧判据：底层文件被改动后
+        /// LoadTextureCached 会解码出**新的**贴图实例，本条目随之失配——下一次请求即用新解码重建。</summary>
+        private sealed class CachedPreblur
+        {
+            public Sprite Sprite;
+            public Texture2D Texture;
+            public Texture2D Source;
+            public long Bytes;
+        }
+
+        // One dictionary PER LEVEL, never a composite key on the base dict: levels must not evict
+        // each other, and ReleaseCachedTextures destroys every level in one sweep.
+        // 每个档位一个独立字典，绝不在基础字典上做复合键：档位之间不得互相覆盖，
+        // ReleaseCachedTextures 一次遍历即可销毁全部档位。
+        private static readonly Dictionary<string, CachedPreblur>[] preblurCache =
+            new Dictionary<string, CachedPreblur>[ProfileData.MaxRainBlurLevel + 1];
+
+        static KvImageLoader()
+        {
+            for (int level = 1; level < preblurCache.Length; level++)
+                preblurCache[level] = new Dictionary<string, CachedPreblur>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        /// <summary>Get the rain sprite for a path at a pre-blur level (0 = unblurred original).
+        /// Never throws, never returns a broken sprite: on ANY failure (unreadable source, refused
+        /// blur, budget full) it degrades to the ORIGINAL sprite, because a crisp raindrop always
+        /// beats a missing one. / 按预模糊档位获取雨滴精灵（0 = 原图）。绝不抛出、绝不返回坏精灵：
+        /// 任何失败（源不可读、模糊被拒、预算已满）都退回**原图**——清晰的雨滴总比没有雨滴好。</summary>
+        internal static Sprite GetOrCreateRainSprite(string path, byte blurLevel)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            if (blurLevel <= 0) return GetOrCreateRainSprite(path);
+            if (blurLevel > ProfileData.MaxRainBlurLevel) blurLevel = ProfileData.MaxRainBlurLevel;
+            Sprite baseSprite = GetOrCreateRainSprite(path);
+            if (baseSprite == null) return null;
+            Texture2D srcTex = baseSprite.texture;
+            if (srcTex == null) return baseSprite;
+            Dictionary<string, CachedPreblur> cache = preblurCache[blurLevel];
+            if (cache.TryGetValue(path, out CachedPreblur entry))
+            {
+                if (entry?.Sprite != null && entry.Source == srcTex) return entry.Sprite;
+                // Stale: the source was re-decoded (file edited) or the entry is broken. Destroy the
+                // old variant so its VRAM returns to the ledger before the rebuild attempt.
+                // 陈旧：源被重新解码（文件被改动）或条目损坏。先销毁旧变体，把显存还给账本再尝试重建。
+                DestroyPreblurEntry(cache, path);
+            }
+            Texture2D blurred = PreblurRainTexture(srcTex, blurLevel);
+            if (blurred == null) return baseSprite; // refused / failed → original / 被拒或失败 → 原图
+            long wanted = (long)blurred.width * blurred.height * 4L;
+            if (liveCachedImageBytes + wanted > MaxCachedImageBytes)
+            {
+                // Budget red line: degrade to the original rather than OOM. No negative-cache entry
+                // here — the next request retries cheaply once other entries free room.
+                // 预算红线：宁可退化回原图也不 OOM。这里不写负缓存——其它条目腾出空间后下一次
+                // 请求即可廉价重试。
+                try { UnityEngine.Object.Destroy(blurred); }
+                catch (Exception) { /* nothing to release */ }
+                Loader.Warning($"KeyViewer: rain pre-blur '{path}' skipped — the custom-image texture "
+                    + $"budget ({MaxCachedImageBytes / (1024 * 1024)} MB) is already committed");
+                return baseSprite;
+            }
+            Sprite sprite;
+            try
+            {
+                sprite = Sprite.Create(blurred,
+                    new Rect(0f, 0f, blurred.width, blurred.height), new Vector2(0.5f, 0.5f),
+                    100f, 0, SpriteMeshType.FullRect, Vector4.zero);
+            }
+            catch (Exception e)
+            {
+                Loader.Error($"KeyViewer: failed to create pre-blurred rain sprite from '{path}': {e.Message}");
+                try { UnityEngine.Object.Destroy(blurred); }
+                catch (Exception) { /* nothing to release */ }
+                return baseSprite;
+            }
+            cachedOwnership.Add(blurred);
+            liveCachedImageBytes += wanted;
+            cache[path] = new CachedPreblur
+            {
+                Sprite = sprite,
+                Texture = blurred,
+                Source = srcTex,
+                Bytes = wanted,
+            };
+            return sprite;
+        }
+
+        private static void DestroyPreblurEntry(Dictionary<string, CachedPreblur> cache, string path)
+        {
+            if (!cache.TryGetValue(path, out CachedPreblur entry) || entry == null) return;
+            cache.Remove(path);
+            Texture2D tex = entry.Texture;
+            if (tex != null)
+            {
+                cachedOwnership.Remove(tex);
+                try { UnityEngine.Object.Destroy(tex); }
+                catch (Exception) { /* already destroyed by a domain reload */ }
+            }
+            liveCachedImageBytes -= entry.Bytes;
+            if (liveCachedImageBytes < 0) liveCachedImageBytes = 0;
+        }
+
+        /// <summary>Area-average downscale of a straight-alpha RGBA buffer. Pure, so the Harness can
+        /// verify it: a uniform 2x2 block collapses to one pixel of the same colour, four different
+        /// pixels average to their mean, and the alpha channel is averaged with the colour (never
+        /// premultiplied, so a transparent-but-coloured pixel does not drag its hue into the result).
+        /// Never upscales. / 直通 alpha RGBA 缓冲的面积平均降采样。纯函数，Harness 可验证：同色 2x2
+        /// 块塌成同色单像素，四个不同像素取均值；alpha 与颜色一并平均（**不做**预乘，故带颜色但透明
+        /// 的像素不会把色相拖进结果）。绝不放大。</summary>
+        internal static Color32[] DownscaleBox(Color32[] src, int w, int h, int dw, int dh)
+        {
+            if (src == null || w <= 0 || h <= 0 || dw <= 0 || dh <= 0) return null;
+            if (src.Length != w * h) return null;
+            if (dw == w && dh == h) return (Color32[])src.Clone();
+            if (dw > w || dh > h) return null; // no upscaling / 不放大
+            Color32[] dst = new Color32[dw * dh];
+            for (int y = 0; y < dh; y++)
+            {
+                int y0 = y * h / dh;
+                int y1 = ((y + 1) * h + dh - 1) / dh;
+                if (y1 <= y0) y1 = y0 + 1;
+                if (y1 > h) y1 = h;
+                for (int x = 0; x < dw; x++)
+                {
+                    int x0 = x * w / dw;
+                    int x1 = ((x + 1) * w + dw - 1) / dw;
+                    if (x1 <= x0) x1 = x0 + 1;
+                    if (x1 > w) x1 = w;
+                    long r = 0, g = 0, b = 0, a = 0;
+                    int n = 0;
+                    for (int yy = y0; yy < y1; yy++)
+                    {
+                        for (int xx = x0; xx < x1; xx++)
+                        {
+                            Color32 c = src[yy * w + xx];
+                            r += c.r; g += c.g; b += c.b; a += c.a;
+                            n++;
+                        }
+                    }
+                    if (n == 0) n = 1;
+                    dst[y * dw + x] = new Color32(
+                        (byte)(r / n), (byte)(g / n), (byte)(b / n), (byte)(a / n));
+                }
+            }
+            return dst;
+        }
+
+        /// <summary>CPU pre-blur of a texture: premultiplied-alpha, three separable box passes with a
+        /// running-sum window (edge-clamped, so the kernel stays normalized at borders — an
+        /// all-opaque texture keeps alpha 255 exactly, with zero attenuation). The source texture is
+        /// never mutated. Returns null on any refusal: over-size, unreadable (non-readable textures
+        /// throw on GetPixels32), or internal failure — callers fall back to the original.
+        /// / 贴图的 CPU 预模糊：预乘 alpha，三趟可分离盒式模糊（滑动窗口、边缘钳制，故核在边界处
+        /// 依旧归一化——全不透明贴图的 alpha 精确保持 255，零衰减）。源贴图绝不被修改。任何拒绝
+        /// （超尺寸、不可读（不可读贴图调 GetPixels32 会抛出）或内部失败）都返回 null，调用方退回原图。</summary>
+        internal static Texture2D PreblurRainTexture(Texture2D src, byte level)
+        {
+            if (src == null || level <= 0 || level > ProfileData.MaxRainBlurLevel) return null;
+            int radius = PreblurRadiusByLevel[level];
+            int w = src.width, h = src.height;
+            if (w <= 0 || h <= 0) return null;
+            Color32[] pixels;
+            try { pixels = src.GetPixels32(); }
+            catch (Exception) { return null; } // non-readable source / 源不可读
+            if (pixels == null || pixels.Length != w * h) return null;
+            // Real rain art is usually far larger than a rain sprite (a 1280x1871 photo), and
+            // REFUSING it meant the blur slider silently did nothing. Downscale to the working
+            // resolution instead: the drop is drawn scaled anyway, and a blurred variant is soft
+            // by definition. The blur radius then lives in the downscaled space, which is what the
+            // user sees.
+            // 真实雨滴素材通常远大于雨滴精灵（一张 1280x1871 的照片），而**拒绝**它意味着模糊滑条
+            // 静默地什么也没做。改为先降到工作分辨率：雨滴本就是缩放绘制，且模糊变体按定义就是柔和
+            // 的。模糊半径此后存在于降采样空间里——那正是用户看到的东西。
+            if (w > MaxPreblurDimension || h > MaxPreblurDimension)
+            {
+                float k = (float)MaxPreblurDimension / Mathf.Max(w, h);
+                int dw = Mathf.Max(1, Mathf.RoundToInt(w * k));
+                int dh = Mathf.Max(1, Mathf.RoundToInt(h * k));
+                Color32[] scaled = DownscaleBox(pixels, w, h, dw, dh);
+                if (scaled == null) return null;
+                pixels = scaled;
+                w = dw;
+                h = dh;
+            }
+            Color32[] blurred;
+            try { blurred = PreblurPixels(pixels, w, h, radius); }
+            catch (Exception) { return null; }
+            Texture2D outTex = null;
+            try
+            {
+                outTex = new Texture2D(w, h, TextureFormat.RGBA32, false, false);
+                outTex.SetPixels32(blurred);
+                // Sampler settings BEFORE Apply: they are uploaded with the pixel data, so a
+                // non-readable texture never needs a second upload for them. Copied from the source
+                // so the blurred variant samples exactly like the original did.
+                // 采样设置在 Apply **之前**：它们随像素数据一起上传，不可读贴图无需为此二次上传。
+                // 从源贴图复制，保证模糊变体与原图的采样行为完全一致。
+                outTex.wrapMode = src.wrapMode;
+                outTex.filterMode = src.filterMode;
+                outTex.anisoLevel = src.anisoLevel;
+                outTex.Apply(false, true); // upload once, drop the CPU copy / 上传一次，丢弃 CPU 副本
+                return outTex;
+            }
+            catch (Exception)
+            {
+                if (outTex != null)
+                {
+                    try { UnityEngine.Object.Destroy(outTex); }
+                    catch (Exception) { /* nothing to release */ }
+                }
+                return null;
+            }
+        }
+
+        /// <summary>The pure, Unity-free core of the rain pre-blur — what the Harness tests. Input is
+        /// a straight-alpha RGBA buffer of w*h pixels; output is the blurred equivalent. Premultiply →
+        /// three edge-clamped separable box passes (radius r each; the window size 2r+1 is the
+        /// constant divisor, which IS the kernel normalization) → unpremultiply. Premultiplication is
+        /// what keeps transparent pixels from bleeding their (often garbage) RGB into neighbours.
+        /// / 雨滴预模糊的纯函数核心——Harness 测的就是它。输入为 w*h 个直通 alpha 的 RGBA 像素，
+        /// 输出为模糊后的等价结果。预乘 → 三趟边缘钳制的可分离盒式模糊（半径均为 r；窗口大小
+        /// 2r+1 即除数，这正是核归一化）→ 逆预乘。预乘正是防止透明像素把（常为垃圾值的）RGB
+        /// 渗进邻居的手段。</summary>
+        internal static Color32[] PreblurPixels(Color32[] src, int w, int h, int radius)
+        {
+            if (src == null) throw new ArgumentNullException(nameof(src));
+            if (w <= 0 || h <= 0) throw new ArgumentOutOfRangeException(nameof(w), "empty blur domain");
+            if (src.Length != w * h) throw new ArgumentException("src length != w*h", nameof(src));
+            if (radius <= 0) return (Color32[])src.Clone();
+            int n = w * h;
+            // Premultiply into float channels. Sums stay below 2^24 (65025 * 17 max), so every
+            // accumulate/subtract below is EXACT in float32 — the opaque-alpha invariant then holds
+            // without rounding drift. / 预乘到 float 通道。和值不超过 2^24（最大 65025*17），
+            // 下方所有累加/消减在 float32 下**精确**——不透明 alpha 不变量因此不受舍入漂移影响。
+            float[] r = new float[n];
+            float[] g = new float[n];
+            float[] b = new float[n];
+            float[] a = new float[n];
+            for (int i = 0; i < n; i++)
+            {
+                float af = src[i].a;
+                r[i] = src[i].r * af;
+                g[i] = src[i].g * af;
+                b[i] = src[i].b * af;
+                a[i] = af;
+            }
+            int window = radius * 2 + 1;
+            float invWindow = 1f / window;
+            // Three box passes, each separable horizontal+vertical with a sliding window and
+            // edge-clamped sampling (out-of-range reads duplicate the border pixel, so the divisor
+            // stays 2r+1 and the kernel remains normalized at the borders).
+            // 三趟盒式模糊，每趟水平+垂直可分离，滑动窗口 + 边缘钳制采样（越界读取复制边界像素，
+            // 除数恒为 2r+1，核在边界处依旧归一化）。
+            float[] tmp = new float[n];
+            for (int pass = 0; pass < 3; pass++)
+            {
+                BoxPass(r, tmp, w, h, radius, invWindow, true); BoxPass(r, tmp, w, h, radius, invWindow, false);
+                BoxPass(g, tmp, w, h, radius, invWindow, true); BoxPass(g, tmp, w, h, radius, invWindow, false);
+                BoxPass(b, tmp, w, h, radius, invWindow, true); BoxPass(b, tmp, w, h, radius, invWindow, false);
+                BoxPass(a, tmp, w, h, radius, invWindow, true); BoxPass(a, tmp, w, h, radius, invWindow, false);
+            }
+            // Unpremultiply. Each BoxPass already wrote normalized (window-averaged) values, so no
+            // further divisor here: straight RGB = premulRGB / alpha on the 0..255 scale. Where
+            // alpha collapses to ~0 the RGB is undefined — write black with the blurred alpha
+            // (which is ~0 anyway), never divide by zero.
+            // 逆预乘。每趟 BoxPass 写出的已是归一化（窗口均值）值，此处不再有除数：直通
+            // RGB = 预乘RGB / alpha（均为 0..255 标度）。alpha 收敛到 ~0 处 RGB 无定义——写入
+            // 模糊后的 alpha（其本身 ~0）配黑色，绝不除零。
+            Color32[] dst = new Color32[n];
+            for (int i = 0; i < n; i++)
+            {
+                float af = a[i];
+                if (af > 0.5f)
+                {
+                    float ia = 1f / af;
+                    dst[i] = new Color32(
+                        (byte)Clamp255(r[i] * ia + 0.5f),
+                        (byte)Clamp255(g[i] * ia + 0.5f),
+                        (byte)Clamp255(b[i] * ia + 0.5f),
+                        (byte)Clamp255(af + 0.5f));
+                }
+                else
+                {
+                    dst[i] = new Color32(0, 0, 0, (byte)Clamp255(af + 0.5f));
+                }
+            }
+            return dst;
+        }
+
+        private static void BoxPass(float[] channel, float[] tmp, int w, int h, int radius,
+            float invWindow, bool horizontal)
+        {
+            if (horizontal)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    int row = y * w;
+                    float sum = 0f;
+                    for (int k = -radius; k <= radius; k++)
+                    {
+                        int x = k < 0 ? 0 : (k >= w ? w - 1 : k);
+                        sum += channel[row + x];
+                    }
+                    for (int x = 0; x < w; x++)
+                    {
+                        tmp[row + x] = sum * invWindow;
+                        int addX = x + radius + 1 >= w ? w - 1 : x + radius + 1;
+                        int subX = x - radius < 0 ? 0 : x - radius;
+                        sum += channel[row + addX] - channel[row + subX];
+                    }
+                }
+                CopyInto(channel, tmp);
+            }
+            else
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    float sum = 0f;
+                    for (int k = -radius; k <= radius; k++)
+                    {
+                        int y = k < 0 ? 0 : (k >= h ? h - 1 : k);
+                        sum += channel[y * w + x];
+                    }
+                    for (int y = 0; y < h; y++)
+                    {
+                        tmp[y * w + x] = sum * invWindow;
+                        int addY = y + radius + 1 >= h ? h - 1 : y + radius + 1;
+                        int subY = y - radius < 0 ? 0 : y - radius;
+                        sum += channel[addY * w + x] - channel[subY * w + x];
+                    }
+                }
+                CopyInto(channel, tmp);
+            }
+        }
+
+        private static void CopyInto(float[] dst, float[] src)
+        {
+            Array.Copy(src, dst, dst.Length);
+        }
+
+        private static float Clamp255(float v)
+        {
+            return v < 0f ? 0f : (v > 255f ? 255f : v);
         }
 
         /// <summary>Record a refusal for the negative cache (bounded; overflow clears wholesale).

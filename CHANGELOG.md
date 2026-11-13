@@ -1,3 +1,25 @@
+## 1.7.3-alpha.2
+
+> **Preview release.** Everything below landed after 1.7.3-alpha.1. Your profiles, images and fonts are
+> untouched, and the update checker (`Repository.json`) deliberately still points at 1.7.2 — this alpha
+> is only offered here, on GitHub, not pushed to anyone as an update.
+
+### 🚀 New Features
+
+- **Rain drops can be pre-blurred**: an image drop can be softened instead of pixel-sharp. Blur is baked on the **CPU into the texture once per (image, level)** — three levels ≈ 2 / 4 / 8 px — and cached across overlay rebuilds, so it costs nothing per frame, no extra draw call and no per-drop object. The level is captured **when a drop is born**, exactly like its colour, speed and corner radius, so changing it never re-decodes a texture and never mutates drops already in flight. Available globally and per FreeMake node (node level `0` follows the global one), with an editor slider, a typed field and the usual mixed-selection `—` behaviour in all three languages.
+- **Blur never costs you a drop**: a source image larger than 256 px, an unreadable file, a full budget or any internal failure **degrades to the original crisp sprite** rather than to a missing or broken one. Cached blur textures are accounted against the same 256 MB ceiling as every other cached image, so a pathological profile can exhaust the budget but cannot OOM the game. Solid-trail drops (no image) and ghost rain are untouched — they have no texture to blur.
+- **Foreground blur (text self-blur)**: every label and count can be defocused by widening the edge transition band of **TMP's own SDF shader** — the material is cloned and `_GradientScale` divided, so no replacement shader, no screen grab and no layer reorder, and every vertex-format / keyword / dynamic-atlas behaviour stays correct by construction. The band is proportional to **that text's font size and hard-capped at 5 % of the glyph height** (calibrated in game: a fixed-pixel band cannot fit both an ~8 px label and a 40 px one, and any band wider than its own strokes tints small text toward the key's background colour). Outline and drop shadow survive the blur through a per-property compensation cascade (outline width, face dilate, underlay offset/dilate/softness are re-scaled so only the softness changes). Available globally and per FreeMake node (the node's own switch wins while on); off by default. Materials are cached per (font × style × size bucket) with reference counting, so a slider drag cannot mint unbounded materials. A NaN / unreadable radius degrades to the unblurred text — the label never disappears.
+- **Per-side / per-corner border colours (FreeMake)**: each of a node's four border edges and four rounded corners can be painted its own colour, independently of the vertical outline gradient (corners deliberately do **not** inherit the nearest edge, which is what makes two-tone rounded borders possible). While the palette is on it covers the whole border, gradient included — that is what an override means — and turning it back off restores the previous border exactly. While the key is **held**, the classic pressed outline colour takes over so the press feedback is not frozen out by the palette. Off by default.
+
+### 🐞 Bug Fixes
+
+- **A hand-edited blur radius could blank a label**: the overlay-rebuild path (`EnsureCustomNodes`) sanitizes every float on every node, but the two newly added blur fields were not in it. That path does **not** go through the load-time synchronisation, so a `NaN` arriving from a hand-edited profile or a shared `.jkv` reached the shader as a `NaN` uniform — which the GPU does not clamp — and the whole label vanished instead of blurring. Both fields now run through the same clamp as the load path, from the same single range authority.
+- **Multi-selecting nodes with fewer rain sprites than the active one froze the editor**: multi-selection edited the sprite lists **directly** by index, so a selected node with fewer sprites threw `ArgumentOutOfRangeException` — and because the exception aborts the whole `OnGUI` pass, every control drawn after it (the outline/border section included) simply never appeared. Selected sprite lists are now grown to the active node's length before indexing.
+
+### 🧪 Tests
+
+- **58 new data-layer regressions**: the pre-blur kernel's normalisation (an opaque uniform field round-trips **byte-identical**; a half-transparent `a=128` field round-trips byte-identical at two radii; a hard alpha edge keeps the block's own hue at exactly the analytically derived coverage), the per-level cache layout (one dictionary per level, never a composite key, case-insensitive paths), the node and global clamps (including that a **legal** `0` is never rewritten), and both directions of version compatibility — a legacy node without the keys reads blur-off, a current profile carrying them keeps every value exactly as written.
+
 ## 1.7.3-alpha.1
 
 > **Preview release.** Everything below landed after 1.7.2 was tagged. Your profiles, images and fonts

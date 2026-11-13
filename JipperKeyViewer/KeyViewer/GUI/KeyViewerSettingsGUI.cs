@@ -1597,6 +1597,7 @@ namespace JipperKeyViewer.KeyViewer
             DrawPerKeyTextSizeSection();
 
             DrawTextStyleSection();
+            DrawForegroundBlurSection();
 
             // Center KPS / Total text — only for flat (slim) KPS/Total designs (e.g. full keyboard, 8K/14K/16K/24K).
             // Hidden for stacked (non-slim) layouts like 12K/10K/20K standard. / 仅对扁平（slim）KPS/Total 生效（全键盘及 8K/14K/16K/24K 等），堆叠布局（12K/10K/20K 标准）隐藏。
@@ -1912,6 +1913,43 @@ namespace JipperKeyViewer.KeyViewer
                     Settings.Data.CountTextShadowOffsetY = oy;
                     Settings.Data.CountTextShadowSoftness = soft;
                 });
+        }
+
+        /// <summary>The foreground (text self-)blur section. It is its OWN foldout rather than a
+        /// block inside the text-style foldout: that foldout is COLLAPSED by default, so a switch
+        /// buried at its bottom needed "expand the section AND scroll to its end" before the user
+        /// could even see it. A separate always-visible header makes it discoverable in one click.
+        /// 前景（文字自身）模糊区。它是**独立**折叠区，而不是文字样式折叠区里的一个块：那个折叠区
+        /// 默认收起，开关埋在底部就意味着用户得「展开区块 + 滚到底」才看得见它。独立且常驻的标题
+        /// 行让用户一次点击就能找到。</summary>
+        private bool foregroundBlurExpanded = false;
+
+        private void DrawForegroundBlurSection()
+        {
+            GUILayout.Space(4f);
+            foregroundBlurExpanded = DrawFoldoutButton(I18n.Tr("foreground_blur_section"), foregroundBlurExpanded);
+            if (!foregroundBlurExpanded) return;
+            // Foreground blur (self-convolution on the glyphs — no grab, no layer reorder). The
+            // radius is in screen pixels and costs ONE material per distinct radius.
+            // 前景模糊（字形自身卷积——不抓屏、不重排层级）。半径以屏幕像素计，每个不同半径**各占
+            // 一份材质**。
+            bool blurOn = GUILayout.Toggle(Settings.Data.EnableForegroundBlur, I18n.Tr("fm_foreground_blur"));
+            if (blurOn != Settings.Data.EnableForegroundBlur)
+            {
+                Settings.Data.EnableForegroundBlur = blurOn;
+                RefreshTextStyles();
+            }
+            if (blurOn)
+            {
+                float blurRadius = FloatSliderField(I18n.Tr("fm_foreground_blur_radius"),
+                    Settings.Data.ForegroundBlurRadius, 0.25f, ProfileData.MaxForegroundBlurRadius);
+                if (blurRadius != Settings.Data.ForegroundBlurRadius)
+                {
+                    Settings.Data.ForegroundBlurRadius = blurRadius;
+                    RefreshTextStyles();
+                }
+                GUILayout.Label("<i>" + I18n.Tr("fm_help_foreground_blur_global") + "</i>");
+            }
         }
 
         private void DrawTextStyleBlock(string id, bool outlineOn, Color outlineColor, float outlineWidth,
